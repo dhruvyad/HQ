@@ -66,9 +66,11 @@ hq respond COMMENT_ID "Brief reply" --session ID, and hq await ITEM_ID --session
 
 Installed lifecycle hooks supply the exact conversation id and queued context on
 start, resume, user input, tool completion, or turn completion. A Stop hook can
-continue a finishing turn when new HQ messages are pending. Hooks cannot wake a
-conversation that is already idle. Automatic idle wake-up requires an owning
-Codex server or an opted-in Claude Code channel. Permission approvals still need
+continue a finishing turn when new HQ messages are pending. These installed hooks
+do not yet wake an already idle conversation. Current Claude Code also supports
+native inbox messages and asyncRewake hooks without per-session channels; HQ's
+global integration and live validation are pending. Codex desktop must share an
+owning server or use a verified app relay. Permission approvals still need
 the client's normal approval. A hook being configured is not proof of trust,
 receipt, or a live push connection. Keep any unfinished setup in HQ.
 

@@ -63,9 +63,13 @@ The detail drawer stays a single column, up to 560px wide.
 ## Components and content
 
 - Conversations are the primary navigation. Show conversations with unfinished
-  items, with a quiet harness badge and item count. Hide discovered chats with no
-  reported work. Completed conversations appear in Done; keep the selected
+  items and verified live agents, with a quiet harness badge, neutral activity
+  indicator, and item count. Hide historical chats with no reported work or live
+  status. Completed conversations appear in Done; keep the selected
   conversation visible when its last item completes.
+- Activity labels distinguish Active, Idle, Waiting, Offline and Unknown. Use
+  fresh runtime evidence, keep unknown distinct from idle, and avoid decorative
+  animation or bright navigation colours.
 - Tags are optional context in item details and remain searchable. Keep tag
   lists and tag pills out of the sidebar and queue rows.
 - Use compact rounded state tabs with counts; keep Human pending and Agent

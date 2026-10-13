@@ -30,9 +30,13 @@ def handle(provider, payload, store, emit):
         session = store.register(sid, f"{label} · {Path(cwd).name if cwd else external_id[:8]}", provider, external_id, cwd)
     if event == "SessionEnd":
         store.disconnect(sid, "hooks")
+        store.observe_activity(sid, "offline", "hooks", lease=30, priority=50)
         return
     store.heartbeat(sid, "hooks")
     replies, questions = store.claim_hook_messages(sid)
+    activity = "active" if event in {"UserPromptSubmit", "PostToolUse"} or (event == "Stop" and (replies or questions)) else "idle"
+    # Lifecycle evidence expires: it cannot prove a process stayed alive forever.
+    store.observe_activity(sid, activity, "hooks", lease=30, priority=50)
     quoted = shlex.quote(sid)
     context = []
     if event in {"SessionStart", "UserPromptSubmit"}:

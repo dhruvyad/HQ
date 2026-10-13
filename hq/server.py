@@ -4,6 +4,7 @@ import os
 import secrets
 import signal
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +13,8 @@ from urllib.parse import urlsplit
 from . import __version__
 from .adapters import Dispatcher
 from .store import Store, data_dir
+from .presence import ClaudePresence
+from .stream import StateFeed
 
 STATIC = Path(__file__).parent / "static"
 
@@ -25,6 +28,11 @@ class Server(ThreadingHTTPServer):
         self.instance = str(uuid.uuid4())
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
+        self.feed = StateFeed(self.store)
+
+    def server_close(self):
+        self.feed.close()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -69,7 +77,11 @@ class Handler(BaseHTTPRequestHandler):
                                      "pid": os.getpid()})
         if path == "/api/state":
             if self.allowed(token=True):
-                self.output(200, self.server.store.snapshot())
+                self.output(200, self.server.feed.current())
+            return
+        if path == "/api/events":
+            if self.allowed(token=True):
+                self.events()
             return
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
@@ -82,6 +94,28 @@ class Handler(BaseHTTPRequestHandler):
         if name == "index.html":
             body = body.replace(b"__HQ_TOKEN__", self.server.token.encode())
         self.output(200, body, mime)
+
+    def events(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.connection.settimeout(5)
+        previous = -1
+        try:
+            while not self.server.feed.stop.is_set():
+                version, payload = self.server.feed.wait(previous)
+                healthy = time.monotonic() - self.server.feed.last_success < 3
+                message = (f"event: state\ndata: {payload}\n\n" if healthy and version != previous
+                           else 'event: ping\ndata: {"healthy":' + str(healthy).lower() + '}\n\n')
+                self.wfile.write(message.encode())
+                self.wfile.flush()
+                previous = version if healthy else -1
+        except (OSError, TimeoutError):
+            pass
+        self.close_connection = True
 
     def do_POST(self):
         if not self.allowed(token=True):
@@ -143,6 +177,9 @@ def serve(port=4310):
         dispatcher = Dispatcher(server.store)
         thread = threading.Thread(target=dispatcher.run, daemon=True)
         thread.start()
+        presence = ClaudePresence(server.store)
+        presence_thread = threading.Thread(target=presence.run, daemon=True)
+        presence_thread.start()
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
         print(f"HQ is running at {server.origin}", flush=True)
@@ -150,6 +187,8 @@ def serve(port=4310):
             server.serve_forever()
         finally:
             dispatcher.stop.set()
+            presence.stop.set()
             thread.join(timeout=5)
+            presence_thread.join(timeout=3)
             server.server_close()
             state.unlink(missing_ok=True)

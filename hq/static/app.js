@@ -1,7 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
-const token = $('meta[name="hq-token"]').content;
+let token = $('meta[name="hq-token"]').content;
 let state = {sessions: [], items: []}, filter = {view: 'all', sessionId: null, search: ''};
 let selectedId = null, toastTimer, loading = null, snapshotSignature = '';
+let liveHealthy = false, lastLive = 0, streamController = null;
+const seenInstances = new Set();
 const providers = {codex: ['Cx', 'Codex'], 'claude-code': ['Cl', 'Claude Code'], 'claude-desktop': ['Cl', 'Claude Desktop'], chatgpt: ['G', 'ChatGPT'], other: ['A', 'Other']};
 const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tagHTML = (tags) => tags.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join('');
@@ -30,21 +32,32 @@ function conversationEntries() {
   for (const item of state.items) {
     if (!groups.has(item.session_id)) {
       const session = state.sessions.find(s => s.id === item.session_id);
-      groups.set(item.session_id, {id: item.session_id, name: session?.name || item.session_name, provider: session?.provider || item.provider, open: 0, done: 0, updated: 0});
+      groups.set(item.session_id, {id: item.session_id, name: session?.name || item.session_name, provider: session?.provider || item.provider, activity: session?.activity, open: 0, done: 0, updated: 0});
     }
     const group = groups.get(item.session_id);
     group[item.status === 'done' ? 'done' : 'open']++;
     group.updated = Math.max(group.updated, item.updated || item.created || 0);
   }
-  // Discovery can register many empty chats. Only reported work belongs here;
-  // keep the selected chat visible when its last item is completed.
-  return [...groups.values()].filter(s => (filter.view === 'done' ? s.done : s.open) || s.id === filter.sessionId)
+  for (const session of state.sessions) {
+    if (!groups.has(session.id) && ['active', 'idle', 'waiting'].includes(session.activity?.state)) {
+      groups.set(session.id, {...session, open: 0, done: 0, updated: 0});
+    }
+  }
+  // Keep real live agents visible, without importing every historical empty chat.
+  return [...groups.values()].filter(s => (filter.view === 'done' ? s.done : s.open || ['active', 'idle', 'waiting'].includes(s.activity?.state)) || s.id === filter.sessionId)
     .sort((a,b) => b.updated - a.updated || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 function conversationNavHTML(session) {
   const active = filter.sessionId === session.id;
   const count = filter.view === 'done' ? session.done : session.open;
-  return `<button class="nav-item nav-conversation ${active ? 'active' : ''}" data-session="${escapeHTML(session.id)}" aria-pressed="${active}" title="${escapeHTML(session.name)}"><span class="nav-conversation-body"><span class="nav-conversation-name">${escapeHTML(session.name)}</span>${harnessHTML(session.provider)}</span><span class="nav-number">${count}</span></button>`;
+  return `<button class="nav-item nav-conversation ${active ? 'active' : ''}" data-session="${escapeHTML(session.id)}" aria-pressed="${active}" title="${escapeHTML(session.name)}"><span class="nav-conversation-body"><span class="nav-conversation-name">${escapeHTML(session.name)}</span><span class="nav-conversation-meta">${harnessHTML(session.provider)}${activityHTML(session)}</span></span><span class="nav-number">${count}</span></button>`;
+}
+function activityHTML(session) {
+  const status = liveHealthy ? session.activity?.state : 'unknown';
+  const labels = {active: 'Active', idle: 'Idle', waiting: 'Waiting', offline: 'Offline', unknown: 'Unknown'};
+  const value = Object.hasOwn(labels, status) ? status : 'unknown';
+  const hint = value === 'unknown' ? 'Live activity unavailable' : value === 'offline' ? 'Session is no longer running' : value === 'waiting' ? 'Waiting for approval or input' : 'Live harness activity';
+  return `<span class="agent-activity activity-${value}" title="${hint}"><span class="activity-dot" aria-hidden="true"></span>${labels[value]}</span>`;
 }
 function inView(item, view) {
   if (view === 'all') return item.status !== 'done';
@@ -165,10 +178,30 @@ function refresh(force = false) {
 async function refreshState() {
   try {
     const next = await api('state');
-    const signature = JSON.stringify({items: next.items, sessions: next.sessions.map(s => [s.id, s.name, s.provider, s.connection, s.route])});
+    applyState(next);
+  } catch(error) {setLive(false);}
+}
+function setLive(healthy) {
+  if (healthy) lastLive = Date.now();
+  const changed = liveHealthy !== healthy;
+  liveHealthy = healthy;
+  $('#service-status').textContent = 'Reconnecting…';
+  $('#service-status').hidden = healthy;
+  if (changed) render();
+}
+function applyState(next) {
+    if (next.instance) {
+      if (state.instance === next.instance && next.revision < state.revision) return;
+      if (state.instance && state.instance !== next.instance && seenInstances.has(next.instance)) return;
+      seenInstances.add(next.instance);
+    }
+    setLive(true);
+    const signature = JSON.stringify({items: next.items, sessions: next.sessions.map(s => [s.id, s.name, s.provider, s.connection, s.route, s.activity?.state, s.activity?.source])});
     const before = state.items.find(i => i.id === selectedId);
     const after = next.items.find(i => i.id === selectedId);
-    const detailChanged = JSON.stringify(before) !== JSON.stringify(after);
+    const previousConnection = state.sessions.find(s => s.id === before?.session_id)?.connection;
+    const nextConnection = next.sessions.find(s => s.id === after?.session_id)?.connection;
+    const detailChanged = JSON.stringify(before) !== JSON.stringify(after) || previousConnection !== nextConnection;
     const draft = $('#detail-dialog').open && detailChanged ? detailDraft() : null;
     state = next;
     if (signature !== snapshotSignature) {
@@ -181,8 +214,45 @@ async function refreshState() {
       if (focusSession) [...$('#conversations-nav').querySelectorAll('[data-session]')].find(el => el.dataset.session === focusSession)?.focus({preventScroll: true});
       if (draft && after) {openDetail(selectedId); restoreDetailDraft(draft);}
     }
-    $('#service-status').hidden = true;
-  } catch(error) {$('#service-status').textContent = 'Offline'; $('#service-status').hidden = false;}
+}
+function streamEvent(frame) {
+  const type = frame.split('\n').find(line => line.startsWith('event:'))?.slice(6).trim();
+  const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+  if (type === 'state') applyState(JSON.parse(data));
+  else if (type === 'ping') setLive(JSON.parse(data).healthy !== false);
+}
+async function renewToken() {
+  const response = await fetch('/', {cache: 'no-store'});
+  if (!response.ok) throw new Error('HQ unavailable');
+  const match = (await response.text()).match(/name="hq-token" content="([^"]+)"/);
+  if (!match) throw new Error('HQ token unavailable');
+  token = match[1];
+}
+async function watchState() {
+  let delay = 300;
+  while (true) {
+    const controller = new AbortController();
+    streamController = controller;
+    try {
+      const response = await fetch('/api/events', {headers: {'X-HQ-Token': token}, signal: controller.signal, cache: 'no-store'});
+      if (response.status === 403) {await renewToken(); throw new Error('Reconnect with new token');}
+      if (!response.ok || !response.body) throw new Error('HQ stream unavailable');
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) throw new Error('HQ stream closed');
+        buffer += decoder.decode(value, {stream: true});
+        if (buffer.length > 8 * 1024 * 1024) throw new Error('HQ snapshot too large');
+        let end;
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+          streamEvent(buffer.slice(0, end)); buffer = buffer.slice(end + 2); delay = 300;
+        }
+      }
+    } catch(error) {controller.abort(); setLive(false);}
+    await new Promise(resolve => setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 5000);
+  }
 }
 function closeOnBackdrop(dialog) {
   let startedOutside = false;
@@ -222,4 +292,8 @@ $('#add-button').onclick = () => {
 };
 $('#add-owner').onchange = () => {const external = $('#add-owner').value === 'external'; $('#add-waiting-label').hidden = !external; $('#add-waiting-label input').required = external;};
 $('#add-form').onsubmit = async event => {event.preventDefault(); const form = event.target, fields = Object.fromEntries(new FormData(form)), button = form.querySelector('[type="submit"]'); fields.tags = fields.tags.split(',').map(t => t.trim()).filter(Boolean); button.disabled = true; try {await api('items', fields); filter.view = 'all'; filter.sessionId = fields.session_id; filter.search = ''; $('#search').value = ''; $('#add-dialog').close(); form.reset(); $('#add-owner').onchange(); await refresh(true); toast('Item added');} catch(error) {form.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
-refresh(); setInterval(refresh, 2000);
+refresh(); watchState();
+setInterval(() => {if (Date.now() - lastLive > 5000) {setLive(false); streamController?.abort(); refresh();}}, 1000);
+document.addEventListener('visibilitychange', () => {if (!document.hidden) {streamController?.abort(); refresh();}});
+window.addEventListener('offline', () => {streamController?.abort(); setLive(false);});
+window.addEventListener('online', () => {streamController?.abort(); refresh();});

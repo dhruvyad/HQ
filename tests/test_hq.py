@@ -105,7 +105,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):
@@ -381,7 +381,10 @@ class StoreTests(unittest.TestCase):
         client.deliver.side_effect = lambda *_: dispatcher.stop.set()
         with patch("hq.adapters.CodexClient", return_value=client) as constructor:
             dispatcher.run()
-        constructor.assert_called_once_with("/tmp/test.sock")
+        constructor.assert_called_once()
+        self.assertEqual(constructor.call_args.args, ("/tmp/test.sock",))
+        self.assertTrue(callable(constructor.call_args.kwargs["on_event"]))
+        self.assertTrue(callable(constructor.call_args.kwargs["on_disconnect"]))
         thread, text = client.deliver.call_args.args
         self.assertEqual(thread, "thread-a")
         self.assertIn(question["id"], text)
@@ -424,6 +427,36 @@ class HTTPTests(unittest.TestCase):
             item = json.load(response)
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Yes"}, headers) as response:
             self.assertEqual(json.load(response)["answer"], "Yes")
+
+    def test_authenticated_stream_initial_state_live_change_and_reconnect(self):
+        def read_event(response):
+            lines = []
+            while True:
+                line = response.readline().decode().strip()
+                if not line:
+                    if lines:
+                        return json.loads(next(line[6:] for line in lines if line.startswith("data: ")))
+                else:
+                    lines.append(line)
+        headers = {"X-HQ-Token": self.server.token}
+        with self.request("/api/events", headers=headers) as response:
+            self.assertTrue(response.headers["Content-Type"].startswith("text/event-stream"))
+            first = read_event(response)
+            self.assertEqual(first["sessions"][0]["activity"]["state"], "unknown")
+            # An external CLI writes its own SQLite connection, with no HTTP mutation.
+            other = Store(self.store.path)
+            other.observe_activity("a", "active", "test-live")
+            changed = read_event(response)
+            self.assertGreater(changed["revision"], first["revision"])
+            self.assertEqual(changed["sessions"][0]["activity"]["state"], "active")
+        with self.request("/api/events", headers=headers) as response:
+            latest = read_event(response)
+            self.assertEqual(latest["sessions"][0]["activity"]["state"], "active")
+            self.assertEqual(latest["instance"], first["instance"])
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/api/events")
+        self.assertEqual(error.exception.code, 403)
+        error.exception.close()
 
     def test_local_fonts_are_served_as_bytes_and_paths_stay_allowlisted(self):
         for name in ("inter", "outfit"):

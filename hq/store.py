@@ -62,6 +62,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS codex_connections (
                     endpoint TEXT PRIMARY KEY, updated REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS activity (
+                    session_id TEXT NOT NULL REFERENCES sessions(id), source TEXT NOT NULL,
+                    state TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL,
+                    priority INTEGER NOT NULL, PRIMARY KEY(session_id,source)
+                );
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
             db.execute("BEGIN IMMEDIATE")
@@ -75,7 +80,7 @@ class Store:
                 db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
             if "presentation" not in columns:
                 db.execute("ALTER TABLE items ADD COLUMN presentation TEXT NOT NULL DEFAULT '{}'")
-            db.execute("PRAGMA user_version=4")
+            db.execute("PRAGMA user_version=5")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -148,6 +153,45 @@ class Store:
     def codex_endpoints(self):
         with self.db() as db:
             return [r["endpoint"] or None for r in db.execute("SELECT endpoint FROM codex_connections")]
+
+    def observe_activity(self, session_id, state, source, lease=6, priority=100, observed=None):
+        if state not in {"active", "idle", "waiting", "offline", "unknown"}:
+            raise ValueError("Unknown activity state")
+        if not 0 < lease <= 3600:
+            raise ValueError("Activity lease must be between 0 and 3600 seconds")
+        source = required(source, "activity source", 1000)
+        now = time.time()
+        with self.db() as db:
+            db.execute("""INSERT INTO activity VALUES (?,?,?,?,?,?)
+                ON CONFLICT(session_id,source) DO UPDATE SET state=excluded.state,
+                observed=excluded.observed,expires=excluded.expires,priority=excluded.priority
+                WHERE excluded.observed>=activity.observed""",
+                       (session_id, source, state, now if observed is None else observed, now+lease, priority))
+
+    def expire_activity(self, source, missing=None, before=None):
+        with self.db() as db:
+            if missing is None:
+                now = time.time()
+                db.execute("UPDATE activity SET state='unknown',observed=?,expires=? WHERE source=?", (now, now+6, source))
+            else:
+                for row in db.execute("SELECT session_id,observed FROM activity WHERE source=?", (source,)).fetchall():
+                    if row["session_id"] not in missing and (before is None or row["observed"] <= before):
+                        # A successful live inventory confirms this runtime no longer owns it.
+                        self_id = row["session_id"]
+                        now = time.time()
+                        db.execute("UPDATE activity SET state='offline',observed=?,expires=? WHERE source=? AND session_id=?",
+                                   (now, now+6, source, self_id))
+
+    def attach_activity(self, sessions):
+        now, observations = time.time(), {}
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM activity WHERE expires>? ORDER BY priority DESC,observed DESC", (now,))
+            for row in rows:
+                observations.setdefault(row["session_id"], dict(row))
+        for session in sessions:
+            observation = observations.get(session["id"])
+            session["activity"] = ({k: observation[k] for k in ("state", "source", "observed", "expires")}
+                                   if observation else {"state": "unknown", "source": None})
 
     def claim_hook_messages(self, session_id, limit=4):
         """Queue context once; only an agent acknowledgement establishes receipt."""
@@ -341,6 +385,7 @@ class Store:
         for s in sessions:
             if s["lease_until"] < time.time():
                 s["connection"] = "offline"
+        self.attach_activity(sessions)
         items = [i for i in items if (not session_id or i["session_id"] == session_id)
                  and (not tag or tag in i["tags"]) and (not status or i["status"] == status)
                  and (not bucket or i["bucket"] == bucket)]

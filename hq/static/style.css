@@ -67,6 +67,13 @@ button:disabled { opacity: .5; cursor: wait; }
 .nav-conversation-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.5; margin-bottom: 6px; }
 .nav-conversation .nav-number { line-height: 20px; }
 .nav-conversation .harness-badge { background: transparent; border: 1px solid var(--hairline); color: hsl(var(--muted-foreground)); }
+.nav-conversation-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.agent-activity { display: inline-flex; align-items: center; gap: 5px; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 18px; }
+.activity-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.activity-active { color: hsl(var(--foreground)); }
+.activity-active .activity-dot { box-shadow: 0 0 0 3px hsl(var(--foreground) / .08); }
+.activity-idle .activity-dot { background: transparent; border: 1px solid currentColor; }
+.activity-unknown, .activity-offline { opacity: .65; }
 .sidebar-empty { padding: 8px 10px; color: hsl(var(--muted-foreground)); font-size: 12px; }
 main { margin-left: var(--rail-width); min-height: 100dvh; }
 .topbar { height: 56px; border-bottom: 1px solid var(--hairline); padding: 0 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: hsl(var(--background)); }

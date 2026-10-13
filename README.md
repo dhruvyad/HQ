@@ -10,10 +10,20 @@ controls. Inter and Outfit variable fonts are bundled locally with their OFL
 licences; no fonts load from external services. The [design guidelines](DESIGN.md)
 record the source tokens and HQ-specific layout adaptations. The deployed staging
 site could not be inspected; visual parity remains unverified. The sidebar lists
-conversations with unfinished work, showing their harness and item count. Empty
-chats discovered from other apps stay out of navigation. Done also exposes
+conversations with unfinished work and verified live agents, showing their harness,
+activity, and item count. Empty historical chats stay out of navigation. Done also exposes
 conversations with completed history; a selected conversation stays visible when
 its last item completes. Connect agents is in the top bar.
+
+Activity is independent of pending work and reply connectivity: Active, Idle,
+Waiting, Offline, or Unknown. Claude Code's live process inventory is checked
+about once a second; connected Codex runtimes supply status notifications with
+periodic reconciliation. Lifecycle hooks provide short-lived fallback evidence.
+Unconnected desktop chats remain Unknown. A shared authenticated event stream
+updates the dashboard after local database changes, normally within 200 ms of
+observation. It reconnects automatically, renews its token after a service restart,
+rejects older snapshots, and preserves unsent drafts. Stale or unavailable observers
+never imply Idle. These timings are targets, not a hard real-time guarantee.
 
 All conversations groups independent items under their conversation. Selecting
 one conversation scopes every status tab and its counts to that exact session.
