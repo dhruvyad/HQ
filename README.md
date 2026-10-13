@@ -212,7 +212,8 @@ Codex app-server and binds only its loaded, directly addressable conversations. 
 `--socket` for the managed daemon's default control socket. The socket must belong
 to the server that owns the target conversations; launching another server does
 not attach to the desktop app's active processes. The dashboard refreshes the
-owning server's inventory every ten seconds and keeps this watch across restarts.
+owning server's inventory every two seconds, listens for status notifications,
+and keeps this watch across restarts.
 Ephemeral threads and child threads that reject direct input are skipped.
 
 For new CLI sessions, `hq launch codex` starts/connects the shared Codex daemon
@@ -245,8 +246,11 @@ Tool and turn completion hooks deliver saved replies and human questions. A
 Stop hook can continue a finishing turn when a new message is pending, without
 repeating sent messages. Emitted context remains **Sent** until agent receipt.
 
-**Hooks cannot wake an already idle conversation.** That requires the owning
-Codex server or an enabled Claude Code channel. Permission approvals still need
+**HQ's installed lifecycle hooks do not yet wake an already idle conversation.**
+Current Claude Code also supports native inbox messages and `asyncRewake` hooks
+without per-session channels. A global HQ integration using those features is
+planned but has not been implemented or live-tested. Codex desktop still needs
+a connection to its owning server or a verified app relay. Permission approvals still need
 the client's normal approval. A stopped server or disconnected channel must be
 reconnected before it can deliver turns.
 Codex requires explicit review/trust in `/hooks`; HQ does not modify that trust.
