@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3] == "reply":
                     result = store.reply(parts[2], body.get("text"))
                 elif parts[3] == "resolve":
-                    result = store.resolve(parts[2])
+                    result = store.resolve(parts[2], body.get("note", ""))
                 elif parts[3] == "update":
                     result = store.update(parts[2], **body)
                 elif parts[3] == "retry":

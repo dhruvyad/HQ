@@ -94,7 +94,7 @@ class StoreTests(unittest.TestCase):
         task = self.store.add("a", "Agent task")
         self.store.reply(question["id"], "Annual")
         with self.store.db() as db:
-            for column in ("owner", "waiting_on", "defer_until"):
+            for column in ("owner", "waiting_on", "defer_until", "presentation"):
                 db.execute(f"ALTER TABLE items DROP COLUMN {column}")
             db.execute("PRAGMA user_version=1")
         with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -105,7 +105,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):
@@ -118,6 +118,48 @@ class StoreTests(unittest.TestCase):
         updated = cli("update", waiting["id"], "--session", "cli", "--owner", "human")
         self.assertEqual(updated["bucket"], "needs")
         self.assertEqual({i["id"] for i in cli("list", "--session", "cli", "--bucket", "needs")}, {waiting["id"], action["id"]})
+
+    def test_readable_report_persists_steps_links_choices_and_completion(self):
+        item = self.store.add("a", "Choose the launch plan", kind="question", owner="human",
+            unlocks="Finalizes launch scope", recommendation="Ship the **core flow** first",
+            steps=["Review `scope`", "Choose a plan"], link={"label": "Open scope", "url": "https://example.com/scope"},
+            paste=[{"label": "Message", "text": "Ship the core flow", "mono": False}], minutes=2, rank=20,
+            source="agent1 · launch", options=[{"id": "core", "label": "Core flow", "note": "Ready", "recommended": True}, "Include importer"])
+        self.store.update(item["id"], "a", steps=["Review the final scope"])
+        reopened = Store(self.store.path)
+        self.assertEqual(reopened.item(item["id"])["steps"], ["Review the final scope"])
+        self.assertTrue(reopened.item(item["id"])["options"][0]["recommended"])
+        self.assertEqual(reopened.item(item["id"])["paste"][0]["text"], "Ship the core flow")
+        reopened.reply(item["id"], "Core flow")
+        with self.assertRaises(ValueError):
+            reopened.resolve(item["id"], "Shipped")
+        reopened.acknowledge(item["id"], "a")
+        closed = reopened.resolve(item["id"], "Shipped the core flow")
+        self.assertEqual(closed["agent_note"], "Shipped the core flow")
+        self.assertEqual(closed["answer"], "Core flow")
+
+    def test_invalid_readable_fields_are_rejected_without_creating_items(self):
+        for fields in ({"link": {"label": "Open", "url": "javascript:alert(1)"}},
+                       {"link": {"label": "Open", "url": "https://user:secret@example.com"}},
+                       {"steps": "long transcript"}, {"paste": [{"text": "Unlabelled"}]},
+                       {"minutes": -1}, {"rank": True},
+                       {"options": [{"label": "Go", "recommended": "yes"}]}):
+            with self.assertRaises(ValueError):
+                self.store.add("a", "Action", **fields)
+        self.assertEqual(self.store.snapshot()["items"], [])
+
+    def test_structured_cli_report_and_shared_instructions(self):
+        fields = {"title": "Upload the certificate", "owner": "human", "steps": ["Open portal", "Upload file"],
+                  "unlocks": "Starts vendor review", "minutes": 3}
+        report_path = Path(self.temp.name) / "report.json"
+        report_path.write_text(json.dumps(fields))
+        env = {**os.environ, "HQ_HOME": self.temp.name}
+        subprocess.run([sys.executable, str(ROOT / "bin/hq"), "session", "add", "cli", "--name", "CLI"], env=env, capture_output=True, check=True)
+        result = subprocess.run([sys.executable, str(ROOT / "bin/hq"), "report", str(report_path), "--session", "cli"], env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["steps"], fields["steps"])
+        guide = subprocess.run([sys.executable, str(ROOT / "bin/hq"), "instructions"], env=env, capture_output=True, text=True, check=True)
+        self.assertIn("human action", guide.stdout)
+        self.assertIn("never put key values", guide.stdout)
 
     def test_answer_returns_to_exact_waiting_session(self):
         item = self.question()
@@ -333,7 +375,9 @@ class MCPTests(unittest.TestCase):
 
     def test_full_mcp_human_response_and_concurrent_ping(self):
         self.send("initialize", 1, {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
-        self.assertEqual(self.messages.get(timeout=3)["id"], 1)
+        initialized = self.messages.get(timeout=3)
+        self.assertEqual(initialized["id"], 1)
+        self.assertIn("NoClick Queue writing format", initialized["result"]["instructions"])
         self.send("notifications/initialized")
         self.send("tools/list", 2)
         self.assertTrue(any(t["name"] == "hq_request_input" for t in self.messages.get(timeout=3)["result"]["tools"]))
@@ -359,9 +403,11 @@ class MCPTests(unittest.TestCase):
                 if message.get("id") == request_id:
                     return message["result"]
             self.fail("No matching tool result")
-        result = call(21, "hq_report", {"session_id": "a", "title": "Approval", "owner": "external", "waiting_on": "Vendor"})
+        result = call(21, "hq_report", {"session_id": "a", "title": "Wait for approval", "owner": "external", "waiting_on": "Vendor", "unlocks": "Launch", "steps": ["Wait for the vendor"], "options": [{"label": "Continue", "recommended": True}]})
         self.assertFalse(result["isError"])
         item = json.loads(result["content"][0]["text"])
+        self.assertEqual(item["unlocks"], "Launch")
+        self.assertTrue(item["options"][0]["recommended"])
         other = self.store.add("a", "Other human action", owner="human")
         updated = call(22, "hq_update", {"session_id": "a", "item_id": item["id"], "owner": "human"})
         self.assertEqual(json.loads(updated["content"][0]["text"])["bucket"], "needs")

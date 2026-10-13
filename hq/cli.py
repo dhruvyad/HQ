@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .adapters import CodexClient
 from .discovery import discover
-from .mcp import run as run_mcp
+from .mcp import AGENT_INSTRUCTIONS, run as run_mcp
 from .server import serve
 from .store import Store, data_dir
 
@@ -123,6 +123,10 @@ def parser():
     server.add_argument("--port", type=int, default=4310)
     commands.add_parser("stop", help="Stop the local dashboard service")
     commands.add_parser("status", help="Show service and database status")
+    commands.add_parser("instructions", help="Read the human-readable reporting format")
+    report = commands.add_parser("report", help="Report a structured item from a JSON file")
+    report.add_argument("file", type=Path)
+    report.add_argument("--session", required=True)
     session = commands.add_parser("session", help="Register or list conversations")
     sub = session.add_subparsers(dest="action", required=True)
     sub.add_parser("list")
@@ -173,6 +177,8 @@ def parser():
         action = commands.add_parser(command, help="Acknowledge a response" if command == "ack" else "Complete an item")
         action.add_argument("item_id")
         action.add_argument("--session", required=True)
+        if command == "done":
+            action.add_argument("--note", default="")
     retry = commands.add_parser("retry", help="Retry a failed native delivery after checking the conversation")
     retry.add_argument("item_id")
     discovery = commands.add_parser("discover", help="Import recent local conversation metadata; no transcript scanning")
@@ -202,7 +208,18 @@ def main():
             return run_mcp(args.provider, args.channel, args.session_id)
         if args.command == "install":
             return output(install(args.target))
+        if args.command == "instructions":
+            print(AGENT_INSTRUCTIONS)
+            return
         store = Store()
+        if args.command == "report":
+            fields = json.loads(args.file.read_text())
+            if not isinstance(fields, dict) or "session_id" in fields:
+                raise ValueError("Report file must be an item object; pass the conversation with --session")
+            try:
+                return output(store.add(args.session, **fields))
+            except TypeError as error:
+                raise ValueError(f"Invalid report fields: {error}") from None
         if args.command == "stop":
             state = running()
             if state:
@@ -244,7 +261,7 @@ def main():
         if args.command in {"ack", "done"}:
             if store.item(args.item_id)["session_id"] != args.session:
                 raise ValueError("Item belongs to another session")
-            return output(store.acknowledge(args.item_id, args.session) if args.command == "ack" else store.resolve(args.item_id))
+            return output(store.acknowledge(args.item_id, args.session) if args.command == "ack" else store.resolve(args.item_id, args.note))
         if args.command == "retry":
             return output(store.retry(args.item_id))
         if args.command == "discover":

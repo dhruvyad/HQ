@@ -91,6 +91,36 @@ hq list --tag billing --status open
 Only the owning session can acknowledge a response. A task is done when the
 agent marks it done; answering a question does not pretend the work is complete.
 
+## Readable agent reports
+
+HQ follows the NoClick Queue item format. Titles begin with the action; context
+is brief. Structured fields put the useful parts in their own places: `unlocks`,
+`recommendation`, ordered `steps`, a direct HTTPS `link` with a button label,
+and labelled `paste` blocks with Copy buttons. Decision options accept
+`{id, label, note, recommended}` as well as the original simple strings.
+`minutes` is the human's own effort; `rank` sorts lower first; `source` identifies
+the agent/worktree and task. Simple bold, inline code, and HTTPS links render in
+context, recommendations, unlocks, and steps. Copy text remains plain text.
+
+The shared [agent guide](hq/AGENT_GUIDE.md) is sent with MCP initialization and
+available through `hq_reporting_guide` or `hq instructions`. It tells agents to
+report one independent action per item, check saved responses at the start and
+end of work, acknowledge after reading, and close the loop with a one-line
+completion note. Never include secrets; key names are enough.
+
+CLI agents can submit all structured fields from a JSON file:
+
+```sh
+hq instructions
+hq report item.json --session codex:my-thread
+hq done ITEM_ID --session codex:my-thread --note "Uploaded the certificate"
+```
+
+The file contains the same fields as `hq_report`, without `session_id` (the CLI
+supplies it). The guide contains an example. Existing plain-text reports and
+string choices continue to work. Reload MCP tools after upgrading so agents
+receive the guide and new field schemas.
+
 ## Connections
 
 ```sh
@@ -172,15 +202,16 @@ subscribed to a new connector. Local-executor Work chats can use `hq` directly.
 ## Agent tools
 
 `hq mcp` serves newline-delimited JSON-RPC over stdio. It exposes
-`hq_register_session`, `hq_report`, `hq_update`, `hq_list`, `hq_request_input`, `hq_wait`,
+`hq_reporting_guide`, `hq_register_session`, `hq_report`, `hq_update`, `hq_list`, `hq_request_input`, `hq_wait`,
 `hq_inbox`, `hq_acknowledge`, and `hq_resolve`. Waiting requests run concurrently
 with pings, lists, and cancellation. MCP waits default to 120 seconds. Use an
 appropriate host timeout or `hq_wait` after a timeout; do not create the same
 question again.
 
-Suggested agent instruction:
+Suggested agent instruction (the full guide is provided by the MCP server):
 
 > Register this conversation in HQ with its stable session id and readable name.
+> Follow hq_reporting_guide to write readable, action-first items.
 > Report each independent action or blocker as its own item, tagged by workstream.
 > Set owner to human, agent, or external; external items must name waiting_on.
 > Use defer_until for later work and hq_update when an existing item's next step

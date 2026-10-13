@@ -203,3 +203,24 @@ textarea { resize: vertical; line-height: 1.7; }
   .item { padding: 16px 13px; }
   .item-search { padding-bottom: 10px; }
 }
+
+.detail-unlocks, .agent-note { margin-top: 20px; }
+.detail-unlocks > span, .recommendation > span, .agent-note > span { font-size: 10px; color: #aaa; }
+.detail-unlocks p, .recommendation p, .agent-note p { margin: 5px 0 0; color: #d0d0d0; }
+.recommendation { border: 1px solid #363636; background: #191919; padding: 15px; border-radius: 6px; margin: 20px 0; }
+.detail-steps { padding-left: 22px; margin: 22px 0; font-size: 12px; line-height: 1.8; color: #ccc; }
+.detail-steps li { padding-left: 4px; margin-bottom: 10px; overflow-wrap: anywhere; }
+.detail-context code, .detail-steps code, .recommendation code, .detail-unlocks code { background: #222; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+.action-link { text-decoration: none; margin: 8px 0; }
+.copy-block { margin-top: 20px; border: 1px solid #333; border-radius: 6px; overflow: hidden; }
+.copy-block > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 13px; background: #1b1b1b; font-size: 11px; }
+.copy-block .button { padding: 4px 9px; font-size: 10px; }
+.copy-block pre { margin: 0; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font); font-size: 12px; color: #ccc; }
+.copy-block pre.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; }
+.choice { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.choice > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.choice small { font-size: 9px; color: #ddd; }
+.choice.recommended { border-color: #666; }
+.choice-note { font-size: 11px; color: #999; }
+.item-source { margin-top: 25px; color: #777; font-size: 10px; }
+.effort { color: #929292; font-size: 10px; }

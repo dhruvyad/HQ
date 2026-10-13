@@ -7,6 +7,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "other"}
 ROUTES = {"inbox", "codex"}
@@ -62,7 +63,9 @@ class Store:
                 db.execute("ALTER TABLE items ADD COLUMN waiting_on TEXT NOT NULL DEFAULT ''")
             if "defer_until" not in columns:
                 db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
-            db.execute("PRAGMA user_version=2")
+            if "presentation" not in columns:
+                db.execute("ALTER TABLE items ADD COLUMN presentation TEXT NOT NULL DEFAULT '{}'")
+            db.execute("PRAGMA user_version=3")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -119,7 +122,8 @@ class Store:
                        (time.time(), connection, time.time() + lease, id))
 
     def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
-            owner=None, waiting_on="", defer_until=""):
+            owner=None, waiting_on="", defer_until="", *, unlocks="", recommendation="",
+            steps=None, link=None, paste=None, minutes=None, rank=9999, source=""):
         self.session(session_id)
         title = required(title, "title", 500)
         if kind not in {"todo", "blocker", "question"}:
@@ -132,13 +136,73 @@ class Store:
         if len(tags) > 20 or len(options) > 10:
             raise ValueError("Use at most 20 tags and 10 options")
         tags = sorted(set(required(t, "tag", 60) for t in tags))
-        options = [required(o, "option", 500) for o in options]
+        options = [self.option(o) for o in options]
+        presentation = self.presentation(unlocks=unlocks, recommendation=recommendation, steps=[] if steps is None else steps,
+                                         link=link, paste=[] if paste is None else paste, minutes=minutes, rank=rank, source=source)
         owner, waiting_on, defer_until = self.attention(("agent" if kind == "todo" else "human") if owner is None else owner, waiting_on, defer_until)
         id, now = str(uuid.uuid4()), time.time()
         with self.db() as db:
-            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until))
+            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until,presentation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until, json.dumps(presentation)))
         return self.item(id)
+
+    @staticmethod
+    def option(value):
+        if isinstance(value, str):
+            return required(value, "option", 500)
+        if not isinstance(value, dict) or set(value) - {"id", "label", "note", "recommended"}:
+            raise ValueError("options must be text or objects with label, note, recommended, and optional id")
+        result = {"label": required(value.get("label"), "option label", 500)}
+        if "id" in value:
+            result["id"] = required(value["id"], "option id", 100)
+        note = value.get("note", "")
+        if not isinstance(note, str) or len(note) > 2000:
+            raise ValueError("option note must be text, at most 2000 characters")
+        if not isinstance(value.get("recommended", False), bool):
+            raise ValueError("option recommended must be true or false")
+        return {**result, "note": note, "recommended": value.get("recommended", False)}
+
+    @staticmethod
+    def presentation(**fields):
+        result = {"unlocks": "", "recommendation": "", "steps": [], "link": None,
+                  "paste": [], "minutes": None, "rank": 9999, "source": "", "agent_note": "", **fields}
+        for key in ("unlocks", "recommendation", "source", "agent_note"):
+            if not isinstance(result[key], str) or len(result[key]) > 4000:
+                raise ValueError(f"{key} must be text, at most 4000 characters")
+        if not isinstance(result["steps"], list) or len(result["steps"]) > 20:
+            raise ValueError("steps must be a list of at most 20 short instructions")
+        result["steps"] = [required(step, "step", 2000) for step in result["steps"]]
+        link = result["link"]
+        if link is not None:
+            if not isinstance(link, dict) or set(link) != {"label", "url"}:
+                raise ValueError("link must contain label and url")
+            url = required(link["url"], "link url", 4000)
+            try:
+                parsed = urlsplit(url)
+                valid = parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password
+            except ValueError:
+                valid = False
+            if not valid or any(c.isspace() or ord(c) < 32 for c in url):
+                raise ValueError("link must be an HTTPS URL without credentials")
+            result["link"] = {"label": required(link["label"], "link label", 200), "url": url}
+        if not isinstance(result["paste"], list) or len(result["paste"]) > 10:
+            raise ValueError("paste must be a list of at most 10 copy blocks")
+        blocks = []
+        for block in result["paste"]:
+            if not isinstance(block, dict) or set(block) - {"label", "text", "mono"}:
+                raise ValueError("copy blocks must contain label and text, with optional mono")
+            if not isinstance(block.get("mono", False), bool):
+                raise ValueError("copy block mono must be true or false")
+            blocks.append({"label": required(block.get("label"), "copy label", 200),
+                           "text": required(block.get("text"), "copy text", 20000), "mono": block.get("mono", False)})
+        result["paste"] = blocks
+        for key in ("minutes", "rank"):
+            value = result[key]
+            if value is None and key == "minutes":
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100000:
+                raise ValueError(f"{key} must be a nonnegative integer at most 100000")
+        return result
 
     @staticmethod
     def attention(owner, waiting_on, defer_until):
@@ -160,7 +224,7 @@ class Store:
         return owner, waiting_on if owner == "external" else "", defer_until
 
     def update(self, item_id, session_id=None, **patch):
-        allowed = {"owner", "waiting_on", "defer_until", "title", "detail"}
+        allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste", "minutes", "rank", "source"}
         if not patch or set(patch) - allowed:
             raise ValueError("Update title, detail, owner, waiting_on, or defer_until")
         with self.db() as db:
@@ -178,8 +242,9 @@ class Store:
             detail = merged["detail"]
             if not isinstance(detail, str) or len(detail) > 20000:
                 raise ValueError("detail must be text, at most 20000 characters")
-            db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,updated=? WHERE id=?",
-                       (title, detail, owner, waiting_on, defer_until, time.time(), item_id))
+            presentation = self.presentation(**{**json.loads(row["presentation"]), **{k: v for k, v in patch.items() if k not in {"owner", "waiting_on", "defer_until", "title", "detail"}}})
+            db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,presentation=?,updated=? WHERE id=?",
+                       (title, detail, owner, waiting_on, defer_until, json.dumps(presentation), time.time(), item_id))
         return self.item(item_id)
 
     @staticmethod
@@ -197,6 +262,7 @@ class Store:
         data = dict(row)
         for key in ("tags", "options"):
             data[key] = json.loads(data[key])
+        data.update(Store.presentation(**json.loads(data.pop("presentation"))))
         data["bucket"] = Store.bucket(data)
         return data
 
@@ -235,7 +301,9 @@ class Store:
             db.execute("UPDATE items SET status='answered',updated=? WHERE id=?", (now, id))
         return self.item(id)
 
-    def resolve(self, id):
+    def resolve(self, id, note=""):
+        if not isinstance(note, str) or len(note) > 4000:
+            raise ValueError("completion note must be text, at most 4000 characters")
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM items WHERE id=?", (id,)).fetchone():
@@ -243,7 +311,10 @@ class Store:
             pending = db.execute("SELECT 1 FROM replies WHERE item_id=? AND state IN ('pending','sending','sent','failed')", (id,)).fetchone()
             if pending:
                 raise ValueError("The response must be received before this item can be completed")
-            db.execute("UPDATE items SET status='done',updated=? WHERE id=?", (time.time(), id))
+            presentation = json.loads(db.execute("SELECT presentation FROM items WHERE id=?", (id,)).fetchone()[0])
+            if note:
+                presentation["agent_note"] = required(note, "completion note", 4000)
+            db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
         return self.item(id)
 
     def inbox(self, session_id):

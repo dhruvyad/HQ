@@ -19,25 +19,38 @@ def schema(properties, required=()):
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}
 ATTENTION = {"owner": {"enum": ["human", "agent", "external"]}, "waiting_on": TEXT, "defer_until": TEXT}
+READABLE = {
+    "unlocks": {"type": "string", "description": "One short sentence: what this action makes possible."},
+    "recommendation": {"type": "string", "description": "Recommend one choice and explain why briefly."},
+    "steps": {"type": "array", "items": TEXT, "description": "Short ordered steps for the human; one action per step."},
+    "link": schema({"label": TEXT, "url": {"type": "string", "description": "Direct HTTPS destination, without credentials."}}, ["label", "url"]),
+    "paste": {"type": "array", "items": schema({"label": TEXT, "text": TEXT, "mono": {"type": "boolean"}}, ["label", "text"]), "description": "Ready-to-copy text; key names only, never secret values."},
+    "minutes": {"type": "integer", "minimum": 0, "description": "The human's own effort in minutes, excluding vendor/agent wait."},
+    "rank": {"type": "integer", "minimum": 0, "description": "Lower means sooner; urgent decisions 10–150, actions 200–370, waits 400+."},
+    "source": {"type": "string", "description": "Agent/worktree · task."},
+}
+CHOICES = {"type": "array", "items": {"anyOf": [TEXT, schema({"id": TEXT, "label": TEXT, "note": TEXT, "recommended": {"type": "boolean"}}, ["label"]) ]}}
+AGENT_INSTRUCTIONS = Path(__file__).with_name("AGENT_GUIDE.md").read_text()
 TOOLS = [
+    ("hq_reporting_guide", "Read the human-readable item format and reporting examples before adding work to HQ.", schema({})),
     ("hq_register_session", "Identify this exact conversation; reuse its stable session id on every call.",
      schema({"session_id": TEXT, "name": TEXT, "provider": TEXT, "external_id": TEXT, "cwd": TEXT}, ["session_id", "name"])),
     ("hq_report", "Report one independent item; a conversation can have many. owner=human needs action, agent is pending work, external waits on waiting_on. defer_until is an optional YYYY-MM-DD date. Defaults: tasks belong to agent, questions/blockers to human.",
-     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": STRINGS, **ATTENTION}, ["session_id", "title"])),
+     schema({"session_id": TEXT, "title": {"type": "string", "description": "Start with the human action: Choose…, Upload…, Add…, Review…. Use plain language."}, "detail": {"type": "string", "description": "Brief context for the human, not a transcript. Use steps/link/paste for instructions."}, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": CHOICES, **ATTENTION, **READABLE}, ["session_id", "title"])),
     ("hq_update", "Update an existing open item instead of duplicating it. Change ownership, who it waits on, context, or defer_until (empty clears deferral). Other items in this conversation remain independent.",
-     schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION}, ["session_id", "item_id"])),
+     schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION, **READABLE}, ["session_id", "item_id"])),
     ("hq_list", "List pending work and answers across conversations, optionally filtered by session, tag, or status.",
      schema({"session_id": TEXT, "tag": TEXT, "status": {"enum": ["open", "answered", "done"]}, "bucket": {"enum": ["needs", "pending", "waiting", "later", "done"]}})),
     ("hq_request_input", "Ask the human in HQ and wait for their answer in this same tool call. On timeout, the saved question remains; use hq_wait or hq_inbox later. Use up to 120 seconds to fit your client's timeout.",
-     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "tags": STRINGS, "options": STRINGS, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "title"])),
+     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "tags": STRINGS, "options": CHOICES, **READABLE, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "title"])),
     ("hq_wait", "Wait for the response to an already-created question without creating duplicates.",
      schema({"session_id": TEXT, "item_id": TEXT, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "item_id"])),
     ("hq_inbox", "Read saved human responses for this session, including replies received while disconnected. Acknowledge each after reading.",
      schema({"session_id": TEXT}, ["session_id"])),
     ("hq_acknowledge", "Confirm that this conversation has received its human response.",
      schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
-    ("hq_resolve", "Mark a task completed after acting on it. A response must be received before closing an answered question.",
-     schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
+    ("hq_resolve", "Close the loop after acting on an item; note is a one-line account of what you did. A response must be received before closing an answered question.",
+     schema({"session_id": TEXT, "item_id": TEXT, "note": TEXT}, ["session_id", "item_id"])),
 ]
 
 
@@ -56,6 +69,8 @@ def run(provider="other", channel=False, session_id=None):
     def execute(name, arguments, cancel):
         args = dict(arguments)
         id = args.get("session_id")
+        if name == "hq_reporting_guide":
+            return {"instructions": AGENT_INSTRUCTIONS}
         if name == "hq_register_session":
             args["id"] = args.pop("session_id")
             args.setdefault("provider", provider)
@@ -85,7 +100,7 @@ def run(provider="other", channel=False, session_id=None):
         if name == "hq_resolve":
             if store.item(args["item_id"])["session_id"] != id:
                 raise ValueError("Item belongs to a different session")
-            return store.resolve(args["item_id"])
+            return store.resolve(args["item_id"], args.get("note", ""))
         raise ValueError("Unknown HQ tool")
 
     def call(message):
@@ -139,8 +154,7 @@ def run(provider="other", channel=False, session_id=None):
                             capabilities["experimental"] = {"claude/channel": {}}
                         send({"id": id, "result": {"protocolVersion": "2024-11-05", "capabilities": capabilities,
                             "serverInfo": {"name": "hq", "version": "0.1.0"},
-                            "instructions": f"Report pending work in HQ. Register a stable conversation id first. "
-                                f"Check hq_inbox when resuming. Human responses steer this conversation. "
+                            "instructions": AGENT_INSTRUCTIONS + "\n"
                                 + (f"This channel is bound to session {bound_id}; use this id for every report. "
                                    "Acknowledge channel responses using hq_acknowledge with item_id and session_id from the event before acting." if channel else "")}})
                     elif method == "notifications/initialized":
