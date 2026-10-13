@@ -8,7 +8,8 @@ The dashboard uses black and neutral charcoal surfaces. Conversation badges show
 their registered harness (Codex, Claude Code, Claude Desktop, ChatGPT, or Other),
 and harness filters combine with workstream tags. The sidebar starts with
 conversations that have open work or a live connection; search or browse to find
-older conversations. Select an item to read its context and reply in a side panel.
+older conversations. Status tabs include counts; dates, slogans, and summary cards
+are omitted. Select an item to read its context and reply in a side panel.
 
 **Python 3.11+. Zero runtime dependencies. SQLite. No cloud storage.**
 
