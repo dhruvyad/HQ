@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const token = $('meta[name="hq-token"]').content;
-let state = {sessions: [], items: []}, filter = {view: 'all', tag: null, search: ''};
+let state = {sessions: [], items: []}, filter = {view: 'all', sessionId: null, search: ''};
 let selectedId = null, toastTimer, loading = null, snapshotSignature = '';
 const providers = {codex: ['Cx', 'Codex'], 'claude-code': ['Cl', 'Claude Code'], 'claude-desktop': ['Cl', 'Claude Desktop'], chatgpt: ['G', 'ChatGPT'], other: ['A', 'Other']};
 const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -24,7 +24,28 @@ const iconPaths = {arrow: '<path d="M5 12h14M15 8l4 4-4 4"/>', pause: '<path d="
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || iconPaths.arrow}</svg>`;
 function toast(message) {$('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4000);}
 async function api(path, body) {const response = await fetch(`/api/${path}`, {method: body === undefined ? 'GET' : 'POST', headers: {'X-HQ-Token': token, 'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)}); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'HQ could not save this change'); return data;}
-function scoped() {return state.items.filter(i => !filter.tag || i.tags.includes(filter.tag));}
+function scoped() {return state.items.filter(i => !filter.sessionId || i.session_id === filter.sessionId);}
+function conversationEntries() {
+  const groups = new Map();
+  for (const item of state.items) {
+    if (!groups.has(item.session_id)) {
+      const session = state.sessions.find(s => s.id === item.session_id);
+      groups.set(item.session_id, {id: item.session_id, name: session?.name || item.session_name, provider: session?.provider || item.provider, open: 0, done: 0, updated: 0});
+    }
+    const group = groups.get(item.session_id);
+    group[item.status === 'done' ? 'done' : 'open']++;
+    group.updated = Math.max(group.updated, item.updated || item.created || 0);
+  }
+  // Discovery can register many empty chats. Only reported work belongs here;
+  // keep the selected chat visible when its last item is completed.
+  return [...groups.values()].filter(s => (filter.view === 'done' ? s.done : s.open) || s.id === filter.sessionId)
+    .sort((a,b) => b.updated - a.updated || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+function conversationNavHTML(session) {
+  const active = filter.sessionId === session.id;
+  const count = filter.view === 'done' ? session.done : session.open;
+  return `<button class="nav-item nav-conversation ${active ? 'active' : ''}" data-session="${escapeHTML(session.id)}" aria-pressed="${active}" title="${escapeHTML(session.name)}"><span class="nav-conversation-body"><span class="nav-conversation-name">${escapeHTML(session.name)}</span>${harnessHTML(session.provider)}</span><span class="nav-number">${count}</span></button>`;
+}
 function inView(item, view) {
   if (view === 'all') return item.status !== 'done';
   if (view === 'needs') return item.status === 'open' && item.owner === 'human' && !item.asking;
@@ -42,7 +63,7 @@ function itemLabel(item) {
 }
 function itemHTML(i) {
   const marker = i.status !== 'open' ? 'check' : i.bucket === 'waiting' || i.bucket === 'later' ? 'pause' : i.kind === 'question' ? 'question' : 'arrow';
-  return `<button class="item" data-item="${escapeHTML(i.id)}"><span class="item-icon ${i.bucket === 'needs' && i.kind === 'blocker' ? 'blocker' : ''}">${icon(marker)}</span><span class="item-body"><span class="item-title">${escapeHTML(i.title)}</span><span class="item-context"><span class="item-status ${i.bucket === 'needs' ? 'needs' : ''}">${escapeHTML(itemLabel(i))}</span>${i.minutes ? `<span class="effort">${i.minutes} min</span>` : ''}${tagHTML(i.tags)}</span></span><span class="item-arrow">${icon('chevron')}</span></button>`;
+  return `<button class="item" data-item="${escapeHTML(i.id)}"><span class="item-icon ${i.bucket === 'needs' && i.kind === 'blocker' ? 'blocker' : ''}">${icon(marker)}</span><span class="item-body"><span class="item-title">${escapeHTML(i.title)}</span><span class="item-context"><span class="item-status ${i.bucket === 'needs' ? 'needs' : ''}">${escapeHTML(itemLabel(i))}</span>${i.minutes ? `<span class="effort">${i.minutes} min</span>` : ''}</span></span><span class="item-arrow">${icon('chevron')}</span></button>`;
 }
 function itemSummary(items) {return [['needs','for you'],['pending','with agent'],['waiting','waiting'],['later','later']].map(([bucket,label]) => {const n = items.filter(i => i.bucket === bucket).length; return n ? `${n} ${label}` : '';}).filter(Boolean).join(' · ');}
 function groupHTML(items) {
@@ -56,19 +77,22 @@ function groupHTML(items) {
 function deliveryText(item) {return ({pending: 'Queued', sending: 'Sending…', sent: 'Sent · unconfirmed', received: 'Received', failed: 'Delivery failed'})[item.delivery] || 'Saved';}
 function setView(view) {filter.view = view; render();}
 function render() {
+  const selected = state.sessions.find(s => s.id === filter.sessionId) || state.items.find(i => i.session_id === filter.sessionId);
+  if (filter.sessionId && !selected) filter.sessionId = null;
   const items = scoped();
   ['needs','pending','waiting','later','done'].forEach(view => $(`#${view}-count`).textContent = items.filter(i => inView(i, view)).length);
   $('#all-items-count').textContent = items.filter(i => inView(i, 'all')).length;
   document.querySelectorAll('[data-view]').forEach(el => {const active = el.dataset.view === filter.view; el.classList.toggle('active', active); if (el.hasAttribute('role')) el.setAttribute('aria-selected', active);});
-  $('#scope').textContent = filter.tag || 'All workstreams';
-  $('#all-count').textContent = state.items.filter(i => i.status !== 'done').length;
-  $('#all-work').classList.toggle('active', !filter.tag);
-  const tags = [...new Set(state.items.flatMap(i => i.tags))].sort();
-  $('#tags-nav').innerHTML = tags.length ? tags.map(t => `<button class="nav-item ${filter.tag === t ? 'active' : ''}" data-tag="${escapeHTML(t)}"><span class="tag-dot"></span>${escapeHTML(t)}<span class="nav-number">${state.items.filter(i => i.tags.includes(t) && i.status !== 'done').length}</span></button>`).join('') : '<div class="sidebar-empty">No tags</div>';
+  $('#scope').textContent = selected?.name || selected?.session_name || 'All conversations';
+  $('#all-count').textContent = state.items.filter(i => inView(i, filter.view === 'done' ? 'done' : 'all')).length;
+  $('#all-conversations').classList.toggle('active', !filter.sessionId);
+  $('#all-conversations').setAttribute('aria-pressed', String(!filter.sessionId));
+  const conversations = conversationEntries();
+  $('#conversations-nav').innerHTML = conversations.length ? conversations.map(conversationNavHTML).join('') : `<div class="sidebar-empty">No ${filter.view === 'done' ? 'completed' : 'pending'} conversations</div>`;
   const priority = {needs: 0, pending: 1, waiting: 2, later: 3, done: 4};
-  const visible = items.filter(i => inView(i, filter.view) && `${i.title} ${i.detail} ${i.waiting_on} ${i.tags.join(' ')} ${i.session_name}`.toLowerCase().includes(filter.search)).sort((a,b) => priority[a.bucket] - priority[b.bucket] || a.rank-b.rank || b.created-a.created);
+  const visible = items.filter(i => inView(i, filter.view) && `${i.title} ${i.detail} ${i.waiting_on} ${i.tags.join(' ')} ${i.session_name} ${(providers[i.provider] || providers.other)[1]}`.toLowerCase().includes(filter.search)).sort((a,b) => priority[a.bucket] - priority[b.bucket] || a.rank-b.rank || b.created-a.created);
   $('#items').innerHTML = visible.length ? groupHTML(visible) : `<div class="empty"><div class="empty-symbol">${icon(state.items.length ? 'check' : 'arrow')}</div><h3>${filter.search ? 'No matches' : state.items.length ? ({all:'No open items',needs:'No human tasks pending',pending:'No agent work pending',waiting:'Nothing waiting',later:'Nothing for later',done:'No completed items'})[filter.view] : 'Connect your first agent'}</h3>${!state.items.length ? '<button class="button" id="empty-connect">Connect an agent</button>' : ''}</div>`;
-  $('#tags-nav').querySelectorAll('[data-tag]').forEach(el => el.onclick = () => {filter.tag = filter.tag === el.dataset.tag ? null : el.dataset.tag; render(); closeSidebar();});
+  $('#conversations-nav').querySelectorAll('[data-session]').forEach(el => el.onclick = () => {filter.sessionId = el.dataset.session; render(); closeSidebar();});
   $('#items').querySelectorAll('[data-item]').forEach(el => el.onclick = () => openDetail(el.dataset.item));
   if ($('#empty-connect')) $('#empty-connect').onclick = () => $('#connect-dialog').showModal();
 }
@@ -151,8 +175,10 @@ async function refreshState() {
       snapshotSignature = signature;
       const focused = document.activeElement;
       const focusItem = focused?.dataset.item;
+      const focusSession = focused?.dataset.session;
       render();
       if (focusItem) [...$('#items').querySelectorAll('[data-item]')].find(el => el.dataset.item === focusItem)?.focus({preventScroll: true});
+      if (focusSession) [...$('#conversations-nav').querySelectorAll('[data-session]')].find(el => el.dataset.session === focusSession)?.focus({preventScroll: true});
       if (draft && after) {openDetail(selectedId); restoreDetailDraft(draft);}
     }
     $('#service-status').hidden = true;
@@ -179,13 +205,21 @@ function closeOnBackdrop(dialog) {
 function closeSidebar() { $('.sidebar').classList.remove('visible'); $('#mobile-menu').setAttribute('aria-expanded', 'false'); }
 document.querySelectorAll('dialog').forEach(closeOnBackdrop);
 document.querySelectorAll('[data-view]').forEach(el => el.onclick = () => setView(el.dataset.view));
-$('#all-work').onclick = () => {filter.tag = null; render(); closeSidebar();};
+$('#all-conversations').onclick = () => {filter.sessionId = null; render(); closeSidebar();};
 $('#mobile-menu').onclick = () => {const visible = $('.sidebar').classList.toggle('visible'); $('#mobile-menu').setAttribute('aria-expanded', String(visible));};
 document.addEventListener('click', event => {if ($('.sidebar').classList.contains('visible') && !event.target.closest('.sidebar') && !event.target.closest('#mobile-menu')) closeSidebar();});
 document.addEventListener('keydown', event => {if (event.key === 'Escape') closeSidebar();});
 $('#search').oninput = event => {filter.search = event.target.value.toLowerCase(); render();};
 $('#connections').onclick = () => $('#connect-dialog').showModal();
-$('#add-button').onclick = () => {$('#session-select').innerHTML = state.sessions.map(s => `<option value="${escapeHTML(s.id)}">${escapeHTML(s.name)}</option>`).join(''); if (!state.sessions.length) return $('#connect-dialog').showModal(); $('#add-dialog').showModal();};
+$('#add-button').onclick = () => {
+  if (!state.sessions.length) return $('#connect-dialog').showModal();
+  const current = filter.sessionId || conversationEntries()[0]?.id;
+  const reported = new Set(state.items.map(i => i.session_id));
+  const sessions = [...state.sessions].sort((a,b) => Number(reported.has(b.id)) - Number(reported.has(a.id)) || a.name.localeCompare(b.name));
+  $('#session-select').innerHTML = sessions.map(s => `<option value="${escapeHTML(s.id)}">${escapeHTML(s.name)} · ${(providers[s.provider] || providers.other)[1]}</option>`).join('');
+  if (current) $('#session-select').value = current;
+  $('#add-dialog').showModal();
+};
 $('#add-owner').onchange = () => {const external = $('#add-owner').value === 'external'; $('#add-waiting-label').hidden = !external; $('#add-waiting-label input').required = external;};
-$('#add-form').onsubmit = async event => {event.preventDefault(); const form = event.target, fields = Object.fromEntries(new FormData(form)), button = form.querySelector('[type="submit"]'); fields.tags = fields.tags.split(',').map(t => t.trim()).filter(Boolean); button.disabled = true; try {await api('items', fields); filter.view = 'all'; $('#add-dialog').close(); form.reset(); $('#add-owner').onchange(); await refresh(true); toast('Item added');} catch(error) {form.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
+$('#add-form').onsubmit = async event => {event.preventDefault(); const form = event.target, fields = Object.fromEntries(new FormData(form)), button = form.querySelector('[type="submit"]'); fields.tags = fields.tags.split(',').map(t => t.trim()).filter(Boolean); button.disabled = true; try {await api('items', fields); filter.view = 'all'; filter.sessionId = fields.session_id; filter.search = ''; $('#search').value = ''; $('#add-dialog').close(); form.reset(); $('#add-owner').onchange(); await refresh(true); toast('Item added');} catch(error) {form.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
 refresh(); setInterval(refresh, 2000);

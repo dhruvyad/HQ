@@ -1,8 +1,9 @@
 # Writing readable items for HQ
 
 Register the exact conversation with a stable session id and harness. Keep all
-independent human decisions, actions, outside waits, and reminders in HQ, tagged
-by workstream. One item is one action or decision; a conversation can have many.
+independent human decisions, actions, outside waits, and reminders in HQ.
+Conversations are the primary category. One item is one action or decision;
+a conversation can have many.
 Use hq_update for changes to an existing item instead of creating duplicates.
 
 Use the NoClick Queue writing format:
@@ -14,7 +15,9 @@ Use the NoClick Queue writing format:
   external waits on the named person/team/service in waiting_on. External waits
   are separate from things Dhruv can act on. defer_until=YYYY-MM-DD hides later
   work until that local date. Empty clears it.
-- **Workstream:** tags group the work, independent of conversation and harness.
+- **Tags (optional):** reuse a small set of existing workstream tags when useful.
+  Avoid making a new tag for each task or item. Conversation and harness already
+  identify the agent's work.
 - **Context:** detail is a short explanation of why this matters. No transcripts,
   long progress reports, or implementation dumps.
 - **Unlocks:** one sentence saying what this action makes possible.

@@ -34,7 +34,7 @@ The source HSL values are retained so updates can be compared directly.
 | Role | Value | Use |
 | --- | --- | --- |
 | Background | `#000000` | Page and header |
-| Sunken | `#09090b` | Workstream rail and recessed fields |
+| Sunken | `#09090b` | Conversation rail and recessed fields |
 | Card | `#18181b` | Raised controls and reply surfaces |
 | Popover | `#1a1a1a` | Dialogs and detail panel |
 | Foreground | `#fafafa` | Titles and primary actions |
@@ -56,14 +56,18 @@ No font requests leave the laptop. Use system fallbacks and `font-display: swap`
 
 HQ uses readable 14px body/row titles, 12px supporting text, and 11px compact
 badges. Use a 4px spacing rhythm, 6px control corners, 12px group corners, a
-56px header, a 216px workstream rail, and 24–28px main padding. These dimensions
+56px header, a 248px conversation rail, and 24–28px main padding. These dimensions
 are adaptations for HQ, not copied from staging. Main content tops out at 1200px.
 The detail drawer stays a single column, up to 560px wide.
 
 ## Components and content
 
-- Sidebar contains only workstreams. Conversation/harness information belongs
-  in the queue's group headers and item details.
+- Conversations are the primary navigation. Show conversations with unfinished
+  items, with a quiet harness badge and item count. Hide discovered chats with no
+  reported work. Completed conversations appear in Done; keep the selected
+  conversation visible when its last item completes.
+- Tags are optional context in item details and remain searchable. Keep tag
+  lists and tag pills out of the sidebar and queue rows.
 - Use compact rounded state tabs with counts; keep Human pending and Agent
   pending visible. Waiting, Later, and Done remain accessible on small screens.
 - Conversations are quiet rounded groups with hairlines between items. Titles
