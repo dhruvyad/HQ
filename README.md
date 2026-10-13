@@ -1,16 +1,16 @@
 # HQ
 
 A small, private inbox for the work your AI agents are doing. Run `hq` to open
-a dark dashboard on your laptop. Filter by workstream tags or conversation,
+a dark dashboard on your laptop. Filter by workstream tags,
 answer blockers, and let agents pick up your response.
 
 The dashboard uses black and neutral charcoal surfaces. Conversation badges show
 their registered harness (Codex, Claude Code, Claude Desktop, ChatGPT, or Other),
-and harness filters combine with workstream tags. The sidebar starts with
-conversations that have open work or a live connection; search or browse to find
-older conversations. The default All view groups independent items under their conversation,
-with a harness badge and counts. Needs you, Pending, Waiting, Later, and Done
-filter items across every conversation. Rows show just the title, next step, and
+while sidebar navigation shows only workstream tags. Connect agents is in the
+top bar. The default All view groups independent items under their conversation,
+with a harness badge and counts. Human pending shows unfinished human actions and decisions; Agent pending shows
+agent work, outside blockers, and follow-through after human replies. Waiting,
+Later, and Done provide focused views across every conversation. Rows show just the title, next step, and
 tags; context and replies stay in the side panel. Decorative dates and copy are
 omitted; dates appear only for deferred items.
 
@@ -104,9 +104,10 @@ context, recommendations, unlocks, and steps. Copy text remains plain text.
 
 The shared [agent guide](hq/AGENT_GUIDE.md) is sent with MCP initialization and
 available through `hq_reporting_guide` or `hq instructions`. It tells agents to
-report one independent action per item, check saved responses at the start and
-end of work, acknowledge after reading, and close the loop with a one-line
-completion note. Never include secrets; key names are enough.
+proactively list every unfinished requirement, missing connection, blocker, and
+unverified behavior. Agents check their open items and saved responses at the
+start and end of work, acknowledge after reading, and close the loop with a
+one-line completion note. Never include secrets; key names are enough.
 
 CLI agents can submit all structured fields from a JSON file:
 

@@ -31,6 +31,20 @@ Use the NoClick Queue writing format:
 - **Secrets:** key names are okay; never put key values, credentials, or tokens
   in titles, context, links, options, or copy blocks.
 
+Keep the unfinished work visible. Before starting, when resuming, and before
+finishing, use hq_list for this session's open and answered items. Report every
+remaining requirement, connection/setup gap, incomplete integration, blocker,
+and unverified behavior as an independent item. Do this proactively; the human
+should not need to ask what still does not work. Use owner=agent for work you
+still owe, owner=human only for a concrete action or decision the human must
+make, and owner=external with waiting_on for a dependency outside both of you.
+Update these items as work progresses and resolve only when the work is done.
+Never describe an integration as connected based only on metadata discovery,
+configuration, or protocol tests; keep the live connection and validation tasks
+open until those steps succeed. In the UI, Human pending shows unresolved human
+work, and Agent pending shows agent work, outside blockers, and follow-through
+after human replies. Waiting and Later also provide focused views.
+
 Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
 loop with hq_resolve and a one-line note describing what you did. A received

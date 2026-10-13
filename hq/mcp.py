@@ -35,7 +35,7 @@ TOOLS = [
     ("hq_reporting_guide", "Read the human-readable item format and reporting examples before adding work to HQ.", schema({})),
     ("hq_register_session", "Identify this exact conversation; reuse its stable session id on every call.",
      schema({"session_id": TEXT, "name": TEXT, "provider": TEXT, "external_id": TEXT, "cwd": TEXT}, ["session_id", "name"])),
-    ("hq_report", "Report one independent item; a conversation can have many. owner=human needs action, agent is pending work, external waits on waiting_on. defer_until is an optional YYYY-MM-DD date. Defaults: tasks belong to agent, questions/blockers to human.",
+    ("hq_report", "Proactively report every unfinished requirement, setup gap, and unverified behavior as an independent item; a conversation can have many. owner=human needs action, agent is pending work, external waits on waiting_on. defer_until is an optional YYYY-MM-DD date. Defaults: tasks belong to agent, questions/blockers to human.",
      schema({"session_id": TEXT, "title": {"type": "string", "description": "Start with the human action: Choose…, Upload…, Add…, Review…. Use plain language."}, "detail": {"type": "string", "description": "Brief context for the human, not a transcript. Use steps/link/paste for instructions."}, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": CHOICES, **ATTENTION, **READABLE}, ["session_id", "title"])),
     ("hq_update", "Update an existing open item instead of duplicating it. Change ownership, who it waits on, context, or defer_until (empty clears deferral). Other items in this conversation remain independent.",
      schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION, **READABLE}, ["session_id", "item_id"])),

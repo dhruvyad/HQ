@@ -18,3 +18,8 @@ When reporting work to HQ, follow `hq/AGENT_GUIDE.md`: action-first titles,
 brief context/unlocks, recommendations, ordered steps, direct links, and copy
 blocks. Human effort is separate from external waits. Report every independent
 action as its own item and close the loop after acting on a reply.
+
+Proactively populate HQ with every unfinished requirement, setup gap, and
+unverified integration in this task. Keep agent work and concrete human actions
+separate, and update the queue before finishing a turn. Metadata discovery or
+passing protocol tests does not establish a live agent connection.

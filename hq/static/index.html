@@ -11,22 +11,17 @@
 <body>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="HQ home"><span class="brand-mark">HQ</span></a>
-    <nav aria-label="Inbox filters">
-      <button class="nav-item active" id="all-work"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> Inbox <span class="count" id="all-count">0</span></button>
-      <div class="nav-heading">WORKSTREAMS</div><div id="tags-nav"></div>
-      <div class="nav-heading">HARNESSES</div><div id="harnesses-nav" aria-label="Filter by agent harness"></div>
-      <div class="nav-heading conversations-heading">CONVERSATIONS <span id="session-total">0</span></div>
-      <input id="session-search" class="session-search" placeholder="Find a conversation…" aria-label="Find a conversation">
-      <div id="sessions-nav"></div>
-      <button class="browse-sessions" id="browse-sessions">Browse all conversations</button>
+    <nav aria-label="Workstream filters">
+      <div class="nav-heading">WORKSTREAMS</div>
+      <button class="nav-item active" id="all-work"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3L7 21M17 3l-2 18M4 8h17M3 16h17"/></svg> All workstreams <span class="count" id="all-count">0</span></button>
+      <div id="tags-nav"></div>
     </nav>
-    <div class="sidebar-footer"><button id="connections" title="Connect agents"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15l6-6M10 7l2-2a5 5 0 017 7l-2 2M14 17l-2 2a5 5 0 01-7-7l2-2"/></svg> Connect agents</button></div>
   </aside>
   <main>
-    <header class="topbar"><button class="mobile-menu" id="mobile-menu" aria-label="Show filters" aria-expanded="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><span class="breadcrumb"><strong id="scope">Inbox</strong></span><div class="top-actions"><span id="service-status" hidden></span><button class="button primary" id="add-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Add item</button></div></header>
+    <header class="topbar"><button class="mobile-menu" id="mobile-menu" aria-label="Show filters" aria-expanded="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><span class="breadcrumb"><strong id="scope">All workstreams</strong></span><div class="top-actions"><button class="button" id="connections">Connect agents</button><span id="service-status" hidden></span><button class="button primary" id="add-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Add item</button></div></header>
     <div class="workspace">
       <section class="inbox" aria-label="Agent work items">
-        <div class="list-toolbar"><div class="tabs" role="tablist" aria-label="Item status"><button class="tab active" role="tab" aria-selected="true" data-view="all">All <span class="tab-count" id="all-items-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="needs">Needs you <span class="tab-count" id="needs-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="pending">Pending <span class="tab-count" id="pending-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="waiting">Waiting <span class="tab-count" id="waiting-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="later">Later <span class="tab-count" id="later-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="done">Done <span class="tab-count" id="done-count">0</span></button></div><div class="item-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><input id="search" type="search" placeholder="Search items" aria-label="Search items"></div></div>
+        <div class="list-toolbar"><div class="tabs" role="tablist" aria-label="Item status"><button class="tab active" role="tab" aria-selected="true" data-view="all">All <span class="tab-count" id="all-items-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="needs">Human pending <span class="tab-count" id="needs-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="pending">Agent pending <span class="tab-count" id="pending-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="waiting">Waiting <span class="tab-count" id="waiting-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="later">Later <span class="tab-count" id="later-count">0</span></button><button class="tab" role="tab" aria-selected="false" data-view="done">Done <span class="tab-count" id="done-count">0</span></button></div><div class="item-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><input id="search" type="search" placeholder="Search items" aria-label="Search items"></div></div>
         <div id="items" aria-live="polite"></div>
       </section>
     </div>

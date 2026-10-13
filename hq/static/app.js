@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const token = $('meta[name="hq-token"]').content;
-let state = {sessions: [], items: []}, filter = {view: 'all', session: null, tag: null, harness: null, search: ''};
-let selectedId = null, toastTimer, loading = null, showAllSessions = false, snapshotSignature = '';
+let state = {sessions: [], items: []}, filter = {view: 'all', tag: null, search: ''};
+let selectedId = null, toastTimer, loading = null, snapshotSignature = '';
 const providers = {codex: ['Cx', 'Codex'], 'claude-code': ['Cl', 'Claude Code'], 'claude-desktop': ['Cl', 'Claude Desktop'], chatgpt: ['G', 'ChatGPT'], other: ['A', 'Other']};
 const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tagHTML = (tags) => tags.map(t => `<span class="tag">${escapeHTML(t)}</span>`).join('');
@@ -24,8 +24,13 @@ const iconPaths = {arrow: '<path d="M5 12h14M15 8l4 4-4 4"/>', pause: '<path d="
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || iconPaths.arrow}</svg>`;
 function toast(message) {$('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4000);}
 async function api(path, body) {const response = await fetch(`/api/${path}`, {method: body === undefined ? 'GET' : 'POST', headers: {'X-HQ-Token': token, 'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)}); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'HQ could not save this change'); return data;}
-function scoped() {return state.items.filter(i => (!filter.session || i.session_id === filter.session) && (!filter.tag || i.tags.includes(filter.tag)) && (!filter.harness || i.provider === filter.harness));}
-function inView(item, view) {return view === 'all' ? item.status !== 'done' : item.bucket === view;}
+function scoped() {return state.items.filter(i => !filter.tag || i.tags.includes(filter.tag));}
+function inView(item, view) {
+  if (view === 'all') return item.status !== 'done';
+  if (view === 'needs') return item.status === 'open' && item.owner === 'human';
+  if (view === 'pending') return item.status !== 'done' && (item.owner !== 'human' || item.status === 'answered');
+  return item.bucket === view;
+}
 function itemLabel(item) {
   if (item.status === 'answered') return `${deliveryText(item)} · agent next`;
   if (item.bucket === 'done') return 'Done';
@@ -54,27 +59,15 @@ function render() {
   ['needs','pending','waiting','later','done'].forEach(view => $(`#${view}-count`).textContent = items.filter(i => inView(i, view)).length);
   $('#all-items-count').textContent = items.filter(i => inView(i, 'all')).length;
   document.querySelectorAll('[data-view]').forEach(el => {const active = el.dataset.view === filter.view; el.classList.toggle('active', active); if (el.hasAttribute('role')) el.setAttribute('aria-selected', active);});
-  const session = state.sessions.find(s => s.id === filter.session);
-  $('#scope').textContent = session ? session.name : [filter.harness && providers[filter.harness][1], filter.tag].filter(Boolean).join(' / ') || 'Inbox';
+  $('#scope').textContent = filter.tag || 'All workstreams';
   $('#all-count').textContent = state.items.filter(i => i.status !== 'done').length;
-  $('#all-work').classList.toggle('active', !filter.session && !filter.tag && !filter.harness);
+  $('#all-work').classList.toggle('active', !filter.tag);
   const tags = [...new Set(state.items.flatMap(i => i.tags))].sort();
   $('#tags-nav').innerHTML = tags.length ? tags.map(t => `<button class="nav-item ${filter.tag === t ? 'active' : ''}" data-tag="${escapeHTML(t)}"><span class="tag-dot"></span>${escapeHTML(t)}<span class="nav-number">${state.items.filter(i => i.tags.includes(t) && i.status !== 'done').length}</span></button>`).join('') : '<div class="sidebar-empty">No tags</div>';
-  const harnesses = Object.keys(providers).filter(p => state.sessions.some(s => s.provider === p));
-  $('#harnesses-nav').innerHTML = harnesses.map(p => `<button class="nav-item ${filter.harness === p ? 'active' : ''}" data-harness="${p}"><span class="harness-indicator">${providers[p][0]}</span>${providers[p][1]}<span class="nav-number">${state.sessions.filter(s => s.provider === p).length}</span></button>`).join('') || '<div class="sidebar-empty">No agents</div>';
-  const harnessSessions = state.sessions.filter(s => !filter.harness || s.provider === filter.harness);
-  $('#session-total').textContent = harnessSessions.length;
-  const sessionSearch = $('#session-search').value.toLowerCase();
-  const sessions = [...harnessSessions].sort((a,b) => Number(b.connection !== 'offline') - Number(a.connection !== 'offline') || state.items.filter(i => i.session_id === b.id && i.status !== 'done').length - state.items.filter(i => i.session_id === a.id && i.status !== 'done').length);
-  const listed = sessions.filter(s => (showAllSessions || sessionSearch || filter.session === s.id || s.connection !== 'offline' || state.items.some(i => i.session_id === s.id && i.status !== 'done')) && `${s.name} ${s.provider} ${(providers[s.provider] || providers.other)[1]}`.toLowerCase().includes(sessionSearch));
-  $('#sessions-nav').innerHTML = listed.map(s => `<button class="nav-item session-item ${filter.session === s.id ? 'active' : ''}" data-session="${escapeHTML(s.id)}" title="${escapeHTML(s.name)}"><span class="provider-symbol">${(providers[s.provider] || providers.other)[0]}</span><span class="session-text"><span class="session-name">${escapeHTML(s.name)}</span>${harnessHTML(s.provider)}<span class="session-meta">${escapeHTML(itemSummary(state.items.filter(i => i.session_id === s.id)) || 'No open items')}</span></span><span class="session-state ${s.connection !== 'offline' ? 'live' : ''}"></span></button>`).join('') || '<div class="sidebar-empty">No conversations</div>';
-  $('#browse-sessions').textContent = showAllSessions ? 'Show active' : `View all (${harnessSessions.length})`;
   const priority = {needs: 0, pending: 1, waiting: 2, later: 3, done: 4};
   const visible = items.filter(i => inView(i, filter.view) && `${i.title} ${i.detail} ${i.waiting_on} ${i.tags.join(' ')} ${i.session_name}`.toLowerCase().includes(filter.search)).sort((a,b) => priority[a.bucket] - priority[b.bucket] || a.rank-b.rank || b.created-a.created);
-  $('#items').innerHTML = visible.length ? groupHTML(visible) : `<div class="empty"><div class="empty-symbol">${icon(state.items.length ? 'check' : 'arrow')}</div><h3>${filter.search ? 'No matches' : state.items.length ? ({all:'No open items',needs:'Nothing needs you',pending:'No pending tasks',waiting:'Nothing waiting',later:'Nothing for later',done:'No completed items'})[filter.view] : 'Connect your first agent'}</h3>${!state.items.length ? '<button class="button" id="empty-connect">Connect an agent</button>' : ''}</div>`;
-  $('#tags-nav').querySelectorAll('[data-tag]').forEach(el => el.onclick = () => {filter.tag = filter.tag === el.dataset.tag ? null : el.dataset.tag; filter.session = null; render(); closeSidebar();});
-  $('#harnesses-nav').querySelectorAll('[data-harness]').forEach(el => el.onclick = () => {filter.harness = filter.harness === el.dataset.harness ? null : el.dataset.harness; filter.session = null; render(); closeSidebar();});
-  $('#sessions-nav').querySelectorAll('[data-session]').forEach(el => el.onclick = () => {filter.session = el.dataset.session; filter.tag = null; render(); closeSidebar();});
+  $('#items').innerHTML = visible.length ? groupHTML(visible) : `<div class="empty"><div class="empty-symbol">${icon(state.items.length ? 'check' : 'arrow')}</div><h3>${filter.search ? 'No matches' : state.items.length ? ({all:'No open items',needs:'No human tasks pending',pending:'No agent work pending',waiting:'Nothing waiting',later:'Nothing for later',done:'No completed items'})[filter.view] : 'Connect your first agent'}</h3>${!state.items.length ? '<button class="button" id="empty-connect">Connect an agent</button>' : ''}</div>`;
+  $('#tags-nav').querySelectorAll('[data-tag]').forEach(el => el.onclick = () => {filter.tag = filter.tag === el.dataset.tag ? null : el.dataset.tag; render(); closeSidebar();});
   $('#items').querySelectorAll('[data-item]').forEach(el => el.onclick = () => openDetail(el.dataset.item));
   if ($('#empty-connect')) $('#empty-connect').onclick = () => $('#connect-dialog').showModal();
 }
@@ -123,15 +116,13 @@ async function refreshState() {
 }
 function closeSidebar() { $('.sidebar').classList.remove('visible'); $('#mobile-menu').setAttribute('aria-expanded', 'false'); }
 document.querySelectorAll('[data-view]').forEach(el => el.onclick = () => setView(el.dataset.view));
-$('#all-work').onclick = () => {filter.session = null; filter.tag = null; filter.harness = null; render(); closeSidebar();};
-$('#browse-sessions').onclick = () => {showAllSessions = !showAllSessions; render();};
+$('#all-work').onclick = () => {filter.tag = null; render(); closeSidebar();};
 $('#mobile-menu').onclick = () => {const visible = $('.sidebar').classList.toggle('visible'); $('#mobile-menu').setAttribute('aria-expanded', String(visible));};
 document.addEventListener('click', event => {if ($('.sidebar').classList.contains('visible') && !event.target.closest('.sidebar') && !event.target.closest('#mobile-menu')) closeSidebar();});
 document.addEventListener('keydown', event => {if (event.key === 'Escape') closeSidebar();});
 $('#search').oninput = event => {filter.search = event.target.value.toLowerCase(); render();};
-$('#session-search').oninput = render;
 $('#connections').onclick = () => $('#connect-dialog').showModal();
-$('#add-button').onclick = () => {$('#session-select').innerHTML = state.sessions.map(s => `<option value="${escapeHTML(s.id)}">${escapeHTML(s.name)}</option>`).join(''); if (!state.sessions.length) return $('#connect-dialog').showModal(); if (filter.session) $('#session-select').value = filter.session; $('#add-dialog').showModal();};
+$('#add-button').onclick = () => {$('#session-select').innerHTML = state.sessions.map(s => `<option value="${escapeHTML(s.id)}">${escapeHTML(s.name)}</option>`).join(''); if (!state.sessions.length) return $('#connect-dialog').showModal(); $('#add-dialog').showModal();};
 $('#add-owner').onchange = () => {const external = $('#add-owner').value === 'external'; $('#add-waiting-label').hidden = !external; $('#add-waiting-label input').required = external;};
 $('#add-form').onsubmit = async event => {event.preventDefault(); const form = event.target, fields = Object.fromEntries(new FormData(form)), button = form.querySelector('[type="submit"]'); fields.tags = fields.tags.split(',').map(t => t.trim()).filter(Boolean); button.disabled = true; try {await api('items', fields); filter.view = 'all'; $('#add-dialog').close(); form.reset(); $('#add-owner').onchange(); await refresh(true); toast('Item added');} catch(error) {form.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
 refresh(); setInterval(refresh, 2000);
