@@ -4,6 +4,12 @@ A small, private inbox for the work your AI agents are doing. Run `hq` to open
 a dark dashboard on your laptop. Filter by workstream tags or conversation,
 answer blockers, and let agents pick up your response.
 
+The dashboard uses black and neutral charcoal surfaces. Conversation badges show
+their registered harness (Codex, Claude Code, Claude Desktop, ChatGPT, or Other),
+and harness filters combine with workstream tags. The sidebar starts with
+conversations that have open work or a live connection; search or browse to find
+older conversations. Select an item to read its context and reply in a side panel.
+
 **Python 3.11+. Zero runtime dependencies. SQLite. No cloud storage.**
 
 ## Start
