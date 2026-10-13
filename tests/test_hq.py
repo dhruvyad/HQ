@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -40,6 +41,83 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(reopened.snapshot(tag="billing")["items"][0]["id"], item["id"])
         self.assertEqual(len(reopened.snapshot(session_id="b")["items"]), 1)
         self.assertEqual(reopened.item(item["id"])["options"], ["Monthly", "Annual"])
+
+    def test_many_items_in_one_conversation_stay_independent(self):
+        decision = self.question()
+        action = self.store.add("a", "Upload certificate", owner="human")
+        waiting = self.store.add("a", "Vendor approval", kind="blocker", owner="external", waiting_on="Vendor")
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        later = self.store.add("a", "Review copy", owner="human", defer_until=tomorrow)
+        agent = self.store.add("a", "Build the integration")
+        self.assertEqual(len(self.store.snapshot(session_id="a")["items"]), 5)
+        self.assertEqual(len(self.store.snapshot(session_id="a", bucket="needs")["items"]), 2)
+        self.store.reply(decision["id"], "Annual")
+        self.store.reply(action["id"], "Uploaded")
+        self.assertEqual({r["item_id"] for r in self.store.inbox("a")}, {decision["id"], action["id"]})
+        self.assertEqual(self.store.inbox("b"), [])
+        for item, bucket in ((waiting, "waiting"), (later, "later"), (agent, "pending")):
+            self.assertEqual(self.store.item(item["id"])["bucket"], bucket)
+            self.assertIsNone(self.store.item(item["id"])["answer"])
+        self.store.acknowledge(action["id"], "a")
+        self.store.resolve(action["id"])
+        self.assertEqual(self.store.item(decision["id"])["delivery"], "pending")
+
+    def test_deferred_items_return_to_their_original_owner(self):
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        item = self.store.add("a", "Vendor approval", owner="external", waiting_on="Vendor", defer_until=tomorrow)
+        self.assertEqual(item["bucket"], "later")
+        self.assertEqual(Store.bucket(item, tomorrow), "waiting")
+        self.assertEqual(Store.bucket({**item, "owner": "human"}, tomorrow), "needs")
+        restored = self.store.update(item["id"], "a", defer_until="")
+        self.assertEqual(restored["waiting_on"], "Vendor")
+        self.assertEqual(restored["bucket"], "waiting")
+        updated = self.store.update(item["id"], "a", owner="human")
+        self.assertEqual(updated["waiting_on"], "")
+        self.assertEqual(updated["bucket"], "needs")
+        self.assertEqual(len(self.store.snapshot()["items"]), 1)
+
+    def test_invalid_and_cross_session_updates_preserve_item_and_answers(self):
+        item = self.question()
+        for patch_data in ({"owner": "external"}, {"defer_until": "2026-02-30"}, {"defer_until": "20261015"}, {"owner": "unknown"}, {"status": "done"}):
+            with self.assertRaises(ValueError):
+                self.store.update(item["id"], "a", **patch_data)
+            self.assertEqual(self.store.item(item["id"]), item)
+        with self.assertRaises(ValueError):
+            self.store.update(item["id"], "b", owner="agent")
+        self.store.reply(item["id"], "Annual")
+        with self.assertRaises(ValueError):
+            self.store.update(item["id"], "a", owner="external", waiting_on="Vendor")
+        self.assertEqual(self.store.item(item["id"])["answer"], "Annual")
+
+    def test_v1_migration_preserves_items_replies_and_defaults(self):
+        question = self.question()
+        task = self.store.add("a", "Agent task")
+        self.store.reply(question["id"], "Annual")
+        with self.store.db() as db:
+            for column in ("owner", "waiting_on", "defer_until"):
+                db.execute(f"ALTER TABLE items DROP COLUMN {column}")
+            db.execute("PRAGMA user_version=1")
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            migrated = list(pool.map(lambda _: Store(self.store.path), range(4)))
+        for store in migrated:
+            self.assertEqual(store.item(task["id"])["owner"], "agent")
+            self.assertEqual(store.item(question["id"])["owner"], "human")
+            self.assertEqual(store.item(question["id"])["answer"], "Annual")
+            self.assertEqual(store.inbox("a")[0]["state"], "pending")
+        with self.store.db() as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+
+    def test_cli_reports_and_updates_one_of_many_items(self):
+        def cli(*args):
+            result = subprocess.run([sys.executable, str(ROOT / "bin/hq"), *args],
+                env={**os.environ, "HQ_HOME": self.temp.name}, capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)
+        cli("session", "add", "cli", "--name", "CLI conversation")
+        waiting = cli("add", "Vendor approval", "--session", "cli", "--owner", "external", "--waiting-on", "Vendor")
+        action = cli("add", "Upload file", "--session", "cli", "--owner", "human")
+        updated = cli("update", waiting["id"], "--session", "cli", "--owner", "human")
+        self.assertEqual(updated["bucket"], "needs")
+        self.assertEqual({i["id"] for i in cli("list", "--session", "cli", "--bucket", "needs")}, {waiting["id"], action["id"]})
 
     def test_answer_returns_to_exact_waiting_session(self):
         item = self.question()
@@ -168,6 +246,17 @@ class HTTPTests(unittest.TestCase):
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Yes"}, headers) as response:
             self.assertEqual(json.load(response)["answer"], "Yes")
 
+    def test_item_move_and_external_response_roundtrip(self):
+        headers = {"X-HQ-Token": self.server.token}
+        with self.request("/api/items", {"session_id": "a", "title": "Vendor", "kind": "blocker", "owner": "external", "waiting_on": "Support"}, headers) as response:
+            item = json.load(response)
+        other = self.store.add("a", "Unrelated", owner="human")
+        with self.request(f"/api/items/{item['id']}/update", {"owner": "human"}, headers) as response:
+            self.assertEqual(json.load(response)["bucket"], "needs")
+        with self.request(f"/api/items/{item['id']}/reply", {"text": "Support approved"}, headers) as response:
+            self.assertEqual(json.load(response)["bucket"], "waiting")
+        self.assertEqual(self.store.item(other["id"]), other)
+
     def test_cross_origin_dns_rebinding_and_unauthorized_reads_blocked(self):
         for headers in ({}, {"Host": "attacker.example"}, {"Origin": "https://attacker.example", "X-HQ-Token": self.server.token}):
             with self.assertRaises(urllib.error.HTTPError) as error:
@@ -260,6 +349,28 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(message["id"], 3)
         self.assertEqual(json.loads(message["result"]["content"][0]["text"])["answer"], "Ship the smaller change")
         self.assertEqual(self.store.item(item["id"])["delivery"], "received")
+
+    def test_mcp_report_update_and_filter_preserve_other_items(self):
+        def call(request_id, name, arguments):
+            self.send("tools/call", request_id, {"name": name, "arguments": arguments})
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                message = self.messages.get(timeout=3)
+                if message.get("id") == request_id:
+                    return message["result"]
+            self.fail("No matching tool result")
+        result = call(21, "hq_report", {"session_id": "a", "title": "Approval", "owner": "external", "waiting_on": "Vendor"})
+        self.assertFalse(result["isError"])
+        item = json.loads(result["content"][0]["text"])
+        other = self.store.add("a", "Other human action", owner="human")
+        updated = call(22, "hq_update", {"session_id": "a", "item_id": item["id"], "owner": "human"})
+        self.assertEqual(json.loads(updated["content"][0]["text"])["bucket"], "needs")
+        listed = call(23, "hq_list", {"session_id": "a", "bucket": "needs"})
+        self.assertEqual(len(json.loads(listed["content"][0]["text"])["items"]), 2)
+        self.assertEqual(self.store.item(other["id"]), other)
+        self.store.register("b", "Other session")
+        rejected = call(24, "hq_update", {"session_id": "b", "item_id": item["id"], "owner": "agent"})
+        self.assertTrue(rejected["isError"])
 
     def test_cancellation_keeps_question(self):
         self.send("tools/call", 1, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 60}})

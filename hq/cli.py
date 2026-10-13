@@ -140,14 +140,26 @@ def parser():
         action.add_argument("--tags", default="", help="Comma-separated workstream tags")
         if command == "add":
             action.add_argument("--kind", choices=["todo", "blocker", "question"], default="todo")
+            action.add_argument("--owner", choices=["human", "agent", "external"])
+            action.add_argument("--waiting-on", default="")
+            action.add_argument("--defer-until", default="", help="Show again on YYYY-MM-DD")
         else:
             action.add_argument("--option", action="append", default=[])
             action.add_argument("--timeout", type=float, default=3600)
             action.add_argument("--no-wait", action="store_true")
+    update = commands.add_parser("update", help="Update one existing open item")
+    update.add_argument("item_id")
+    update.add_argument("--session", required=True)
+    update.add_argument("--owner", choices=["human", "agent", "external"])
+    update.add_argument("--waiting-on")
+    update.add_argument("--defer-until", help="YYYY-MM-DD; empty clears deferral")
+    update.add_argument("--title")
+    update.add_argument("--detail")
     listing = commands.add_parser("list", help="List items, with optional filters")
     listing.add_argument("--session")
     listing.add_argument("--tag")
     listing.add_argument("--status", choices=["open", "answered", "done"])
+    listing.add_argument("--bucket", choices=["needs", "pending", "waiting", "later", "done"])
     reply = commands.add_parser("reply", help="Save a human answer and deliver it to the owning conversation")
     reply.add_argument("item_id")
     reply.add_argument("text")
@@ -212,15 +224,19 @@ def main():
                 raise ValueError("timeout must be between 1 and 86400 seconds")
             item = store.add(args.session, args.title, args.detail,
                              getattr(args, "kind", "question"), [t.strip() for t in args.tags.split(",") if t.strip()],
-                             getattr(args, "option", []))
+                             getattr(args, "option", []), getattr(args, "owner", None),
+                             getattr(args, "waiting_on", ""), getattr(args, "defer_until", ""))
             if args.command == "ask" and not args.no_wait:
                 print(f"Waiting for a human answer in HQ. Item: {item['id']}", file=sys.stderr)
                 return output(store.wait(item["id"], args.session, args.timeout))
             return output(item)
         if args.command == "await":
             return output(store.wait(args.item_id, args.session, args.timeout))
+        if args.command == "update":
+            changes = {key: getattr(args, key) for key in ("owner", "waiting_on", "defer_until", "title", "detail") if getattr(args, key) is not None}
+            return output(store.update(args.item_id, args.session, **changes))
         if args.command == "list":
-            return output(store.snapshot(args.session, args.tag, args.status)["items"])
+            return output(store.snapshot(args.session, args.tag, args.status, args.bucket)["items"])
         if args.command == "reply":
             return output(store.reply(args.item_id, args.text))
         if args.command == "inbox":

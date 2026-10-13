@@ -8,8 +8,11 @@ The dashboard uses black and neutral charcoal surfaces. Conversation badges show
 their registered harness (Codex, Claude Code, Claude Desktop, ChatGPT, or Other),
 and harness filters combine with workstream tags. The sidebar starts with
 conversations that have open work or a live connection; search or browse to find
-older conversations. Status tabs include counts; dates, slogans, and summary cards
-are omitted. Select an item to read its context and reply in a side panel.
+older conversations. The default All view groups independent items under their conversation,
+with a harness badge and counts. Needs you, Pending, Waiting, Later, and Done
+filter items across every conversation. Rows show just the title, next step, and
+tags; context and replies stay in the side panel. Decorative dates and copy are
+omitted; dates appear only for deferred items.
 
 **Python 3.11+. Zero runtime dependencies. SQLite. No cloud storage.**
 
@@ -42,6 +45,33 @@ hq add "Need the staging endpoint" --session codex:my-thread --kind blocker --ta
 hq ask "Monthly or annual billing?" --session codex:my-thread \
   --tags billing --option Monthly --option Annual
 ```
+
+Each conversation can have any number of independent decisions, human actions,
+agent tasks, and outside blockers. Ownership is separate from the item type:
+`human` needs you, `agent` is pending with the agent, and `external` names whoever
+or whatever it is waiting on. Tasks default to agent; questions and blockers
+default to human. Report an outside blocker explicitly rather than putting it
+in Needs you:
+
+```sh
+hq add "Upload the certificate" --session codex:my-thread --owner human
+hq add "Vendor approval" --session codex:my-thread --kind blocker \
+  --owner external --waiting-on "Vendor support" --tags billing
+hq add "Review the launch copy" --session codex:my-thread --owner human \
+  --defer-until YYYY-MM-DD
+hq update ITEM_ID --session codex:my-thread --owner human --defer-until ""
+hq list --bucket waiting
+```
+
+Replace `YYYY-MM-DD` with a date. Deferred items return to their original category
+on that date, using the laptop's local date. The side panel also lets you move an
+item, defer it, bring it forward, or send an outside response back to its agent.
+Updating, completing, or answering one item leaves all its siblings unchanged.
+Human action updates use the same durable, per-item delivery as decisions.
+Answered items stay in Waiting with delivery status until completed by the agent.
+Existing databases migrate in place, preserving items, replies, and routing.
+Restart the local service and reload client tools after upgrading to load the
+new reporting fields.
 
 `hq ask` waits and prints the human answer as JSON into the same agent tool call.
 The conversation continues with that answer in context. The default wait is one
@@ -142,7 +172,7 @@ subscribed to a new connector. Local-executor Work chats can use `hq` directly.
 ## Agent tools
 
 `hq mcp` serves newline-delimited JSON-RPC over stdio. It exposes
-`hq_register_session`, `hq_report`, `hq_list`, `hq_request_input`, `hq_wait`,
+`hq_register_session`, `hq_report`, `hq_update`, `hq_list`, `hq_request_input`, `hq_wait`,
 `hq_inbox`, `hq_acknowledge`, and `hq_resolve`. Waiting requests run concurrently
 with pings, lists, and cancellation. MCP waits default to 120 seconds. Use an
 appropriate host timeout or `hq_wait` after a timeout; do not create the same
@@ -151,7 +181,10 @@ question again.
 Suggested agent instruction:
 
 > Register this conversation in HQ with its stable session id and readable name.
-> Tag each pending task by workstream. Report blockers when they happen. Ask for
+> Report each independent action or blocker as its own item, tagged by workstream.
+> Set owner to human, agent, or external; external items must name waiting_on.
+> Use defer_until for later work and hq_update when an existing item's next step
+> changes. A conversation can have multiple items in every category. Ask for
 > human input with hq_request_input and treat the returned answer as guidance.
 > Check hq_inbox when resuming, acknowledge responses after reading them, and
 > resolve items after the work is done.
@@ -172,7 +205,8 @@ python3 -m unittest discover -s tests -v
 node --check hq/static/app.js
 ```
 
-Tests cover SQLite persistence, concurrent answers, per-session routing,
+Tests cover SQLite persistence and migration, multiple independent items per
+conversation, ownership changes and deferral, concurrent answers, per-session routing,
 offline acknowledgement, timeout/cancellation, native steering decisions,
 the HTTP origin boundary, and an end-to-end MCP human response.
 

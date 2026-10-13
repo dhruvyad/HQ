@@ -1,5 +1,6 @@
 """One local database shared by the CLI, dashboard, and MCP processes."""
 import json
+from datetime import date
 import os
 import sqlite3
 import time
@@ -50,8 +51,18 @@ class Store:
                     item_id TEXT PRIMARY KEY REFERENCES items(id), owner TEXT, lease_until REAL
                 );
                 CREATE INDEX IF NOT EXISTS items_session ON items(session_id, status);
-                PRAGMA user_version=1;
             """)
+            # Serialize migrations across dashboard, CLI, and MCP processes.
+            db.execute("BEGIN IMMEDIATE")
+            columns = {r["name"] for r in db.execute("PRAGMA table_info(items)")}
+            if "owner" not in columns:
+                db.execute("ALTER TABLE items ADD COLUMN owner TEXT NOT NULL DEFAULT 'human'")
+                db.execute("UPDATE items SET owner='agent' WHERE kind='todo'")
+            if "waiting_on" not in columns:
+                db.execute("ALTER TABLE items ADD COLUMN waiting_on TEXT NOT NULL DEFAULT ''")
+            if "defer_until" not in columns:
+                db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
+            db.execute("PRAGMA user_version=2")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -107,7 +118,8 @@ class Store:
             db.execute("UPDATE sessions SET seen=?,connection=?,lease_until=? WHERE id=?",
                        (time.time(), connection, time.time() + lease, id))
 
-    def add(self, session_id, title, detail="", kind="todo", tags=None, options=None):
+    def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
+            owner=None, waiting_on="", defer_until=""):
         self.session(session_id)
         title = required(title, "title", 500)
         if kind not in {"todo", "blocker", "question"}:
@@ -121,17 +133,71 @@ class Store:
             raise ValueError("Use at most 20 tags and 10 options")
         tags = sorted(set(required(t, "tag", 60) for t in tags))
         options = [required(o, "option", 500) for o in options]
+        owner, waiting_on, defer_until = self.attention(("agent" if kind == "todo" else "human") if owner is None else owner, waiting_on, defer_until)
         id, now = str(uuid.uuid4()), time.time()
         with self.db() as db:
-            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
-                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now))
+            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until))
         return self.item(id)
+
+    @staticmethod
+    def attention(owner, waiting_on, defer_until):
+        if owner not in {"human", "agent", "external"}:
+            raise ValueError("owner must be human, agent, or external")
+        if not isinstance(waiting_on, str) or len(waiting_on) > 200:
+            raise ValueError("waiting_on must be text, at most 200 characters")
+        waiting_on = waiting_on.strip()
+        if owner == "external" and not waiting_on:
+            raise ValueError("Name who or what this item is waiting on")
+        if not isinstance(defer_until, str):
+            raise ValueError("defer_until must be a date in YYYY-MM-DD format or empty")
+        if defer_until:
+            try:
+                if date.fromisoformat(defer_until).isoformat() != defer_until:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError("defer_until must be a date in YYYY-MM-DD format or empty") from None
+        return owner, waiting_on if owner == "external" else "", defer_until
+
+    def update(self, item_id, session_id=None, **patch):
+        allowed = {"owner", "waiting_on", "defer_until", "title", "detail"}
+        if not patch or set(patch) - allowed:
+            raise ValueError("Update title, detail, owner, waiting_on, or defer_until")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            if not row:
+                raise ValueError("Item not found")
+            if session_id is not None and row["session_id"] != session_id:
+                raise ValueError("Item belongs to a different session")
+            if row["status"] != "open":
+                raise ValueError("Only open items can be updated; saved replies are preserved")
+            merged = {**dict(row), **patch}
+            owner, waiting_on, defer_until = self.attention(merged["owner"], merged["waiting_on"], merged["defer_until"])
+            title = required(merged["title"], "title", 500)
+            detail = merged["detail"]
+            if not isinstance(detail, str) or len(detail) > 20000:
+                raise ValueError("detail must be text, at most 20000 characters")
+            db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,updated=? WHERE id=?",
+                       (title, detail, owner, waiting_on, defer_until, time.time(), item_id))
+        return self.item(item_id)
+
+    @staticmethod
+    def bucket(item, today=None):
+        if item["status"] == "done":
+            return "done"
+        if item["status"] == "answered":
+            return "waiting"
+        if item["defer_until"] and item["defer_until"] > (today or date.today().isoformat()):
+            return "later"
+        return {"human": "needs", "agent": "pending", "external": "waiting"}[item["owner"]]
 
     @staticmethod
     def decode(row):
         data = dict(row)
         for key in ("tags", "options"):
             data[key] = json.loads(data[key])
+        data["bucket"] = Store.bucket(data)
         return data
 
     def item(self, id):
@@ -142,7 +208,7 @@ class Store:
             raise ValueError("Item not found")
         return self.decode(row)
 
-    def snapshot(self, session_id=None, tag=None, status=None):
+    def snapshot(self, session_id=None, tag=None, status=None, bucket=None):
         with self.db() as db:
             sessions = [dict(r) for r in db.execute("SELECT * FROM sessions ORDER BY seen DESC")]
             items = [self.decode(r) for r in db.execute("""SELECT i.*,s.name AS session_name,s.provider,
@@ -153,7 +219,8 @@ class Store:
             if s["lease_until"] < time.time():
                 s["connection"] = "offline"
         items = [i for i in items if (not session_id or i["session_id"] == session_id)
-                 and (not tag or tag in i["tags"]) and (not status or i["status"] == status)]
+                 and (not tag or tag in i["tags"]) and (not status or i["status"] == status)
+                 and (not bucket or i["bucket"] == bucket)]
         return {"sessions": sessions, "items": items}
 
     def reply(self, id, text):
@@ -161,16 +228,18 @@ class Store:
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT status,kind FROM items WHERE id=?", (id,)).fetchone()
-            if not row or row["status"] != "open" or row["kind"] == "todo":
-                raise ValueError("Only open blockers and questions can be answered")
+            if not row or row["status"] != "open":
+                raise ValueError("Only open items can receive a response")
             db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)",
                        (str(uuid.uuid4()), id, text, now))
             db.execute("UPDATE items SET status='answered',updated=? WHERE id=?", (now, id))
         return self.item(id)
 
     def resolve(self, id):
-        self.item(id)
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM items WHERE id=?", (id,)).fetchone():
+                raise ValueError("Item not found")
             pending = db.execute("SELECT 1 FROM replies WHERE item_id=? AND state IN ('pending','sending','sent','failed')", (id,)).fetchone()
             if pending:
                 raise ValueError("The response must be received before this item can be completed")

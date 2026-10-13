@@ -18,13 +18,16 @@ def schema(properties, required=()):
 
 TEXT = {"type": "string"}
 STRINGS = {"type": "array", "items": TEXT}
+ATTENTION = {"owner": {"enum": ["human", "agent", "external"]}, "waiting_on": TEXT, "defer_until": TEXT}
 TOOLS = [
     ("hq_register_session", "Identify this exact conversation; reuse its stable session id on every call.",
      schema({"session_id": TEXT, "name": TEXT, "provider": TEXT, "external_id": TEXT, "cwd": TEXT}, ["session_id", "name"])),
-    ("hq_report", "Report a pending task or blocker to the local human dashboard. Questions may include choices.",
-     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": STRINGS}, ["session_id", "title"])),
+    ("hq_report", "Report one independent item; a conversation can have many. owner=human needs action, agent is pending work, external waits on waiting_on. defer_until is an optional YYYY-MM-DD date. Defaults: tasks belong to agent, questions/blockers to human.",
+     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": STRINGS, **ATTENTION}, ["session_id", "title"])),
+    ("hq_update", "Update an existing open item instead of duplicating it. Change ownership, who it waits on, context, or defer_until (empty clears deferral). Other items in this conversation remain independent.",
+     schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION}, ["session_id", "item_id"])),
     ("hq_list", "List pending work and answers across conversations, optionally filtered by session, tag, or status.",
-     schema({"session_id": TEXT, "tag": TEXT, "status": {"enum": ["open", "answered", "done"]}})),
+     schema({"session_id": TEXT, "tag": TEXT, "status": {"enum": ["open", "answered", "done"]}, "bucket": {"enum": ["needs", "pending", "waiting", "later", "done"]}})),
     ("hq_request_input", "Ask the human in HQ and wait for their answer in this same tool call. On timeout, the saved question remains; use hq_wait or hq_inbox later. Use up to 120 seconds to fit your client's timeout.",
      schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "tags": STRINGS, "options": STRINGS, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "title"])),
     ("hq_wait", "Wait for the response to an already-created question without creating duplicates.",
@@ -71,6 +74,8 @@ def run(provider="other", channel=False, session_id=None):
                 args["kind"] = "question"
             item = store.add(**args)
             return store.wait(item["id"], id, timeout, cancel) if name == "hq_request_input" else item
+        if name == "hq_update":
+            return store.update(**args)
         if name == "hq_wait":
             return store.wait(args["item_id"], id, args.get("timeout", 120), cancel)
         if name == "hq_inbox":
