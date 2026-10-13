@@ -112,7 +112,7 @@ hq comment-cancel COMMENT_ID
 
 Agents use `hq_comments` and `hq_comment_reply` with the exact session id and
 question's comment id. Receipt does not count as a reply: unanswered questions
-remain in `hq_comments --pending` even after acknowledgement. A waiting tool can
+remain in `hq_comments` with `pending=true` even after acknowledgement. A waiting tool can
 return `status=clarification` and a `questions` array; the agent answers each,
 then resumes waiting on the original item. Bound Codex sessions and configured
 Claude Code channels can also receive questions through their existing delivery
