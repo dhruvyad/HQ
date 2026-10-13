@@ -37,11 +37,11 @@ class Handler(BaseHTTPRequestHandler):
         elif isinstance(body, str):
             body = body.encode()
         self.send_response(code)
-        self.send_header("Content-Type", mime + "; charset=utf-8")
+        self.send_header("Content-Type", mime + "; charset=utf-8" if mime.startswith("text/") or mime == "application/json" else mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -72,13 +72,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.output(200, self.server.store.snapshot())
             return
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-                  "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml")}
+                  "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+                  "/inter-latin.woff2": ("inter-latin.woff2", "font/woff2"),
+                  "/outfit-latin.woff2": ("outfit-latin.woff2", "font/woff2")}
         if path not in assets:
             return self.output(404, {"error": "Not found"})
         name, mime = assets[path]
-        body = (STATIC / name).read_text()
+        body = (STATIC / name).read_bytes()
         if name == "index.html":
-            body = body.replace("__HQ_TOKEN__", self.server.token)
+            body = body.replace(b"__HQ_TOKEN__", self.server.token.encode())
         self.output(200, body, mime)
 
     def do_POST(self):

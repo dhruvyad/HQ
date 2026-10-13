@@ -2,6 +2,7 @@
 
 Local-first agent inbox. Python 3.11+, SQLite, standard-library HTTP server,
 vanilla HTML/CSS/JS. Keep runtime dependencies empty and the interface simple.
+Follow DESIGN.md for NoClick colours, fonts, surfaces, controls, and concise layout.
 
 Run `python3 -m unittest discover -s tests -v` and
 `node --check hq/static/app.js` and `node tests/test_ui.js` before committing. Test response routing across

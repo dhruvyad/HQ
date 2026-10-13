@@ -4,7 +4,12 @@ A small, private inbox for the work your AI agents are doing. Run `hq` to open
 a dark dashboard on your laptop. Filter by workstream tags,
 answer blockers, and let agents pick up your response.
 
-The dashboard uses black and neutral charcoal surfaces. Conversation badges show
+The dashboard follows NoClick's product design language: pure black, layered
+zinc surfaces, quiet hairline groups, rounded state tabs, and white primary
+controls. Inter and Outfit variable fonts are bundled locally with their OFL
+licences; no fonts load from external services. The [design guidelines](DESIGN.md)
+record the source tokens and HQ-specific layout adaptations. The deployed staging
+site could not be inspected; visual parity remains unverified. Conversation badges show
 their registered harness (Codex, Claude Code, Claude Desktop, ChatGPT, or Other),
 while sidebar navigation shows only workstream tags. Connect agents is in the
 top bar. The default All view groups independent items under their conversation,
@@ -273,7 +278,7 @@ node tests/test_ui.js
 Tests cover SQLite persistence and migration, multiple independent items per
 conversation, ownership changes and deferral, concurrent answers, per-session routing,
 offline acknowledgement, timeout/cancellation, native steering decisions,
-the HTTP origin boundary, and an end-to-end MCP human response.
+the HTTP origin boundary, bundled font delivery, and an end-to-end MCP human response.
 
 Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-server),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),

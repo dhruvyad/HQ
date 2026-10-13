@@ -425,6 +425,22 @@ class HTTPTests(unittest.TestCase):
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Yes"}, headers) as response:
             self.assertEqual(json.load(response)["answer"], "Yes")
 
+    def test_local_fonts_are_served_as_bytes_and_paths_stay_allowlisted(self):
+        for name in ("inter", "outfit"):
+            with self.request(f"/{name}-latin.woff2") as response:
+                self.assertEqual(response.headers["Content-Type"], "font/woff2")
+                self.assertEqual(response.read(), (ROOT / "hq/static" / f"{name}-latin.woff2").read_bytes())
+                self.assertIn("font-src 'self'", response.headers["Content-Security-Policy"])
+        with self.request("/") as response:
+            page = response.read().decode()
+            self.assertIn('href="/inter-latin.woff2"', page)
+            self.assertIn('href="/outfit-latin.woff2"', page)
+            self.assertIn('aria-labelledby="detail-title"', page)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/../store.py")
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
     def test_item_move_and_external_response_roundtrip(self):
         headers = {"X-HQ-Token": self.server.token}
         with self.request("/api/items", {"session_id": "a", "title": "Vendor", "kind": "blocker", "owner": "external", "waiting_on": "Support"}, headers) as response:
