@@ -27,11 +27,12 @@ async function api(path, body) {const response = await fetch(`/api/${path}`, {me
 function scoped() {return state.items.filter(i => !filter.tag || i.tags.includes(filter.tag));}
 function inView(item, view) {
   if (view === 'all') return item.status !== 'done';
-  if (view === 'needs') return item.status === 'open' && item.owner === 'human';
-  if (view === 'pending') return item.status !== 'done' && (item.owner !== 'human' || item.status === 'answered');
+  if (view === 'needs') return item.status === 'open' && item.owner === 'human' && !item.asking;
+  if (view === 'pending') return item.status !== 'done' && (item.owner !== 'human' || item.status === 'answered' || item.asking);
   return item.bucket === view;
 }
 function itemLabel(item) {
+  if (item.asking) return 'Waiting on agent';
   if (item.status === 'answered') return `${deliveryText(item)} · agent next`;
   if (item.bucket === 'done') return 'Done';
   if (item.bucket === 'later') return `Later · ${item.defer_until}`;
@@ -71,12 +72,41 @@ function render() {
   $('#items').querySelectorAll('[data-item]').forEach(el => el.onclick = () => openDetail(el.dataset.item));
   if ($('#empty-connect')) $('#empty-connect').onclick = () => $('#connect-dialog').showModal();
 }
+function conversationHTML(item) {
+  const messages = item.comments || [];
+  const questionHTML = question => {
+    const answer = messages.find(c => c.parent_id === question.id);
+    const status = question.answered ? '' : ({pending: 'Queued for agent', sending: 'Sending…', sent: 'Sent · unconfirmed', received: 'Waiting for reply', failed: 'Delivery failed', cancelled: 'Cancelled'})[question.state] || '';
+    return `<div class="thread-question"><div class="thread-message"><div class="thread-author">You${status ? `<span>${escapeHTML(status)}</span>` : ''}</div><p>${escapeHTML(question.text)}</p>${question.error ? `<p class="form-error">${escapeHTML(question.error)}</p>` : ''}${!question.answered && question.state !== 'cancelled' ? `<div class="thread-actions">${question.state === 'failed' ? `<button class="button" data-comment-action="retry" data-comment-id="${escapeHTML(question.id)}">Retry delivery</button>` : ''}<button class="button" data-comment-action="cancel" data-comment-id="${escapeHTML(question.id)}">Cancel question</button></div>` : ''}</div>${answer ? `<div class="thread-message agent-message"><div class="thread-author">Agent</div><p>${inlineHTML(answer.text)}</p></div>` : ''}</div>`;
+  };
+  return `<section class="item-conversation" aria-label="Clarification"><h3>Ask agent</h3><div class="comment-thread" aria-live="polite">${messages.filter(c => c.author === 'human').map(questionHTML).join('')}</div>${item.status !== 'done' ? `<form id="agent-question-form"><label class="sr-only" for="agent-question">Ask the agent about this item</label><textarea id="agent-question" rows="2" required maxlength="20000" placeholder="Ask about this item…"></textarea><div class="response-actions"><small>Saved here until the agent replies</small><button class="button" type="submit">Send question</button></div><p class="form-error" aria-live="polite"></p></form>` : ''}</section>`;
+}
+function detailDraft() {
+  const fields = [...$('#detail-content').querySelectorAll('textarea, input, select')].filter(el => el.dataset.dirty === 'true').map(el => ({id: el.id, name: el.name, value: el.value}));
+  const active = document.activeElement;
+  return {fields, activeId: active?.id, start: active?.selectionStart, end: active?.selectionEnd,
+    expanded: $('#detail-content details')?.open, scroll: $('#detail-dialog').scrollTop};
+}
+function restoreDetailDraft(draft) {
+  for (const field of draft.fields) {
+    const el = [...$('#detail-content').querySelectorAll('textarea, input, select')].find(el => field.id ? el.id === field.id : el.name === field.name);
+    if (el) {el.value = field.value; el.dataset.dirty = 'true';}
+  }
+  if ($('#move-owner')) $('#move-owner').onchange();
+  $('#detail-content').querySelectorAll('[data-choice]').forEach(el => el.classList.toggle('selected', el.dataset.choice === $('#answer')?.value));
+  if ($('#detail-content details')) $('#detail-content details').open = draft.expanded;
+  const active = draft.activeId && document.getElementById(draft.activeId);
+  if (active) {active.focus({preventScroll: true}); if (typeof draft.start === 'number' && active.setSelectionRange && active.type !== 'date') active.setSelectionRange(draft.start, draft.end);}
+  $('#detail-dialog').scrollTop = draft.scroll;
+}
 function openDetail(id) {
   selectedId = id;
   const item = state.items.find(i => i.id === id); if (!item) return;
   const session = state.sessions.find(s => s.id === item.session_id);
   const response = item.status === 'open' && item.owner !== 'agent';
-  $('#detail-content').innerHTML = `<div class="eyebrow">${item.kind === 'blocker' ? 'BLOCKER' : item.kind === 'question' ? 'QUESTION' : 'TASK'}</div><h2>${escapeHTML(item.title)}</h2><div class="detail-meta">${harnessHTML(session?.provider || item.provider)}<span>${escapeHTML(item.session_name)}</span>${tagHTML(item.tags)}${item.minutes ? `<span>${item.minutes} min of yours</span>` : ''}</div><p class="detail-status">${escapeHTML(itemLabel(item))}</p>${item.detail ? `<div class="detail-context"><p>${inlineHTML(item.detail)}</p></div>` : ''}${readableHTML(item)}${item.answer !== null ? `<div class="detail-answer"><span>YOUR RESPONSE</span><p>${escapeHTML(item.answer)}</p></div><div id="delivery-status" class="delivery ${item.delivery === 'failed' ? 'error' : ''}">${escapeHTML(deliveryText(item))}${item.delivery_error ? `<br>${escapeHTML(item.delivery_error)}` : ''}</div>${item.delivery === 'failed' ? '<button id="retry-response" class="button">Retry delivery</button>' : ''}` : ''}${response ? `<form class="response-form" id="response-form">${item.options.length ? `<div class="choices">${item.options.map(raw => {const o = typeof raw === 'string' ? {label: raw} : raw; return `<button type="button" class="choice ${o.recommended ? 'recommended' : ''}" data-choice="${escapeHTML(o.label)}"><span>${escapeHTML(o.label)}${o.recommended ? '<small>Recommended</small>' : ''}</span>${o.note ? `<span class="choice-note">${escapeHTML(o.note)}</span>` : ''}</button>`;}).join('')}</div>` : ''}<label for="answer">${item.owner === 'external' ? 'What came back?' : item.kind === 'todo' ? 'Your update' : 'Your response'}</label><textarea id="answer" name="text" rows="4" required maxlength="20000" placeholder="Your reply…"></textarea><div class="response-actions"><small>${session && (session.connection === 'waiting' || session.connection === 'channel' || session.route === 'codex') ? 'Auto-delivery' : 'Queued for agent'}</small><button class="button primary" type="submit">${item.kind === 'todo' || item.owner === 'external' ? 'Send update' : 'Send reply'}</button></div><p class="form-error" aria-live="polite"></p></form>` : ''}${item.status === 'open' || (item.status === 'answered' && item.delivery === 'received') ? '<div class="response-actions"><button class="button" id="resolve-item">Mark completed ✓</button></div>' : ''}`;
+  $('#detail-content').innerHTML = `<div class="eyebrow">${item.kind === 'blocker' ? 'BLOCKER' : item.kind === 'question' ? 'QUESTION' : 'TASK'}</div><h2>${escapeHTML(item.title)}</h2><div class="detail-meta">${harnessHTML(session?.provider || item.provider)}<span>${escapeHTML(item.session_name)}</span>${tagHTML(item.tags)}${item.minutes ? `<span>${item.minutes} min of yours</span>` : ''}</div><p class="detail-status">${escapeHTML(itemLabel(item))}</p>${item.detail ? `<div class="detail-context"><p>${inlineHTML(item.detail)}</p></div>` : ''}${readableHTML(item)}${item.answer !== null ? `<div class="detail-answer"><span>YOUR RESPONSE</span><p>${escapeHTML(item.answer)}</p></div><div id="delivery-status" class="delivery ${item.delivery === 'failed' ? 'error' : ''}">${escapeHTML(deliveryText(item))}${item.delivery_error ? `<br>${escapeHTML(item.delivery_error)}` : ''}</div>${item.delivery === 'failed' ? '<button id="retry-response" class="button">Retry delivery</button>' : ''}` : ''}${response ? `<form class="response-form" id="response-form">${item.options.length ? `<div class="choices">${item.options.map(raw => {const o = typeof raw === 'string' ? {label: raw} : raw; return `<button type="button" class="choice ${o.recommended ? 'recommended' : ''}" data-choice="${escapeHTML(o.label)}"><span>${escapeHTML(o.label)}${o.recommended ? '<small>Recommended</small>' : ''}</span>${o.note ? `<span class="choice-note">${escapeHTML(o.note)}</span>` : ''}</button>`;}).join('')}</div>` : ''}<label for="answer">${item.owner === 'external' ? 'What came back?' : item.kind === 'todo' ? 'Your update' : 'Your response'}</label><textarea id="answer" name="text" rows="4" required maxlength="20000" placeholder="Your reply…"></textarea><div class="response-actions"><small>${session && (session.connection === 'waiting' || session.connection === 'channel' || session.route === 'codex') ? 'Auto-delivery' : 'Queued for agent'}</small><button class="button primary" type="submit">${item.kind === 'todo' || item.owner === 'external' ? 'Send update' : 'Send reply'}</button></div><p class="form-error" aria-live="polite"></p></form>` : ''}${!item.asking && (item.status === 'open' || (item.status === 'answered' && item.delivery === 'received')) ? '<div class="response-actions"><button class="button" id="resolve-item">Mark completed ✓</button></div>' : ''}`;
+  $('#detail-content').oninput = event => {if (event.target.matches('textarea, input, select')) event.target.dataset.dirty = 'true';};
+  $('#detail-content').insertAdjacentHTML('beforeend', conversationHTML(item));
   if (item.status === 'open') {
     $('#detail-content').insertAdjacentHTML('beforeend', `<div class="item-moves">${item.bucket === 'later' ? '<button class="button" id="bring-forward">Bring forward</button>' : ''}${item.owner === 'external' ? '<button class="button" id="needs-me">Needs me now</button>' : ''}<details><summary>Move or defer</summary><form id="move-form"><label>Next step<select name="owner" id="move-owner">${[['human','Needs you'],['agent','With agent'],['external','Waiting on someone']].map(([value,label]) => `<option value="${value}" ${item.owner === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label id="move-waiting-label" ${item.owner !== 'external' ? 'hidden' : ''}>Waiting on<input name="waiting_on" maxlength="200" value="${escapeHTML(item.waiting_on)}" ${item.owner === 'external' ? 'required' : ''}></label><label>Show later<input type="date" name="defer_until" value="${escapeHTML(item.defer_until)}"></label><button class="button" type="submit">Save</button><p class="form-error" aria-live="polite"></p></form></details></div>`);
     $('#move-owner').onchange = () => {const external = $('#move-owner').value === 'external'; $('#move-waiting-label').hidden = !external; $('#move-waiting-label input').required = external;};
@@ -85,14 +115,24 @@ function openDetail(id) {
     if ($('#needs-me')) $('#needs-me').onclick = () => moveItem(id, {owner: 'human', defer_until: ''}).catch(error => toast(error.message));
   }
   $('#detail-content').querySelectorAll('[data-copy]').forEach(el => el.onclick = async () => {try {await navigator.clipboard.writeText(item.paste[Number(el.dataset.copy)].text); toast('Copied');} catch {toast('Copy unavailable; select the text to copy');}});
+  if ($('#agent-question-form')) $('#agent-question-form').onsubmit = async event => {
+    event.preventDefault(); const form = event.target, button = form.querySelector('[type="submit"]'), question = form.querySelector('textarea'); button.disabled = true;
+    try {await api(`items/${id}/ask`, {text: question.value}); question.value = ''; await refresh(true); toast('Question saved');}
+    catch (error) {form.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}
+  };
+  $('#detail-content').querySelectorAll('[data-comment-action]').forEach(el => el.onclick = async () => {
+    el.disabled = true;
+    try {await api(`comments/${el.dataset.commentId}/${el.dataset.commentAction}`, {}); await refresh(true);}
+    catch (error) {toast(error.message);} finally {el.disabled = false;}
+  });
   if (item.source) $('#detail-content').insertAdjacentHTML('beforeend', `<p class="item-source">${escapeHTML(item.source)}</p>`);
   if (!$('#detail-dialog').open) $('#detail-dialog').showModal();
-  $('#detail-content').querySelectorAll('[data-choice]').forEach(el => el.onclick = () => {$('#answer').value = el.dataset.choice; $('#detail-content').querySelectorAll('.choice').forEach(c => c.classList.toggle('selected', c === el));});
-  if ($('#response-form')) $('#response-form').onsubmit = async event => {event.preventDefault(); const button = event.target.querySelector('[type="submit"]'); button.disabled = true; try {await api(`items/${id}/reply`, {text: $('#answer').value}); await refresh(true); openDetail(id); toast('Reply saved');} catch(error) {event.target.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
+  $('#detail-content').querySelectorAll('[data-choice]').forEach(el => el.onclick = () => {$('#answer').value = el.dataset.choice; $('#answer').dataset.dirty = 'true'; $('#detail-content').querySelectorAll('.choice').forEach(c => c.classList.toggle('selected', c === el));});
+  if ($('#response-form')) $('#response-form').onsubmit = async event => {event.preventDefault(); const button = event.target.querySelector('[type="submit"]'); button.disabled = true; try {await api(`items/${id}/reply`, {text: $('#answer').value}); await refresh(true); toast('Reply saved');} catch(error) {event.target.querySelector('.form-error').textContent = error.message;} finally {button.disabled = false;}};
   if ($('#resolve-item')) $('#resolve-item').onclick = async () => {try {await api(`items/${id}/resolve`, {}); $('#detail-dialog').close(); await refresh(true); toast('Item completed');} catch(error) {toast(error.message);}};
-  if ($('#retry-response')) $('#retry-response').onclick = async () => {try {await api(`items/${id}/retry`, {}); await refresh(true); openDetail(id);} catch(error) {toast(error.message);}};
+  if ($('#retry-response')) $('#retry-response').onclick = async () => {try {await api(`items/${id}/retry`, {}); await refresh(true);} catch(error) {toast(error.message);}};
 }
-async function moveItem(id, patch) {await api(`items/${id}/update`, patch); await refresh(true); openDetail(id); toast('Item updated');}
+async function moveItem(id, patch) {await api(`items/${id}/update`, patch); await refresh(true); toast('Item updated');}
 function refresh(force = false) {
   if (loading) return force ? loading.then(() => refresh(true)) : loading;
   loading = refreshState().finally(() => {loading = null;});
@@ -102,6 +142,10 @@ async function refreshState() {
   try {
     const next = await api('state');
     const signature = JSON.stringify({items: next.items, sessions: next.sessions.map(s => [s.id, s.name, s.provider, s.connection, s.route])});
+    const before = state.items.find(i => i.id === selectedId);
+    const after = next.items.find(i => i.id === selectedId);
+    const detailChanged = JSON.stringify(before) !== JSON.stringify(after);
+    const draft = $('#detail-dialog').open && detailChanged ? detailDraft() : null;
     state = next;
     if (signature !== snapshotSignature) {
       snapshotSignature = signature;
@@ -109,7 +153,7 @@ async function refreshState() {
       const focusItem = focused?.dataset.item;
       render();
       if (focusItem) [...$('#items').querySelectorAll('[data-item]')].find(el => el.dataset.item === focusItem)?.focus({preventScroll: true});
-      if ($('#detail-dialog').open && selectedId && state.items.find(i => i.id === selectedId)?.status !== 'open') openDetail(selectedId);
+      if (draft && after) {openDetail(selectedId); restoreDetailDraft(draft);}
     }
     $('#service-status').hidden = true;
   } catch(error) {$('#service-status').textContent = 'Offline'; $('#service-status').hidden = false;}

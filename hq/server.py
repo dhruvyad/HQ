@@ -100,12 +100,21 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ["api", "items"]:
                 if parts[3] == "reply":
                     result = store.reply(parts[2], body.get("text"))
+                elif parts[3] == "ask":
+                    result = store.ask_agent(parts[2], body.get("text"))
                 elif parts[3] == "resolve":
                     result = store.resolve(parts[2], body.get("note", ""))
                 elif parts[3] == "update":
                     result = store.update(parts[2], **body)
                 elif parts[3] == "retry":
                     result = store.retry(parts[2])
+                else:
+                    return self.output(404, {"error": "Not found"})
+            elif len(parts) == 4 and parts[:2] == ["api", "comments"]:
+                if parts[3] == "cancel":
+                    result = store.cancel_comment(parts[2])
+                elif parts[3] == "retry":
+                    result = store.retry_comment(parts[2])
                 else:
                     return self.output(404, {"error": "Not found"})
             elif parts == ["api", "sessions"]:

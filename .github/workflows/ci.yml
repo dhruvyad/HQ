@@ -18,3 +18,4 @@ jobs:
         with:
           node-version: "22"
       - run: node --check hq/static/app.js
+      - run: node tests/test_ui.js

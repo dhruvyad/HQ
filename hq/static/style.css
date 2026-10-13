@@ -207,3 +207,16 @@ textarea { resize: vertical; line-height: 1.7; }
 .choice-note { font-size: 11px; color: #999; }
 .item-source { margin-top: 25px; color: #777; font-size: 10px; }
 .effort { color: #929292; font-size: 10px; }
+
+.item-conversation { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); }
+.item-conversation h3 { margin: 0 0 14px; font-size: 13px; font-weight: 550; }
+.thread-question { margin-bottom: 18px; }
+.thread-message { padding: 13px; background: #181818; border: 1px solid #303030; border-radius: 6px; }
+.thread-author { display: flex; justify-content: space-between; gap: 10px; color: #ddd; font-size: 11px; }
+.thread-author span { color: #929292; font-size: 10px; }
+.thread-message p { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-message { margin: 8px 0 0 18px; background: #101010; }
+.thread-actions { display: flex; gap: 8px; margin-top: 10px; }
+.thread-actions .button { padding: 5px 9px; font-size: 10px; }
+.thread-message code { background: #252525; padding: 2px 4px; border-radius: 3px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }

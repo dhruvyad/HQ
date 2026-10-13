@@ -167,6 +167,22 @@ def parser():
     reply = commands.add_parser("reply", help="Save a human answer and deliver it to the owning conversation")
     reply.add_argument("item_id")
     reply.add_argument("text")
+    question = commands.add_parser("question", help="Ask the agent for clarification on an unfinished item")
+    question.add_argument("item_id")
+    question.add_argument("text")
+    comments = commands.add_parser("comments", help="Read this session's item conversations")
+    comments.add_argument("--session", required=True)
+    comments.add_argument("--item", dest="item_id")
+    comments.add_argument("--pending", action="store_true")
+    respond = commands.add_parser("respond", help="Answer a human clarification in its item thread")
+    respond.add_argument("comment_id")
+    respond.add_argument("text")
+    respond.add_argument("--session", required=True)
+    for name in ("comment-ack", "comment-retry", "comment-cancel"):
+        command = commands.add_parser(name)
+        command.add_argument("comment_id")
+        if name == "comment-ack":
+            command.add_argument("--session", required=True)
     wait = commands.add_parser("await", help="Wait on an existing question without duplicating it")
     wait.add_argument("item_id")
     wait.add_argument("--session", required=True)
@@ -256,6 +272,18 @@ def main():
             return output(store.snapshot(args.session, args.tag, args.status, args.bucket)["items"])
         if args.command == "reply":
             return output(store.reply(args.item_id, args.text))
+        if args.command == "question":
+            return output(store.ask_agent(args.item_id, args.text))
+        if args.command == "comments":
+            return output(store.comments(args.session, args.item_id, args.pending))
+        if args.command == "respond":
+            return output(store.respond(args.comment_id, args.session, args.text))
+        if args.command == "comment-ack":
+            return output(store.acknowledge_comment(args.comment_id, args.session))
+        if args.command == "comment-retry":
+            return output(store.retry_comment(args.comment_id))
+        if args.command == "comment-cancel":
+            return output(store.cancel_comment(args.comment_id))
         if args.command == "inbox":
             return output(store.inbox(args.session))
         if args.command in {"ack", "done"}:

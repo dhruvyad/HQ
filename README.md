@@ -71,7 +71,7 @@ Human action updates use the same durable, per-item delivery as decisions.
 Answered items stay in Waiting with delivery status until completed by the agent.
 Existing databases migrate in place, preserving items, replies, and routing.
 Restart the local service and reload client tools after upgrading to load the
-new reporting fields.
+new tools and reporting fields.
 
 `hq ask` waits and prints the human answer as JSON into the same agent tool call.
 The conversation continues with that answer in context. The default wait is one
@@ -90,6 +90,36 @@ hq list --tag billing --status open
 
 Only the owning session can acknowledge a response. A task is done when the
 agent marks it done; answering a question does not pretend the work is complete.
+
+## Clarification threads
+
+Open any unfinished item and use **Ask agent** to ask about it. Each question
+and its agent reply appear together in that item's side panel. Multiple questions
+stay independent. Unanswered questions show in Agent pending and Waiting; after
+all questions are answered or cancelled, the item returns to its original next
+step. Asking or replying never submits a decision or completes the task.
+Outstanding questions must be answered or cancelled before completing the item.
+The panel refreshes agent replies while preserving unsent form drafts.
+
+```sh
+hq question ITEM_ID "What does this unblock?"
+hq comments --session codex:my-thread --pending
+hq respond COMMENT_ID "It unblocks the release." --session codex:my-thread
+hq comment-ack COMMENT_ID --session codex:my-thread
+hq comment-retry COMMENT_ID
+hq comment-cancel COMMENT_ID
+```
+
+Agents use `hq_comments` and `hq_comment_reply` with the exact session id and
+question's comment id. Receipt does not count as a reply: unanswered questions
+remain in `hq_comments --pending` even after acknowledgement. A waiting tool can
+return `status=clarification` and a `questions` array; the agent answers each,
+then resumes waiting on the original item. Bound Codex sessions and configured
+Claude Code channels can also receive questions through their existing delivery
+routes. Offline sessions retain questions as **Queued for agent** until they
+check HQ; this feature does not create the missing live connections.
+Failed deliveries show the saved error and an explicit retry button. Cancel
+withdraws an unanswered question but keeps its history.
 
 ## Readable agent reports
 
@@ -204,7 +234,8 @@ subscribed to a new connector. Local-executor Work chats can use `hq` directly.
 
 `hq mcp` serves newline-delimited JSON-RPC over stdio. It exposes
 `hq_reporting_guide`, `hq_register_session`, `hq_report`, `hq_update`, `hq_list`, `hq_request_input`, `hq_wait`,
-`hq_inbox`, `hq_acknowledge`, and `hq_resolve`. Waiting requests run concurrently
+`hq_inbox`, `hq_comments`, `hq_comment_reply`, `hq_comment_acknowledge`,
+`hq_acknowledge`, and `hq_resolve`. Waiting requests run concurrently
 with pings, lists, and cancellation. MCP waits default to 120 seconds. Use an
 appropriate host timeout or `hq_wait` after a timeout; do not create the same
 question again.
@@ -218,6 +249,7 @@ Suggested agent instruction (the full guide is provided by the MCP server):
 > Use defer_until for later work and hq_update when an existing item's next step
 > changes. A conversation can have multiple items in every category. Ask for
 > human input with hq_request_input and treat the returned answer as guidance.
+> Check hq_comments with pending=true and answer clarifications with hq_comment_reply.
 > Check hq_inbox when resuming, acknowledge responses after reading them, and
 > resolve items after the work is done.
 
@@ -235,6 +267,7 @@ rendered as text, never executable HTML.
 ```sh
 python3 -m unittest discover -s tests -v
 node --check hq/static/app.js
+node tests/test_ui.js
 ```
 
 Tests cover SQLite persistence and migration, multiple independent items per

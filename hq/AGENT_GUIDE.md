@@ -45,6 +45,22 @@ open until those steps succeed. In the UI, Human pending shows unresolved human
 work, and Agent pending shows agent work, outside blockers, and follow-through
 after human replies. Waiting and Later also provide focused views.
 
+Before starting, when resuming, and before finishing, check hq_comments with
+pending=true for your exact session. Human questions stay pending until answered,
+even after delivery or acknowledgement. Answer each using hq_comment_reply with
+its comment_id and session_id; keep the reply brief and directly answer the
+question. These comments clarify the existing item. They do not submit the
+human's decision or complete the task. Ask for any newly needed human action or
+decision in a separate item. Multiple questions on one item are independent.
+
+A waiting hq_request_input or hq_wait call can return status=clarification with a
+questions array. Reply to each comment, then call hq_wait on the original item;
+do not recreate the original question. Native Codex and configured Claude Code
+channels can deliver questions to the owning conversation. Without a live route,
+questions stay queued until the agent checks HQ. Never claim a push route works
+before it has been validated. CLI equivalents: hq comments --session ID --pending,
+hq respond COMMENT_ID "Brief reply" --session ID, and hq await ITEM_ID --session ID.
+
 Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
 loop with hq_resolve and a one-line note describing what you did. A received

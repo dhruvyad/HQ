@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from hq.adapters import CodexClient
+from hq.adapters import CodexClient, Dispatcher
 from hq.discovery import discover
 from hq.server import Server
 from hq.store import Store
@@ -105,7 +105,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):
@@ -255,6 +255,143 @@ class StoreTests(unittest.TestCase):
         self.assertLessEqual(len(self.store.session("codex:thread1")["name"]), 500)
         self.assertEqual(source.read_bytes(), before)
 
+    def test_multiple_clarifications_persist_and_leave_original_decision_independent(self):
+        item = self.question()
+        other = self.store.add("a", "Separate action", owner="human")
+        first = self.store.ask_agent(item["id"], "Why annual?")
+        second = self.store.ask_agent(item["id"], "What is the cancellation policy?")
+        reopened = Store(self.store.path)
+        self.assertTrue(reopened.item(item["id"])["asking"])
+        self.assertEqual(reopened.item(item["id"])["bucket"], "waiting")
+        self.assertEqual(reopened.item(other["id"]), other)
+        reopened.acknowledge_comment(first["id"], "a")
+        self.assertEqual(len(reopened.comments("a", pending=True)), 2)
+        with self.assertRaises(ValueError):
+            reopened.resolve(item["id"])
+        with self.assertRaises(ValueError):
+            reopened.respond(first["id"], "b", "Wrong conversation")
+        reopened.respond(first["id"], "a", "It saves 20%.")
+        self.assertTrue(reopened.item(item["id"])["asking"])
+        reopened.cancel_comment(second["id"])
+        restored = reopened.item(item["id"])
+        self.assertFalse(restored["asking"])
+        self.assertEqual(restored["bucket"], "needs")
+        self.assertEqual(restored["status"], "open")
+        self.assertIsNone(restored["answer"])
+        self.assertEqual(restored["options"], item["options"])
+        self.assertEqual(len(restored["comments"]), 3)
+        with self.assertRaises(ValueError):
+            reopened.respond(second["id"], "a", "Too late")
+        reopened.reply(item["id"], "Annual")
+        reopened.acknowledge(item["id"], "a")
+        reopened.resolve(item["id"])
+        with self.assertRaises(ValueError):
+            reopened.ask_agent(item["id"], "More?")
+
+    def test_clarification_restores_deferred_external_owner_and_existing_answer(self):
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        item = self.store.add("a", "Vendor review", owner="external", waiting_on="Vendor", defer_until=tomorrow)
+        question = self.store.ask_agent(item["id"], "Which vendor?")
+        self.assertEqual(self.store.item(item["id"])["bucket"], "waiting")
+        self.store.respond(question["id"], "a", "Our hosting vendor.")
+        self.assertEqual(self.store.item(item["id"])["bucket"], "later")
+        self.assertEqual(self.store.item(item["id"])["waiting_on"], "Vendor")
+        self.store.reply(item["id"], "Approved")
+        question = self.store.ask_agent(item["id"], "What happens next?")
+        self.store.respond(question["id"], "a", "I will ship it.")
+        self.assertEqual(self.store.item(item["id"])["answer"], "Approved")
+        self.assertEqual(self.store.item(item["id"])["delivery"], "pending")
+
+    def test_concurrent_agent_replies_and_delivery_cannot_overwrite_history(self):
+        item = self.question()
+        question = self.store.ask_agent(item["id"], "Why?")
+        def respond(text):
+            try:
+                self.store.respond(question["id"], "a", text)
+                return True
+            except ValueError:
+                return False
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            self.assertEqual(sum(pool.map(respond, ["First", "Second"])), 1)
+        self.store.comment_delivery(question["id"], "failed", "Late transport error")
+        self.assertEqual(self.store.comment(question["id"])["state"], "received")
+        self.assertEqual(len(self.store.comments("a")), 2)
+        with self.assertRaises(ValueError):
+            self.store.comments("b", item["id"])
+        cancelled = self.store.ask_agent(item["id"], "Ignore this")
+        self.store.cancel_comment(cancelled["id"])
+        self.store.comment_delivery(cancelled["id"], "sent")
+        self.assertEqual(self.store.comment(cancelled["id"])["state"], "cancelled")
+
+    def test_clarification_claims_are_exclusive_recoverable_and_yield_to_waiter(self):
+        self.store.bind_codex("a", "thread-a", "/tmp/test.sock")
+        item = self.question()
+        question = self.store.ask_agent(item["id"], "Why?")
+        with self.store.db() as db:
+            db.execute("INSERT INTO waiters VALUES (?,?,?)", (item["id"], "test", time.time()+10))
+        self.assertIsNone(self.store.claim_comment())
+        with self.store.db() as db:
+            db.execute("DELETE FROM waiters")
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            claims = list(pool.map(lambda _: self.store.claim_comment(), range(4)))
+        self.assertEqual(sum(c is not None for c in claims), 1)
+        with self.store.db() as db:
+            db.execute("UPDATE comments SET claim_until=0")
+        self.store.recover_uncertain()
+        self.assertEqual(self.store.comment(question["id"])["state"], "failed")
+        self.assertIsNone(self.store.claim_comment())
+        self.store.retry_comment(question["id"])
+        self.assertEqual(self.store.claim_comment()["external_id"], "thread-a")
+
+    def test_waiting_call_returns_clarification_then_resumes_original_decision(self):
+        item = self.question()
+        question = self.store.ask_agent(item["id"], "What does it cost?")
+        result = self.store.wait(item["id"], "a", 1)
+        self.assertEqual(result["status"], "clarification")
+        self.assertEqual(result["questions"][0]["id"], question["id"])
+        self.assertEqual(self.store.comments("a", pending=True)[0]["state"], "received")
+        self.assertEqual(self.store.wait(item["id"], "a", .01)["status"], "timeout")
+        self.store.respond(question["id"], "a", "100 per year.")
+        self.store.reply(item["id"], "Annual")
+        self.assertEqual(self.store.wait(item["id"], "a", 1)["answer"], "Annual")
+        self.assertEqual(len(self.store.snapshot()["items"]), 1)
+
+    def test_cli_question_and_agent_response_are_separate_from_decision(self):
+        def cli(*args):
+            result = subprocess.run([sys.executable, str(ROOT / "bin/hq"), *args],
+                env={**os.environ, "HQ_HOME": self.temp.name}, capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)
+        cli("session", "add", "cli", "--name", "CLI")
+        item = cli("add", "Choose plan", "--session", "cli", "--kind", "question")
+        question = cli("question", item["id"], "Why this plan?")
+        cli("comment-ack", question["id"], "--session", "cli")
+        self.assertEqual(len(cli("comments", "--session", "cli", "--pending")), 1)
+        response = cli("respond", question["id"], "It meets the requirements.", "--session", "cli")
+        self.assertEqual(response["parent_id"], question["id"])
+        self.assertEqual(cli("comments", "--session", "cli", "--pending"), [])
+        self.assertEqual(cli("list", "--session", "cli")[0]["status"], "open")
+
+    def test_native_clarification_routes_to_exact_thread_and_keeps_task_open(self):
+        self.store.bind_codex("a", "thread-a", "/tmp/test.sock")
+        item = self.question()
+        question = self.store.ask_agent(item["id"], "Why annual?")
+        other = self.store.ask_agent(self.question("b")["id"], "Private to b")
+        dispatcher = Dispatcher(self.store)
+        client = Mock()
+        client.deliver.side_effect = lambda *_: dispatcher.stop.set()
+        with patch("hq.adapters.CodexClient", return_value=client) as constructor:
+            dispatcher.run()
+        constructor.assert_called_once_with("/tmp/test.sock")
+        thread, text = client.deliver.call_args.args
+        self.assertEqual(thread, "thread-a")
+        self.assertIn(question["id"], text)
+        self.assertIn("hq_comment_reply", text)
+        self.assertNotIn("Private to b", text)
+        self.assertEqual(self.store.comment(question["id"])["state"], "received")
+        self.assertEqual(self.store.comment(other["id"])["state"], "pending")
+        self.assertTrue(self.store.item(item["id"])["asking"])
+        self.assertIsNone(self.store.item(item["id"])["answer"])
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
@@ -298,6 +435,26 @@ class HTTPTests(unittest.TestCase):
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Support approved"}, headers) as response:
             self.assertEqual(json.load(response)["bucket"], "waiting")
         self.assertEqual(self.store.item(other["id"]), other)
+
+    def test_http_question_thread_response_and_cancellation(self):
+        item = self.store.add("a", "Choose plan", kind="question")
+        headers = {"X-HQ-Token": self.server.token}
+        with self.request(f"/api/items/{item['id']}/ask", {"text": "Why?"}, headers) as response:
+            question = json.load(response)
+        self.store.respond(question["id"], "a", "It is cheaper.")
+        with self.request("/api/state", headers=headers) as response:
+            current = json.load(response)["items"][0]
+        self.assertEqual(current["comments"][1]["text"], "It is cheaper.")
+        self.assertFalse(current["asking"])
+        self.assertEqual(current["status"], "open")
+        question = self.store.ask_agent(item["id"], "Another question")
+        with self.request(f"/api/comments/{question['id']}/cancel", {}, headers) as response:
+            self.assertEqual(json.load(response)["state"], "cancelled")
+        self.store.resolve(item["id"])
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request(f"/api/items/{item['id']}/ask", {"text": "More?"}, headers)
+        self.assertEqual(error.exception.code, 400)
+        error.exception.close()
 
     def test_cross_origin_dns_rebinding_and_unauthorized_reads_blocked(self):
         for headers in ({}, {"Host": "attacker.example"}, {"Origin": "https://attacker.example", "X-HQ-Token": self.server.token}):
@@ -418,6 +575,30 @@ class MCPTests(unittest.TestCase):
         rejected = call(24, "hq_update", {"session_id": "b", "item_id": item["id"], "owner": "agent"})
         self.assertTrue(rejected["isError"])
 
+    def test_mcp_clarification_interrupts_wait_and_agent_replies_in_item(self):
+        item = self.store.add("a", "Choose plan", kind="question")
+        self.send("tools/call", 31, {"name": "hq_wait", "arguments": {"session_id": "a", "item_id": item["id"], "timeout": 5}})
+        deadline = time.monotonic()+3
+        while not self.store.has_waiter(item["id"]) and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue(self.store.has_waiter(item["id"]))
+        question = self.store.ask_agent(item["id"], "Why?")
+        result = self.messages.get(timeout=3)
+        self.assertEqual(result["id"], 31)
+        received = json.loads(result["result"]["content"][0]["text"])
+        self.assertEqual(received["status"], "clarification")
+        self.send("tools/call", 32, {"name": "hq_comments", "arguments": {"session_id": "a", "pending": True}})
+        pending = self.messages.get(timeout=3)
+        self.assertEqual(json.loads(pending["result"]["content"][0]["text"])[0]["id"], question["id"])
+        self.send("tools/call", 33, {"name": "hq_comment_reply", "arguments": {"session_id": "a", "comment_id": question["id"], "text": "It fits the scope."}})
+        self.assertFalse(self.messages.get(timeout=3)["result"]["isError"])
+        self.assertFalse(self.store.item(item["id"])["asking"])
+        self.assertEqual(self.store.item(item["id"])["status"], "open")
+        self.store.reply(item["id"], "Go ahead")
+        self.send("tools/call", 34, {"name": "hq_wait", "arguments": {"session_id": "a", "item_id": item["id"], "timeout": 1}})
+        result = self.messages.get(timeout=3)
+        self.assertEqual(json.loads(result["result"]["content"][0]["text"])["answer"], "Go ahead")
+
     def test_cancellation_keeps_question(self):
         self.send("tools/call", 1, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 60}})
         time.sleep(.2)
@@ -429,6 +610,24 @@ class MCPTests(unittest.TestCase):
 
 class ChannelTests(MCPTests):
     channel = True
+
+    def test_channel_clarification_push_requires_agent_reply(self):
+        self.send("initialize", 40)
+        self.messages.get(timeout=3)
+        self.send("notifications/initialized")
+        item = self.store.add("a", "Upload certificate", owner="human")
+        self.store.register("b", "Other conversation")
+        other = self.store.ask_agent(self.store.add("b", "Other task")["id"], "Private to b")
+        question = self.store.ask_agent(item["id"], "Where should I upload it?")
+        notification = self.messages.get(timeout=3)
+        self.assertEqual(notification["params"]["meta"]["comment_id"], question["id"])
+        self.assertEqual(notification["params"]["meta"]["session_id"], "a")
+        self.assertNotIn("Private to b", notification["params"]["content"])
+        self.send("tools/call", 41, {"name": "hq_comment_reply", "arguments": {"session_id": "a", "comment_id": question["id"], "text": "In the vendor portal."}})
+        self.assertFalse(self.messages.get(timeout=3)["result"]["isError"])
+        self.assertEqual(self.store.comment(question["id"])["state"], "received")
+        self.assertFalse(self.store.item(item["id"])["asking"])
+        self.assertEqual(self.store.comment(other["id"])["state"], "pending")
 
     def test_channel_push_and_explicit_acknowledgement(self):
         self.send("initialize", 10)

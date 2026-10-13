@@ -41,12 +41,18 @@ TOOLS = [
      schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION, **READABLE}, ["session_id", "item_id"])),
     ("hq_list", "List pending work and answers across conversations, optionally filtered by session, tag, or status.",
      schema({"session_id": TEXT, "tag": TEXT, "status": {"enum": ["open", "answered", "done"]}, "bucket": {"enum": ["needs", "pending", "waiting", "later", "done"]}})),
-    ("hq_request_input", "Ask the human in HQ and wait for their answer in this same tool call. On timeout, the saved question remains; use hq_wait or hq_inbox later. Use up to 120 seconds to fit your client's timeout.",
+    ("hq_request_input", "Ask the human in HQ and wait for their answer in this same tool call. May return status=clarification; answer each using hq_comment_reply then hq_wait on the same item. On timeout, use hq_wait or hq_inbox later. Use up to 120 seconds to fit your client's timeout.",
      schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "tags": STRINGS, "options": CHOICES, **READABLE, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "title"])),
-    ("hq_wait", "Wait for the response to an already-created question without creating duplicates.",
+    ("hq_wait", "Wait for the response to an existing question. If status=clarification, answer the returned comments with hq_comment_reply then wait on the same item again.",
      schema({"session_id": TEXT, "item_id": TEXT, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "item_id"])),
     ("hq_inbox", "Read saved human responses for this session, including replies received while disconnected. Acknowledge each after reading.",
      schema({"session_id": TEXT}, ["session_id"])),
+    ("hq_comments", "Read clarification threads for this session; pending=true lists every unanswered human question, including ones already delivered. Reply with hq_comment_reply.",
+     schema({"session_id": TEXT, "item_id": TEXT, "pending": {"type": "boolean"}}, ["session_id"])),
+    ("hq_comment_reply", "Answer a specific human clarification in its item thread. This is separate from a decision or task completion; if you need a new decision, report a new question item.",
+     schema({"session_id": TEXT, "comment_id": TEXT, "text": TEXT}, ["session_id", "comment_id", "text"])),
+    ("hq_comment_acknowledge", "Confirm this session received a clarification. Receipt does not answer it; use hq_comment_reply after reading.",
+     schema({"session_id": TEXT, "comment_id": TEXT}, ["session_id", "comment_id"])),
     ("hq_acknowledge", "Confirm that this conversation has received its human response.",
      schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
     ("hq_resolve", "Close the loop after acting on an item; note is a one-line account of what you did. A response must be received before closing an answered question.",
@@ -95,6 +101,12 @@ def run(provider="other", channel=False, session_id=None):
             return store.wait(args["item_id"], id, args.get("timeout", 120), cancel)
         if name == "hq_inbox":
             return store.inbox(id)
+        if name == "hq_comments":
+            return store.comments(**args)
+        if name == "hq_comment_reply":
+            return store.respond(**args)
+        if name == "hq_comment_acknowledge":
+            return store.acknowledge_comment(args["comment_id"], id)
         if name == "hq_acknowledge":
             return store.acknowledge(args["item_id"], id)
         if name == "hq_resolve":
@@ -127,6 +139,12 @@ def run(provider="other", channel=False, session_id=None):
                         "meta": {"item_id": reply["item_id"], "session_id": bound_id}}})
                     # Emission isn't proof that Claude acted; require hq_acknowledge.
                     store.delivery_result(reply["id"], "sent")
+            question = store.claim_comment(bound_id)
+            if question:
+                send({"method": "notifications/claude/channel", "params": {
+                    "content": f"Human clarification on {question['title']}: {question['text']}\nReply in HQ using hq_comment_reply with comment_id {question['id']} and session_id {bound_id}.",
+                    "meta": {"kind": "clarification", "comment_id": question["id"], "item_id": question["item_id"], "session_id": bound_id}}})
+                store.comment_delivery(question["id"], "sent")
             closed.wait(0.5)
 
     if channel:

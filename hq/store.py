@@ -51,6 +51,13 @@ class Store:
                 CREATE TABLE IF NOT EXISTS waiters (
                     item_id TEXT PRIMARY KEY REFERENCES items(id), owner TEXT, lease_until REAL
                 );
+                CREATE TABLE IF NOT EXISTS comments (
+                    id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id),
+                    parent_id TEXT UNIQUE REFERENCES comments(id), author TEXT NOT NULL,
+                    text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+                    error TEXT, created REAL NOT NULL, delivered REAL, claim_until REAL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS comments_item ON comments(item_id, created);
                 CREATE INDEX IF NOT EXISTS items_session ON items(session_id, status);
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
@@ -65,7 +72,7 @@ class Store:
                 db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
             if "presentation" not in columns:
                 db.execute("ALTER TABLE items ADD COLUMN presentation TEXT NOT NULL DEFAULT '{}'")
-            db.execute("PRAGMA user_version=3")
+            db.execute("PRAGMA user_version=4")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -249,6 +256,8 @@ class Store:
 
     @staticmethod
     def bucket(item, today=None):
+        if item.get("asking"):
+            return "waiting"
         if item["status"] == "done":
             return "done"
         if item["status"] == "answered":
@@ -272,7 +281,9 @@ class Store:
                 FROM items i LEFT JOIN replies r ON i.id=r.item_id WHERE i.id=?""", (id,)).fetchone()
         if not row:
             raise ValueError("Item not found")
-        return self.decode(row)
+        result = self.decode(row)
+        self.attach_comments([result])
+        return result
 
     def snapshot(self, session_id=None, tag=None, status=None, bucket=None):
         with self.db() as db:
@@ -281,6 +292,7 @@ class Store:
                 r.text AS answer,r.state AS delivery,r.error AS delivery_error
                 FROM items i JOIN sessions s ON s.id=i.session_id
                 LEFT JOIN replies r ON i.id=r.item_id ORDER BY i.created DESC""")]
+        self.attach_comments(items)
         for s in sessions:
             if s["lease_until"] < time.time():
                 s["connection"] = "offline"
@@ -311,11 +323,134 @@ class Store:
             pending = db.execute("SELECT 1 FROM replies WHERE item_id=? AND state IN ('pending','sending','sent','failed')", (id,)).fetchone()
             if pending:
                 raise ValueError("The response must be received before this item can be completed")
+            if db.execute("SELECT 1 FROM comments c WHERE c.item_id=? AND c.author='human' AND c.state!='cancelled' AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id)", (id,)).fetchone():
+                raise ValueError("Answer or cancel the outstanding clarification before completing this item")
             presentation = json.loads(db.execute("SELECT presentation FROM items WHERE id=?", (id,)).fetchone()[0])
             if note:
                 presentation["agent_note"] = required(note, "completion note", 4000)
             db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
         return self.item(id)
+
+    def attach_comments(self, items):
+        threads = {}
+        with self.db() as db:
+            for row in db.execute("""SELECT c.*,
+                EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id) AS answered
+                FROM comments c ORDER BY c.created,c.rowid"""):
+                comment = dict(row)
+                comment["answered"] = bool(comment["answered"])
+                threads.setdefault(comment["item_id"], []).append(comment)
+        for item in items:
+            item["comments"] = threads.get(item["id"], [])
+            item["asking"] = any(c["author"] == "human" and not c["answered"] and c["state"] != "cancelled" for c in item["comments"])
+            item["bucket"] = self.bucket(item)
+
+    def ask_agent(self, item_id, text):
+        text, now, comment_id = required(text, "question", 20000), time.time(), str(uuid.uuid4())
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            item = db.execute("SELECT status FROM items WHERE id=?", (item_id,)).fetchone()
+            if not item or item["status"] == "done":
+                raise ValueError("Ask for clarification on an unfinished item")
+            db.execute("INSERT INTO comments (id,item_id,author,text,created) VALUES (?,?,'human',?,?)", (comment_id, item_id, text, now))
+            db.execute("UPDATE items SET updated=? WHERE id=?", (now, item_id))
+        return self.comment(comment_id)
+
+    def comment(self, comment_id):
+        with self.db() as db:
+            row = db.execute("""SELECT c.*,i.session_id,i.title,
+                EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id) AS answered
+                FROM comments c JOIN items i ON i.id=c.item_id WHERE c.id=?""", (comment_id,)).fetchone()
+        if not row:
+            raise ValueError("Comment not found")
+        result = dict(row)
+        result["answered"] = bool(result["answered"])
+        return result
+
+    def comments(self, session_id, item_id=None, pending=False):
+        self.session(session_id)
+        if item_id and self.item(item_id)["session_id"] != session_id:
+            raise ValueError("Item belongs to a different session")
+        with self.db() as db:
+            rows = db.execute("""SELECT c.*,i.session_id,i.title,
+                EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id) AS answered
+                FROM comments c JOIN items i ON i.id=c.item_id WHERE i.session_id=?
+                AND (? IS NULL OR c.item_id=?) ORDER BY c.created,c.rowid""", (session_id, item_id, item_id))
+            result = [{**dict(row), "answered": bool(row["answered"])} for row in rows]
+        return [c for c in result if not pending or (c["author"] == "human" and not c["answered"] and c["state"] != "cancelled")]
+
+    def respond(self, comment_id, session_id, text):
+        text, now, id = required(text, "agent response", 20000), time.time(), str(uuid.uuid4())
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            question = db.execute("SELECT c.*,i.session_id FROM comments c JOIN items i ON i.id=c.item_id WHERE c.id=?", (comment_id,)).fetchone()
+            if not question or question["session_id"] != session_id or question["author"] != "human":
+                raise ValueError("No human question in this session")
+            if question["state"] == "cancelled":
+                raise ValueError("This question was cancelled")
+            if db.execute("SELECT 1 FROM comments WHERE parent_id=?", (comment_id,)).fetchone():
+                raise ValueError("This question already has a response")
+            db.execute("INSERT INTO comments (id,item_id,parent_id,author,text,state,created) VALUES (?,?,?,'agent',?,'posted',?)", (id, question["item_id"], comment_id, text, now))
+            db.execute("UPDATE comments SET state='received',error=NULL,delivered=?,claim_until=0 WHERE id=?", (now, comment_id))
+            db.execute("UPDATE items SET updated=? WHERE id=?", (now, question["item_id"]))
+        return self.comment(id)
+
+    def acknowledge_comment(self, comment_id, session_id):
+        with self.db() as db:
+            cursor = db.execute("""UPDATE comments SET state='received',error=NULL,delivered=?,claim_until=0
+                WHERE id=? AND author='human' AND state!='cancelled'
+                AND item_id IN (SELECT id FROM items WHERE session_id=?)""", (time.time(), comment_id, session_id))
+            if not cursor.rowcount:
+                raise ValueError("No active human question in this session")
+        return self.comment(comment_id)
+
+    def cancel_comment(self, comment_id):
+        with self.db() as db:
+            cursor = db.execute("""UPDATE comments SET state='cancelled',error=NULL,claim_until=0
+                WHERE id=? AND author='human' AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (comment_id,))
+            if not cursor.rowcount:
+                raise ValueError("Only unanswered human questions can be cancelled")
+        return self.comment(comment_id)
+
+    def take_questions(self, item_id, session_id):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("""SELECT c.* FROM comments c JOIN items i ON i.id=c.item_id
+                WHERE c.item_id=? AND i.session_id=? AND c.author='human'
+                AND c.state IN ('pending','sent','failed')
+                AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id)
+                ORDER BY c.created,c.rowid""", (item_id, session_id)).fetchall()
+            for row in rows:
+                db.execute("UPDATE comments SET state='received',error=NULL,delivered=?,claim_until=0 WHERE id=?", (time.time(), row["id"]))
+        return [{**dict(row), "state": "received"} for row in rows]
+
+    def claim_comment(self, session_id=None):
+        # A waiting tool gets first choice; native/channel delivery claims atomically.
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT c.*,i.session_id,i.title,s.external_id,s.endpoint
+                FROM comments c JOIN items i ON i.id=c.item_id JOIN sessions s ON s.id=i.session_id
+                WHERE c.author='human' AND c.state='pending'
+                AND ((? IS NULL AND s.route='codex') OR s.id=?)
+                AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id)
+                AND NOT EXISTS (SELECT 1 FROM waiters w WHERE w.item_id=i.id AND w.lease_until>?)
+                ORDER BY c.created,c.rowid LIMIT 1""", (session_id, session_id, time.time())).fetchone()
+            if row:
+                db.execute("UPDATE comments SET state='sending',claim_until=? WHERE id=?", (time.time()+60, row["id"]))
+                return dict(row)
+
+    def comment_delivery(self, comment_id, state, error=None):
+        with self.db() as db:
+            db.execute("UPDATE comments SET state=?,error=?,delivered=?,claim_until=0 WHERE id=? AND state NOT IN ('received','cancelled')",
+                       (state, error, time.time() if state == "received" else None, comment_id))
+
+    def retry_comment(self, comment_id):
+        with self.db() as db:
+            cursor = db.execute("""UPDATE comments SET state='pending',error=NULL WHERE id=? AND author='human' AND state='failed'
+                AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (comment_id,))
+            if not cursor.rowcount:
+                raise ValueError("Only failed unanswered questions can be retried")
+        return self.comment(comment_id)
 
     def inbox(self, session_id):
         self.session(session_id)
@@ -355,6 +490,10 @@ class Store:
                 if item["answer"] is not None:
                     self.acknowledge(item_id, session_id)
                     return {"item_id": item_id, "status": "received", "answer": item["answer"]}
+                questions = self.take_questions(item_id, session_id)
+                if questions:
+                    return {"item_id": item_id, "status": "clarification", "questions": questions,
+                            "message": "Reply to each comment with hq_comment_reply, then use hq_wait for the original decision. The question remains open."}
                 if item["status"] == "done":
                     return {"item_id": item_id, "status": "closed"}
                 if cancel:
@@ -387,6 +526,9 @@ class Store:
         # Never resend a turn after a crash without knowing whether it was accepted.
         with self.db() as db:
             db.execute("""UPDATE replies SET state='failed',error='Delivery interrupted; check the conversation before retrying.'
+                WHERE state='sending' AND claim_until < ?""", (time.time(),))
+
+            db.execute("""UPDATE comments SET state='failed',error='Delivery interrupted; check the conversation before retrying.'
                 WHERE state='sending' AND claim_until < ?""", (time.time(),))
 
     def retry(self, item_id):

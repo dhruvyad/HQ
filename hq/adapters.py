@@ -87,7 +87,24 @@ class Dispatcher:
             self.store.recover_uncertain()
             reply = self.store.claim_native()
             if not reply:
-                self.stop.wait(0.5)
+                question = self.store.claim_comment()
+                if question:
+                    endpoint = question["endpoint"]
+                    try:
+                        if endpoint not in self.clients:
+                            self.clients[endpoint] = CodexClient(endpoint)
+                        self.clients[endpoint].deliver(question["external_id"],
+                            f"Human clarification from HQ\nItem: {question['title']}\nQuestion: {question['text']}\n"
+                            f"Reply using hq_comment_reply with session_id {question['session_id']} and comment_id {question['id']}. "
+                            "This clarification does not resolve the original item.")
+                        self.store.comment_delivery(question["id"], "received")
+                    except Exception as error:
+                        client = self.clients.pop(endpoint, None)
+                        if client:
+                            client.close()
+                        self.store.comment_delivery(question["id"], "failed", str(error))
+                else:
+                    self.stop.wait(0.5)
                 continue
             endpoint = reply["endpoint"]
             try:
