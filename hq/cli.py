@@ -13,11 +13,12 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-from .adapters import CodexClient
 from .discovery import discover
 from .mcp import AGENT_INSTRUCTIONS, run as run_mcp
 from .server import serve
 from .store import Store, data_dir
+from .connections import connect_chatgpt, connect_codex, install_hooks, launch as launch_agent
+from .hooks import run as run_hook
 
 
 def output(value):
@@ -96,7 +97,7 @@ def install(target):
                         section = section.rstrip() + "\ntool_timeout_sec = 3600\n\n"
                     config.write_text(text[:match.start()] + section + text[end:])
             results.append({"client": client, "status": "configured" if result.returncode == 0 else "unchanged",
-                            "message": (result.stdout + result.stderr).strip()})
+                            "message": (result.stdout + result.stderr).strip(), **install_hooks(client)})
         else:
             config = Path.home() / "Library/Application Support/Claude/claude_desktop_config.json"
             config.parent.mkdir(parents=True, exist_ok=True)
@@ -205,9 +206,18 @@ def parser():
     mcp.add_argument("--provider", default="other")
     mcp.add_argument("--channel", action="store_true", help="Enable Claude Code channel notifications (requires client opt-in)")
     mcp.add_argument("--session-id", help="Bind a channel to this stable conversation id")
-    connect = commands.add_parser("connect", help="Connect to a running Codex app-server for automatic user turns")
-    connect.add_argument("provider", choices=["codex"])
+    connect = commands.add_parser("connect", help="Connect an owning Codex server or a private ChatGPT tool tunnel")
+    connect.add_argument("provider", choices=["codex", "chatgpt"])
     connect.add_argument("--socket", help="Control socket of the app-server that owns the conversations")
+    connect.add_argument("--tunnel-id", help="Existing OpenAI tunnel id (or CONTROL_PLANE_TUNNEL_ID)")
+    connect.add_argument("--key-ref", default="env:CONTROL_PLANE_API_KEY", help="Runtime key reference, env:VARIABLE or file:/absolute/path")
+    hook = commands.add_parser("hook", help="Receive a native client lifecycle event on stdin")
+    hook.add_argument("provider", choices=["codex", "claude-code"])
+    agent = commands.add_parser("launch", help="Launch an agent with an exact HQ conversation connection")
+    agent.add_argument("provider", choices=["codex", "claude-code"])
+    agent.add_argument("--resume", help="Claude Code conversation UUID to resume")
+    agent.add_argument("--socket", help="Existing Codex owning control socket")
+    agent.add_argument("arguments", nargs="*", help="Agent arguments after --")
     return root
 
 
@@ -224,6 +234,10 @@ def main():
             return run_mcp(args.provider, args.channel, args.session_id)
         if args.command == "install":
             return output(install(args.target))
+        if args.command == "hook":
+            return run_hook(args.provider)
+        if args.command == "launch":
+            return sys.exit(launch_agent(args.provider, args.arguments, args.resume, args.socket))
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)
             return
@@ -297,27 +311,14 @@ def main():
                 raise ValueError("limit must be between 1 and 500")
             return output(discover(store, args.limit))
         if args.command == "connect":
-            client = CodexClient(args.socket)
-            try:
-                ids, cursor = [], None
-                while True:
-                    params = {"limit": 100, "sourceKinds": ["cli", "vscode", "appServer"], "useStateDbOnly": True}
-                    if cursor:
-                        params["cursor"] = cursor
-                    result = client.call("thread/list", params)
-                    for thread in result["data"]:
-                        id = "codex:" + thread["id"]
-                        name = (thread.get("name") or thread.get("preview") or thread["id"]).strip()[:500]
-                        store.register(id, name or thread["id"], "codex", thread["id"], thread.get("cwd"))
-                        store.bind_codex(id, thread["id"], args.socket)
-                        ids.append(id)
-                    cursor = result.get("nextCursor")
-                    if not cursor:
-                        break
-                output({"connected": len(ids), "message": "Start hq to dispatch saved answers through this Codex control socket."})
-            finally:
-                client.close()
-    except (ValueError, OSError, RuntimeError) as error:
+            if args.provider == "chatgpt":
+                if args.socket:
+                    raise ValueError("--socket is for Codex only")
+                return output(connect_chatgpt(args.tunnel_id, args.key_ref))
+            if args.tunnel_id or args.key_ref != "env:CONTROL_PLANE_API_KEY":
+                raise ValueError("Tunnel options are for ChatGPT only")
+            return output(connect_codex(store, args.socket))
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"hq: {error}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:

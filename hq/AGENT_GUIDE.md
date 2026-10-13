@@ -61,6 +61,14 @@ questions stay queued until the agent checks HQ. Never claim a push route works
 before it has been validated. CLI equivalents: hq comments --session ID --pending,
 hq respond COMMENT_ID "Brief reply" --session ID, and hq await ITEM_ID --session ID.
 
+Installed lifecycle hooks supply the exact conversation id and queued context on
+start, resume, user input, tool completion, or turn completion. A Stop hook can
+continue a finishing turn when new HQ messages are pending. Hooks cannot wake a
+conversation that is already idle. Automatic idle wake-up requires an owning
+Codex server or an opted-in Claude Code channel. Permission approvals still need
+the client's normal approval. A hook being configured is not proof of trust,
+receipt, or a live push connection. Keep any unfinished setup in HQ.
+
 Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
 loop with hq_resolve and a one-line note describing what you did. A received

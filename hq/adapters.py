@@ -1,17 +1,41 @@
 """Supported Codex protocol; no private IPC or session database mutations."""
-import json
+import os
+from pathlib import Path
 import queue
-import subprocess
 import threading
+import time
+
+from .websocket import UnixWebSocket
+
+
+def sync_codex(store, client, endpoint=None):
+    """Only an owning server's runtime inventory establishes a binding."""
+    ids, cursor, warnings = [], None, []
+    while True:
+        result = client.call("thread/loaded/list", {"cursor": cursor} if cursor else {})
+        for thread_id in result["data"]:
+            try:
+                thread = client.call("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
+                if thread.get("ephemeral") or thread.get("canAcceptDirectInput") is False:
+                    continue
+                sid = "codex:" + thread_id
+                name = (thread.get("name") or thread.get("preview") or thread_id).strip()[:500]
+                store.register(sid, name or thread_id, "codex", thread_id, thread.get("cwd"))
+                store.bind_codex(sid, thread_id, endpoint)
+                store.heartbeat(sid, "codex")
+                ids.append(sid)
+            except (RuntimeError, ValueError) as error:
+                warnings.append(f"A thread could not be bound: {error}")
+        cursor = result.get("nextCursor")
+        if not cursor:
+            break
+    return {"connected": len(ids), "session_ids": ids, "warnings": warnings}
 
 
 class CodexClient:
-    def __init__(self, socket=None, executable="codex"):
-        args = [executable, "app-server", "proxy"]
-        if socket:
-            args += ["--sock", socket]
-        self.process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    def __init__(self, socket=None):
+        path = socket or Path(os.environ.get("CODEX_HOME", Path.home()/".codex")) / "app-server-control/app-server-control.sock"
+        self.transport = UnixWebSocket(path)
         self.responses = queue.Queue()
         self.counter = 0
         threading.Thread(target=self.read, daemon=True).start()
@@ -23,18 +47,17 @@ class CodexClient:
             raise
 
     def read(self):
-        for line in self.process.stdout:
-            try:
-                value = json.loads(line)
+        try:
+            while True:
+                value = self.transport.receive()
                 if "id" in value and ("result" in value or "error" in value):
                     self.responses.put(value)
-            except ValueError:
-                continue
+        except (ValueError, OSError, EOFError, RuntimeError):
+            pass
         self.responses.put({"error": {"message": "Codex control connection closed. Run hq connect codex with a running app-server socket."}})
 
     def send(self, value):
-        self.process.stdin.write(json.dumps(value) + "\n")
-        self.process.stdin.flush()
+        self.transport.send(value)
 
     def call(self, method, params=None):
         self.counter += 1
@@ -64,16 +87,7 @@ class CodexClient:
         return self.call("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": text}]})
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        for pipe in (self.process.stdin, self.process.stdout):
-            if pipe:
-                pipe.close()
+        self.transport.close()
 
 
 class Dispatcher:
@@ -81,9 +95,25 @@ class Dispatcher:
         self.store = store
         self.clients = {}
         self.stop = threading.Event()
+        self.next_sync = 0
+
+    def refresh(self):
+        if time.monotonic() < self.next_sync:
+            return
+        self.next_sync = time.monotonic() + 10
+        for endpoint in self.store.codex_endpoints():
+            try:
+                if endpoint not in self.clients:
+                    self.clients[endpoint] = CodexClient(endpoint)
+                sync_codex(self.store, self.clients[endpoint], endpoint)
+            except (RuntimeError, ValueError, OSError):
+                client = self.clients.pop(endpoint, None)
+                if client:
+                    client.close()
 
     def run(self):
         while not self.stop.is_set():
+            self.refresh()
             self.store.recover_uncertain()
             reply = self.store.claim_native()
             if not reply:
@@ -97,7 +127,7 @@ class Dispatcher:
                             f"Human clarification from HQ\nItem: {question['title']}\nQuestion: {question['text']}\n"
                             f"Reply using hq_comment_reply with session_id {question['session_id']} and comment_id {question['id']}. "
                             "This clarification does not resolve the original item.")
-                        self.store.comment_delivery(question["id"], "received")
+                        self.store.comment_delivery(question["id"], "sent")
                     except Exception as error:
                         client = self.clients.pop(endpoint, None)
                         if client:
@@ -111,8 +141,11 @@ class Dispatcher:
                 if endpoint not in self.clients:
                     self.clients[endpoint] = CodexClient(endpoint)
                 self.clients[endpoint].deliver(reply["external_id"],
-                    f"Human response from HQ\nQuestion: {reply['title']}\nAnswer: {reply['text']}")
-                self.store.delivery_result(reply["id"], "received")
+                    f"Human response from HQ\nItem: {reply['item_id']}\nQuestion: {reply['title']}\nAnswer: {reply['text']}\n"
+                    f"After reading, acknowledge with hq_acknowledge using session_id {reply['session_id']} "
+                    f"and item_id {reply['item_id']}, or hq ack {reply['item_id']} --session {reply['session_id']}. "
+                    "Acknowledgement does not mean the work is complete.")
+                self.store.delivery_result(reply["id"], "sent")
             except Exception as error:
                 client = self.clients.pop(endpoint, None)
                 if client:

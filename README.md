@@ -165,8 +165,9 @@ hq discover --limit 50
 ```
 
 The installer configures **Codex, Claude Code, and Claude Desktop** local MCP
-tools, preserving other servers and backing up client settings. Reload tools or
-restart the app to load the connection. It does not interrupt running sessions.
+tools and adds Codex/Claude Code lifecycle hooks, preserving other settings and
+backing up changed files. Review Codex hooks in `/hooks`; reload MCP tools or
+restart/resume the client to load changes. Running sessions are not interrupted.
 An existing HQ entry in Claude Desktop is preserved; client CLIs handle existing
 server names according to their own behavior.
 
@@ -178,11 +179,11 @@ adapter here. Register those conversations through tools when available.
 
 | Client | Report and receive replies | Unsolicited steering |
 | --- | --- | --- |
-| Codex CLI / desktop | HQ CLI or local MCP; a waiting call receives answers | Supported through a running app-server control socket that owns the thread |
-| Claude Code | Local MCP or CLI | Optional Claude Code channel, enabled per session |
+| Codex CLI / desktop | HQ CLI, local MCP, trusted hooks | Active steering and idle turns through the owning app-server's control socket |
+| Claude Code | Local MCP, CLI, lifecycle hooks | Optional Claude Code channel, enabled per exact session |
 | Claude Desktop chat | Local MCP after restart | Replies return through waiting tools or inbox polling; no general push injector |
 | ChatGPT with a local agent executor | CLI from that executor | Depends on the executor's conversation controls |
-| Ordinary ChatGPT desktop / web chats | Requires a separately configured reachable MCP connector | Not automatically connected by this local-only version |
+| Ordinary ChatGPT desktop / web chats | HQ tools through an explicitly configured private MCP tunnel | A tool tunnel alone does not wake chats |
 
 **This version does not attach to every already-running AI conversation.** It
 provides working reporting, waiting tools, durable offline replies, metadata
@@ -192,10 +193,18 @@ window or modifies another app's database to simulate a delivered message.
 ### Codex native user turns
 
 `hq connect codex --socket /absolute/path/to/control.sock` connects to an existing
-Codex app-server, lists its threads, and binds them to its control socket. Omit
+Codex app-server and binds only its loaded, directly addressable conversations. Omit
 `--socket` for the managed daemon's default control socket. The socket must belong
 to the server that owns the target conversations; launching another server does
-not attach to the desktop app's active processes.
+not attach to the desktop app's active processes. The dashboard refreshes the
+owning server's inventory every ten seconds and keeps this watch across restarts.
+Ephemeral threads and child threads that reject direct input are skipped.
+
+For new CLI sessions, `hq launch codex` starts/connects the shared Codex daemon
+and opens the CLI on it. Forward normal options after `--`; for example,
+`hq launch codex -- resume THREAD_ID`. This preserves the client's configured
+model and permissions. If that account cannot use its configured model, choose
+an available model with `hq launch codex -- -m MODEL`.
 
 While the HQ dashboard service is running, answered items for bound Codex sessions
 automatically become `turn/steer` input on active turns or `turn/start` input on
@@ -207,33 +216,71 @@ If delivery fails, the answer stays saved with the exact error. Check the target
 conversation before using `hq retry ITEM_ID`; a connection failure can be
 ambiguous, so HQ never retries user turns blindly.
 
+Live verification on this laptop delivered a human decision to an active Codex
+turn and started an idle turn with a separate clarification in another exact
+thread. This proves the owning-server route, not attachment to existing desktop
+conversations. Server acceptance is **Sent**; **Received** still requires the
+agent to acknowledge the response or reply to the clarification.
+
+### Hooks and paused conversations
+
+Hooks use native lifecycle events and read HQ's exact-session queue; they do not
+scan transcripts. Start/resume hooks supply registration/reporting instructions.
+Tool and turn completion hooks deliver saved replies and human questions. A
+Stop hook can continue a finishing turn when a new message is pending, without
+repeating sent messages. Emitted context remains **Sent** until agent receipt.
+
+**Hooks cannot wake an already idle conversation.** That requires the owning
+Codex server or an enabled Claude Code channel. Permission approvals still need
+the client's normal approval. A stopped server or disconnected channel must be
+reconnected before it can deliver turns.
+Codex requires explicit review/trust in `/hooks`; HQ does not modify that trust.
+Claude Code loads the installed hooks when starting/resuming. Hook delivery and
+an actual agent acknowledgement were verified in a real Claude Code session.
+
 ### Claude Code channel (optional research preview)
 
-Bind a dedicated MCP server to one conversation:
+Launch with a dedicated channel bound to the client's actual conversation UUID:
 
 ```sh
-claude mcp add --scope user hq-channel -- \
-  /absolute/path/to/python3 /absolute/path/to/HQ/bin/hq mcp \
-  --provider claude-code --channel --session-id claude-code:billing
-claude --dangerously-load-development-channels server:hq-channel
+hq launch claude-code
+hq launch claude-code --resume EXISTING_CONVERSATION_UUID
 ```
 
 Claude's development-channel confirmation is required by its current preview.
 This flag enables this channel's allowlist exception; it does not bypass tool
 permissions. Report items using the bound session id. Only one running client
 may use a given channel session id. Received events carry an item id, and the
-agent acknowledges them with `hq_acknowledge`. Emission alone is shown as
+agent acknowledges them with `hq_acknowledge`. Questions are answered with
+`hq_comment_reply`. Emission alone is shown as
 “Sent · awaiting acknowledgement.” This path is protocol-tested; it has not
 been validated against a live Claude channel on this laptop.
 
-### ChatGPT connector boundary
+### ChatGPT private tool connection
 
-Ordinary ChatGPT runs outside the laptop and cannot reach loopback directly.
-The published connection paths require a reachable MCP server or a private
-tunnel. HQ currently exposes stdio MCP only; it does **not** open a public port
-or create a tunnel. Remote MCP transport, authentication, and ChatGPT event
-subscriptions are future work. Existing ChatGPT chats cannot be silently
-subscribed to a new connector. Local-executor Work chats can use `hq` directly.
+Use OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+to forward HQ's existing stdio tools while the dashboard stays on loopback:
+
+1. Install the official `tunnel-client` from
+   [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels).
+2. Create a tunnel associated with your ChatGPT workspace. Configure its runtime
+   API key locally as `CONTROL_PLANE_API_KEY`, or use a private key file.
+3. Run `hq connect chatgpt --tunnel-id YOUR_TUNNEL_ID`. For a key file, add
+   `--key-ref file:/absolute/path/to/key`. HQ stores references, never key values.
+4. In ChatGPT Plugins, add a custom MCP server with Connection **Tunnel**, select
+   this tunnel, review the required confirmation, and test HQ's tools in the chat.
+
+HQ uses `tunnel-client`'s managed runtime supervision and checks observed running,
+health, and readiness before reporting the tunnel connected. It preserves an
+existing `hq` alias pointing to another tunnel. It does not expose the dashboard
+or create account resources without the supplied tunnel and runtime key.
+
+This path has setup/protocol coverage; a real ChatGPT account connection still
+needs credentials and client setup. A tunnel enables tools, not arbitrary chat
+injection. [MCP events](https://developers.openai.com/plugins/build/mcp-events)
+are a separate wake-up mechanism for supported Work cloud conversations/dots;
+HQ does not yet implement their subscriptions or callbacks. Ordinary existing
+chats are not silently subscribed. Local-executor Work chats can use `hq` directly.
 
 ## Agent tools
 

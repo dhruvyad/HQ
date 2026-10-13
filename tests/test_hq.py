@@ -387,7 +387,7 @@ class StoreTests(unittest.TestCase):
         self.assertIn(question["id"], text)
         self.assertIn("hq_comment_reply", text)
         self.assertNotIn("Private to b", text)
-        self.assertEqual(self.store.comment(question["id"])["state"], "received")
+        self.assertEqual(self.store.comment(question["id"])["state"], "sent")
         self.assertEqual(self.store.comment(other["id"])["state"], "pending")
         self.assertTrue(self.store.item(item["id"])["asking"])
         self.assertIsNone(self.store.item(item["id"])["answer"])
@@ -626,6 +626,15 @@ class MCPTests(unittest.TestCase):
 
 class ChannelTests(MCPTests):
     channel = True
+
+    def test_channel_rejects_reports_for_another_conversation(self):
+        self.store.register("other", "Other conversation", "claude-code")
+        self.send("initialize", 1)
+        self.messages.get(timeout=3)
+        self.send("tools/call", 2, {"name": "hq_report", "arguments": {"session_id": "other", "title": "Wrong conversation"}})
+        result = self.messages.get(timeout=3)["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(self.store.snapshot(session_id="other")["items"], [])
 
     def test_channel_clarification_push_requires_agent_reply(self):
         self.send("initialize", 40)

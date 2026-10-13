@@ -59,6 +59,9 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS comments_item ON comments(item_id, created);
                 CREATE INDEX IF NOT EXISTS items_session ON items(session_id, status);
+                CREATE TABLE IF NOT EXISTS codex_connections (
+                    endpoint TEXT PRIMARY KEY, updated REAL NOT NULL
+                );
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
             db.execute("BEGIN IMMEDIATE")
@@ -125,8 +128,50 @@ class Store:
     def heartbeat(self, id, connection="tools", lease=30):
         self.session(id)
         with self.db() as db:
-            db.execute("UPDATE sessions SET seen=?,connection=?,lease_until=? WHERE id=?",
-                       (time.time(), connection, time.time() + lease, id))
+            now = time.time()
+            # Tool calls must not hide an established push connection.
+            db.execute("""UPDATE sessions SET seen=?,
+                connection=CASE WHEN connection IN ('channel','codex') AND lease_until>? AND ? IN ('tools','hooks','waiting')
+                    THEN connection ELSE ? END,
+                lease_until=MAX(lease_until,?) WHERE id=?""",
+                       (now, now, connection, connection, now + lease, id))
+
+    def disconnect(self, id, connection):
+        with self.db() as db:
+            db.execute("UPDATE sessions SET connection='offline',lease_until=0 WHERE id=? AND connection=?", (id, connection))
+
+    def watch_codex(self, endpoint=None):
+        with self.db() as db:
+            db.execute("INSERT INTO codex_connections VALUES (?,?) ON CONFLICT(endpoint) DO UPDATE SET updated=excluded.updated",
+                       (endpoint or "", time.time()))
+
+    def codex_endpoints(self):
+        with self.db() as db:
+            return [r["endpoint"] or None for r in db.execute("SELECT endpoint FROM codex_connections")]
+
+    def claim_hook_messages(self, session_id, limit=4):
+        """Queue context once; only an agent acknowledgement establishes receipt."""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            session = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not session:
+                raise ValueError("Register the session first")
+            if session["route"] == "codex" or (session["connection"] == "channel" and session["lease_until"] > time.time()):
+                return [], []
+            replies = db.execute("""SELECT r.*,i.title FROM replies r JOIN items i ON i.id=r.item_id
+                WHERE i.session_id=? AND r.state='pending'
+                AND NOT EXISTS (SELECT 1 FROM waiters w WHERE w.item_id=i.id AND w.lease_until>?)
+                ORDER BY r.created LIMIT ?""", (session_id, time.time(), limit)).fetchall()
+            questions = db.execute("""SELECT c.*,i.title FROM comments c JOIN items i ON i.id=c.item_id
+                WHERE i.session_id=? AND c.author='human' AND c.state='pending'
+                AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id)
+                AND NOT EXISTS (SELECT 1 FROM waiters w WHERE w.item_id=i.id AND w.lease_until>?)
+                ORDER BY c.created,c.rowid LIMIT ?""", (session_id, time.time(), limit-len(replies))).fetchall()
+            for row in replies:
+                db.execute("UPDATE replies SET state='sending',claim_until=? WHERE id=?", (time.time()+60, row["id"]))
+            for row in questions:
+                db.execute("UPDATE comments SET state='sending',claim_until=? WHERE id=?", (time.time()+60, row["id"]))
+        return [dict(r) for r in replies], [dict(q) for q in questions]
 
     def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
             owner=None, waiting_on="", defer_until="", *, unlocks="", recommendation="",

@@ -75,6 +75,11 @@ def run(provider="other", channel=False, session_id=None):
     def execute(name, arguments, cancel):
         args = dict(arguments)
         id = args.get("session_id")
+        if channel:
+            if id and id != bound_id:
+                raise ValueError("This HQ channel belongs to a different conversation")
+            if name == "hq_list":
+                args["session_id"] = bound_id
         if name == "hq_reporting_guide":
             return {"instructions": AGENT_INSTRUCTIONS}
         if name == "hq_register_session":
@@ -197,3 +202,6 @@ def run(provider="other", channel=False, session_id=None):
             initialized.set()
             for event in list(cancellations.values()):
                 event.set()
+            if channel:
+                store.disconnect(bound_id, "channel")
+                channel_lock.close()
