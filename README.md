@@ -246,18 +246,53 @@ Active steering also passed through `turn/steer`; two independent clarifications
 were answered on the same still-open item, and both replies reached the desktop.
 The normal desktop app and its existing chats have **not** been migrated.
 
-The installed desktop's internal local-daemon switch falls back to stdio under
-its startup guards. A global WebSocket override also redirects remote hosts and
-must not be used as a normal-app setup. The experiment instead preserved the
-desktop's complete startup arguments and bridged its stdio connection to one
-matching Unix WebSocket runtime. `hq codex-desktop-proxy --socket PATH` provides
-that experimental protocol bridge; it does not launch or reconfigure the app.
-It subscribes only to exact chats whose timelines the desktop requests, without
-starting a turn or adding permission/model overrides, and passes native approval
-requests through. A normal-app launcher, auxiliary sandbox isolation, live approval
-handling, and disconnect recovery still need validation before installation.
-The isolated test profile forbade MCP writes; CLI acknowledgement succeeded
-without changing the normal app's approval settings.
+### Codex desktop on macOS
+
+Install the one-time launcher:
+
+```sh
+hq desktop install
+```
+
+Finish running turns, quit Codex, then open **Codex + HQ** in your user
+Applications folder (`~/Applications`). Use that launcher on future starts.
+It uses the same account, profile, and conversation history. No per-chat
+configuration is needed. You can also start it with `hq launch codex-desktop`.
+An already-open desktop is left running; HQ asks you to quit it first.
+
+Check the live connection:
+
+```sh
+hq desktop status
+```
+
+The status reports how many exact chats the owning runtime has loaded. Open an
+existing chat to connect it; historical metadata alone does not establish a live
+connection. Future questions to a bound chat make the desktop subscribe to that
+exact chat before HQ sends the turn, including after reconnecting. Server
+acceptance remains **Sent** until the agent acknowledges or answers in HQ.
+
+The launcher preserves native startup arguments and uses the installed app's
+matching bundled runtime. Only the recognized primary chat server is shared;
+helper processes and unknown startup shapes run natively. Approval requests and
+decisions pass through unchanged. No permission, sandbox, model, or global
+runtime overrides are installed. Quitting the desktop reaps its owned runtime;
+the native reconnect lifecycle can restart it after a crash. Saved uncertain
+deliveries still require explicit retry, preventing duplicate user turns.
+
+The packaged launcher passed an isolated real desktop test on runtime 0.160.0:
+idle wake-up, actual agent replies saved on the original item and streamed to
+desktop, preserved approval/sandbox settings, an HQ-originated approval request
+and denial, and a subsequent question after a forced runtime crash. The approval
+denial used a separate test client; the native approval button itself was not
+clicked. Your normal profile still needs the one-time relaunch before its chats
+can be called connected.
+
+Remove the shortcut with `hq desktop uninstall`, then open the original app on
+the next start. The underlying [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server)
+and the app's runtime override are experimental; new startup shapes deliberately
+fall back to native behavior. `hq codex-desktop-proxy --socket PATH` is the
+lower-level protocol bridge and does not launch or reconfigure the app itself.
 
 ### Hooks and paused conversations
 
@@ -270,8 +305,8 @@ repeating sent messages. Emitted context remains **Sent** until agent receipt.
 **HQ's installed lifecycle hooks do not yet wake an already idle conversation.**
 Current Claude Code also supports native inbox messages and `asyncRewake` hooks
 without per-session channels. A global HQ integration using those features is
-planned but has not been implemented or live-tested. Codex desktop still needs
-a connection to its owning server or a verified app relay. Permission approvals still need
+planned but has not been implemented or live-tested. Codex desktop uses the
+launcher above to connect its owning server. Permission approvals still need
 the client's normal approval. A stopped server or disconnected channel must be
 reconnected before it can deliver turns.
 Codex requires explicit review/trust in `/hooks`; HQ does not modify that trust.

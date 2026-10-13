@@ -8,6 +8,33 @@ from hq.desktop import DesktopSubscriptions, bridge
 
 
 class DesktopSubscriptionTests(unittest.TestCase):
+    def test_hq_subscription_keeps_exact_chat_streaming_and_archive_releases_it(self):
+        state = DesktopSubscriptions()
+        request, receipt = state.subscribe("one", pin=True)
+        state.incoming({"id": request["id"], "result": {"thread": {"id": "one"}}})
+        self.assertTrue(receipt.wait(0))
+        self.assertTrue(receipt.accepted)
+        unsubscribe = {"id": "unsub", "method": "thread/unsubscribe", "params": {"threadId": "one"}}
+        messages = state.outgoing(unsubscribe)
+        self.assertEqual(messages[0], unsubscribe)
+        self.assertEqual(messages[1]["params"], {"threadId": "one"})
+        self.assertEqual(state.outgoing({**unsubscribe, "params": {"threadId": "other"}}),
+                         [{**unsubscribe, "params": {"threadId": "other"}}])
+        state.outgoing({"method": "thread/archive", "params": {"threadId": "one"}})
+        self.assertNotIn("one", state.pinned)
+
+    def test_bootstrap_probe_cannot_accept_hq_delivery_and_close_releases_waiters(self):
+        state = DesktopSubscriptions()
+        for name, ready in [("codex_desktop", False), ("Codex Desktop", True)]:
+            state.outgoing({"id": name, "method": "initialize", "params": {"clientInfo": {"name": name}}})
+            state.incoming({"id": name, "result": {}})
+            self.assertEqual(state.ready.is_set(), ready)
+        _, receipt = state.subscribe("one")
+        state.close()
+        self.assertTrue(receipt.wait(0))
+        self.assertFalse(receipt.accepted)
+        self.assertFalse(state.ready.is_set())
+
     def test_bridge_preserves_approval_exchange_and_closes_on_stdin_eof(self):
         approved = threading.Event()
 

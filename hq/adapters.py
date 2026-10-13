@@ -42,6 +42,7 @@ class CodexClient:
     def __init__(self, socket=None, on_event=None, on_disconnect=None):
         path = socket or Path(os.environ.get("CODEX_HOME", Path.home()/".codex")) / "app-server-control/app-server-control.sock"
         self.transport = UnixWebSocket(path)
+        self.endpoint = path
         self.responses = queue.Queue()
         self.counter = 0
         self.call_lock = threading.Lock()
@@ -99,6 +100,8 @@ class CodexClient:
             return response["result"]
 
     def deliver(self, thread_id, text):
+        from .desktop_control import ensure_desktop_subscription
+        ensure_desktop_subscription(getattr(self, "endpoint", None), thread_id)
         thread = self.call("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
         if thread.get("status", {}).get("type") == "active":
             turns = [t for t in thread.get("turns", []) if t.get("status") == "inProgress"]

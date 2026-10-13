@@ -214,12 +214,16 @@ def parser():
     hook = commands.add_parser("hook", help="Receive a native client lifecycle event on stdin")
     hook.add_argument("provider", choices=["codex", "claude-code"])
     agent = commands.add_parser("launch", help="Launch an agent with an exact HQ conversation connection")
-    agent.add_argument("provider", choices=["codex", "claude-code"])
+    agent.add_argument("provider", choices=["codex", "codex-desktop", "claude-code"])
+    agent.add_argument("--app", help="Codex desktop .app installation")
     agent.add_argument("--resume", help="Claude Code conversation UUID to resume")
     agent.add_argument("--socket", help="Existing Codex owning control socket")
     agent.add_argument("arguments", nargs="*", help="Agent arguments after --")
     proxy = commands.add_parser("codex-desktop-proxy", help="Experimental desktop stdio bridge to its shared runtime")
     proxy.add_argument("--socket", required=True)
+    desktop = commands.add_parser("desktop", help="Install, verify, or remove the Codex + HQ launcher")
+    desktop.add_argument("action", choices=["install", "status", "uninstall"])
+    desktop.add_argument("--app", help="Codex desktop .app installation")
     return root
 
 
@@ -239,10 +243,22 @@ def main():
         if args.command == "hook":
             return run_hook(args.provider)
         if args.command == "launch":
+            if args.provider == "codex-desktop":
+                if args.resume or args.socket:
+                    raise ValueError("Desktop connects existing chats automatically; resume/socket options are for CLI clients")
+                from .desktop_launch import launch_desktop
+                return output(launch_desktop(args.app, arguments=args.arguments))
+            if args.app:
+                raise ValueError("--app is for Codex desktop only")
             return sys.exit(launch_agent(args.provider, args.arguments, args.resume, args.socket))
         if args.command == "codex-desktop-proxy":
             from .desktop import bridge
             return bridge(args.socket)
+        if args.command == "desktop":
+            from .desktop_launch import desktop_status, install_launcher, uninstall_launcher
+            if args.action == "uninstall":
+                return output(uninstall_launcher())
+            return output(install_launcher(args.app) if args.action == "install" else desktop_status(args.app))
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)
             return
