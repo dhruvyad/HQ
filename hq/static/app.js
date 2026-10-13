@@ -158,7 +158,26 @@ async function refreshState() {
     $('#service-status').hidden = true;
   } catch(error) {$('#service-status').textContent = 'Offline'; $('#service-status').hidden = false;}
 }
+function closeOnBackdrop(dialog) {
+  let startedOutside = false;
+  const outside = event => {
+    if (event.target !== dialog) return false;
+    const rect = dialog.getBoundingClientRect();
+    return event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+  };
+  // Native dialog backdrops target the dialog itself, as does its inner padding.
+  // Require both the press and the completed click to be outside its bounds.
+  dialog.addEventListener('pointerdown', event => {startedOutside = event.button === 0 && outside(event);});
+  dialog.addEventListener('click', event => {
+    const dismiss = startedOutside && event.button === 0 && outside(event);
+    startedOutside = false;
+    if (dismiss) dialog.close();
+  });
+  dialog.addEventListener('pointercancel', () => {startedOutside = false;});
+  dialog.addEventListener('close', () => {startedOutside = false;});
+}
 function closeSidebar() { $('.sidebar').classList.remove('visible'); $('#mobile-menu').setAttribute('aria-expanded', 'false'); }
+document.querySelectorAll('dialog').forEach(closeOnBackdrop);
 document.querySelectorAll('[data-view]').forEach(el => el.onclick = () => setView(el.dataset.view));
 $('#all-work').onclick = () => {filter.tag = null; render(); closeSidebar();};
 $('#mobile-menu').onclick = () => {const visible = $('.sidebar').classList.toggle('visible'); $('#mobile-menu').setAttribute('aria-expanded', String(visible));};
