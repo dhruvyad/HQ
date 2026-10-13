@@ -1,0 +1,162 @@
+"""Local newline-delimited MCP with concurrent calls and cancellable waiting."""
+import json
+import fcntl
+import hashlib
+import os
+import sys
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from .store import Store
+
+
+def schema(properties, required=()):
+    return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
+
+
+TEXT = {"type": "string"}
+STRINGS = {"type": "array", "items": TEXT}
+TOOLS = [
+    ("hq_register_session", "Identify this exact conversation; reuse its stable session id on every call.",
+     schema({"session_id": TEXT, "name": TEXT, "provider": TEXT, "external_id": TEXT, "cwd": TEXT}, ["session_id", "name"])),
+    ("hq_report", "Report a pending task or blocker to the local human dashboard. Questions may include choices.",
+     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": STRINGS}, ["session_id", "title"])),
+    ("hq_list", "List pending work and answers across conversations, optionally filtered by session, tag, or status.",
+     schema({"session_id": TEXT, "tag": TEXT, "status": {"enum": ["open", "answered", "done"]}})),
+    ("hq_request_input", "Ask the human in HQ and wait for their answer in this same tool call. On timeout, the saved question remains; use hq_wait or hq_inbox later. Use up to 120 seconds to fit your client's timeout.",
+     schema({"session_id": TEXT, "title": TEXT, "detail": TEXT, "tags": STRINGS, "options": STRINGS, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "title"])),
+    ("hq_wait", "Wait for the response to an already-created question without creating duplicates.",
+     schema({"session_id": TEXT, "item_id": TEXT, "timeout": {"type": "number", "minimum": 1, "maximum": 86400}}, ["session_id", "item_id"])),
+    ("hq_inbox", "Read saved human responses for this session, including replies received while disconnected. Acknowledge each after reading.",
+     schema({"session_id": TEXT}, ["session_id"])),
+    ("hq_acknowledge", "Confirm that this conversation has received its human response.",
+     schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
+    ("hq_resolve", "Mark a task completed after acting on it. A response must be received before closing an answered question.",
+     schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
+]
+
+
+def run(provider="other", channel=False, session_id=None):
+    store = Store()
+    write_lock, closed, initialized = threading.Lock(), threading.Event(), threading.Event()
+    cancellations = {}
+    bound_id = session_id or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID") or "connection:" + str(uuid.uuid4())
+
+    def send(value):
+        with write_lock:
+            if not closed.is_set():
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", **value}) + "\n")
+                sys.stdout.flush()
+
+    def execute(name, arguments, cancel):
+        args = dict(arguments)
+        id = args.get("session_id")
+        if name == "hq_register_session":
+            args["id"] = args.pop("session_id")
+            args.setdefault("provider", provider)
+            result = store.register(**args)
+            store.heartbeat(result["id"])
+            return result
+        if name == "hq_list":
+            return store.snapshot(**args)
+        if id:
+            store.heartbeat(id)
+        if name in {"hq_report", "hq_request_input"}:
+            timeout = args.pop("timeout", 120)
+            if name == "hq_request_input":
+                if not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
+                    raise ValueError("timeout must be between 1 and 86400 seconds")
+                args["kind"] = "question"
+            item = store.add(**args)
+            return store.wait(item["id"], id, timeout, cancel) if name == "hq_request_input" else item
+        if name == "hq_wait":
+            return store.wait(args["item_id"], id, args.get("timeout", 120), cancel)
+        if name == "hq_inbox":
+            return store.inbox(id)
+        if name == "hq_acknowledge":
+            return store.acknowledge(args["item_id"], id)
+        if name == "hq_resolve":
+            if store.item(args["item_id"])["session_id"] != id:
+                raise ValueError("Item belongs to a different session")
+            return store.resolve(args["item_id"])
+        raise ValueError("Unknown HQ tool")
+
+    def call(message):
+        request_id = message["id"]
+        cancel = cancellations[request_id]
+        try:
+            params = message.get("params", {})
+            result = execute(params["name"], params.get("arguments", {}), cancel)
+            send({"id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(result)}], "isError": False}})
+        except Exception as error:
+            send({"id": request_id, "result": {"content": [{"type": "text", "text": str(error)}], "isError": True}})
+        finally:
+            cancellations.pop(request_id, None)
+
+    def push_channel():
+        # Only an explicitly bound session can receive channel notifications.
+        initialized.wait()
+        while not closed.is_set():
+            store.heartbeat(bound_id, "channel")
+            for reply in store.inbox(bound_id):
+                if reply["state"] == "pending" and not store.has_waiter(reply["item_id"]):
+                    send({"method": "notifications/claude/channel", "params": {
+                        "content": f"Human response to {reply['title']}: {reply['text']}",
+                        "meta": {"item_id": reply["item_id"], "session_id": bound_id}}})
+                    # Emission isn't proof that Claude acted; require hq_acknowledge.
+                    store.delivery_result(reply["id"], "sent")
+            closed.wait(0.5)
+
+    if channel:
+        lock_path = store.path.parent / ("channel-" + hashlib.sha256(bound_id.encode()).hexdigest() + ".lock")
+        channel_lock = lock_path.open("w")
+        try:
+            fcntl.flock(channel_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            channel_lock.close()
+            raise ValueError("This conversation already has a running HQ channel") from None
+        store.register(bound_id, f"Claude channel · {Path.cwd().name}", "claude-code", cwd=str(Path.cwd()))
+        threading.Thread(target=push_channel, daemon=True).start()
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        try:
+            for line in sys.stdin:
+                try:
+                    message = json.loads(line)
+                    if not isinstance(message, dict):
+                        raise ValueError("Expected an object")
+                    method = message.get("method")
+                    id = message.get("id")
+                    if method == "initialize":
+                        capabilities = {"tools": {}}
+                        if channel:
+                            capabilities["experimental"] = {"claude/channel": {}}
+                        send({"id": id, "result": {"protocolVersion": "2024-11-05", "capabilities": capabilities,
+                            "serverInfo": {"name": "hq", "version": "0.1.0"},
+                            "instructions": f"Report pending work in HQ. Register a stable conversation id first. "
+                                f"Check hq_inbox when resuming. Human responses steer this conversation. "
+                                + (f"This channel is bound to session {bound_id}; use this id for every report. "
+                                   "Acknowledge channel responses using hq_acknowledge with item_id and session_id from the event before acting." if channel else "")}})
+                    elif method == "notifications/initialized":
+                        initialized.set()
+                    elif method == "notifications/cancelled":
+                        event = cancellations.get(message.get("params", {}).get("requestId"))
+                        if event:
+                            event.set()
+                    elif method == "ping":
+                        send({"id": id, "result": {}})
+                    elif method == "tools/list":
+                        send({"id": id, "result": {"tools": [{"name": n, "description": d, "inputSchema": s} for n, d, s in TOOLS]}})
+                    elif method == "tools/call" and id is not None:
+                        cancellations[id] = threading.Event()
+                        pool.submit(call, message)
+                    elif id is not None:
+                        send({"id": id, "error": {"code": -32601, "message": "Method not found"}})
+                except (ValueError, TypeError) as error:
+                    send({"id": None, "error": {"code": -32700, "message": str(error)}})
+        finally:
+            closed.set()
+            initialized.set()
+            for event in list(cancellations.values()):
+                event.set()

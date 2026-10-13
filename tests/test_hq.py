@@ -1,0 +1,297 @@
+import concurrent.futures
+import json
+import os
+import sqlite3
+import queue
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from hq.adapters import CodexClient
+from hq.discovery import discover
+from hq.server import Server
+from hq.store import Store
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name) / "test.sqlite3")
+        self.store.register("a", "Billing", "codex")
+        self.store.register("b", "Product", "claude-code")
+
+    def question(self, session="a"):
+        return self.store.add(session, "Which plan?", kind="question", tags=["billing"], options=["Monthly", "Annual"])
+
+    def test_persistence_and_filtering(self):
+        item = self.question()
+        self.store.add("b", "Polish homepage", tags=["product"])
+        reopened = Store(self.store.path)
+        self.assertEqual(reopened.snapshot(tag="billing")["items"][0]["id"], item["id"])
+        self.assertEqual(len(reopened.snapshot(session_id="b")["items"]), 1)
+        self.assertEqual(reopened.item(item["id"])["options"], ["Monthly", "Annual"])
+
+    def test_answer_returns_to_exact_waiting_session(self):
+        item = self.question()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(self.store.wait, item["id"], "a", 3)
+            self.store.reply(item["id"], "Annual — ₹12,000")
+            self.assertEqual(future.result()["answer"], "Annual — ₹12,000")
+        self.assertEqual(self.store.item(item["id"])["delivery"], "received")
+        self.assertEqual(self.store.inbox("b"), [])
+        with self.assertRaises(ValueError):
+            self.store.wait(item["id"], "b", 1)
+
+    def test_concurrent_answers_are_atomic(self):
+        item = self.question()
+        def answer(text):
+            try:
+                self.store.reply(item["id"], text)
+                return True
+            except ValueError:
+                return False
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            accepted = list(pool.map(answer, ["Monthly", "Annual"]))
+        self.assertEqual(sum(accepted), 1)
+        self.assertIn(self.store.item(item["id"])["answer"], ["Monthly", "Annual"])
+
+    def test_offline_reply_survives_until_acknowledgement(self):
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        reopened = Store(self.store.path)
+        self.assertEqual(reopened.inbox("a")[0]["state"], "pending")
+        with self.assertRaises(ValueError):
+            reopened.acknowledge(item["id"], "b")
+        with self.assertRaises(ValueError):
+            reopened.resolve(item["id"])
+        reopened.acknowledge(item["id"], "a")
+        self.assertEqual(reopened.resolve(item["id"])["status"], "done")
+
+    def test_late_transport_status_cannot_undo_acknowledgement(self):
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        reply_id = self.store.inbox("a")[0]["id"]
+        self.store.acknowledge(item["id"], "a")
+        self.store.delivery_result(reply_id, "sent")
+        self.assertEqual(self.store.item(item["id"])["delivery"], "received")
+
+    def test_timeout_and_cancellation_preserve_question(self):
+        item = self.question()
+        self.assertEqual(self.store.wait(item["id"], "a", .01)["status"], "timeout")
+        event = threading.Event()
+        event.set()
+        self.assertEqual(self.store.wait(item["id"], "a", 1, event)["status"], "cancelled")
+        self.assertEqual(self.store.item(item["id"])["status"], "open")
+
+    def test_leases_do_not_claim_discovered_sessions_are_live(self):
+        self.assertEqual(self.store.session("a")["connection"], "offline")
+        self.store.heartbeat("a", lease=-1)
+        self.assertEqual(self.store.session("a")["connection"], "offline")
+
+    def test_native_outbox_claim_is_exclusive_and_crash_is_not_retried(self):
+        self.store.bind_codex("a", "thread-a", "/tmp/test.sock")
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            claims = list(pool.map(lambda _: self.store.claim_native(), range(4)))
+        self.assertEqual(sum(c is not None for c in claims), 1)
+        with self.store.db() as db:
+            db.execute("UPDATE replies SET claim_until=0")
+        self.store.recover_uncertain()
+        self.assertEqual(self.store.item(item["id"])["delivery"], "failed")
+        self.assertIsNone(self.store.claim_native())
+        self.store.retry(item["id"])
+        self.assertIsNotNone(self.store.claim_native())
+
+    def test_waiting_tool_takes_precedence_over_native_turn(self):
+        self.store.bind_codex("a", "thread-a")
+        item = self.question()
+        with self.store.db() as db:
+            db.execute("INSERT INTO waiters VALUES (?,?,?)", (item["id"], "test", time.time() + 10))
+        self.store.reply(item["id"], "Annual")
+        self.assertIsNone(self.store.claim_native())
+
+    def test_discovery_handles_long_names_without_changing_source(self):
+        fake_home = Path(self.temp.name) / "home"
+        source = fake_home / ".codex/state_5.sqlite"
+        source.parent.mkdir(parents=True)
+        with sqlite3.connect(source) as db:
+            db.execute("CREATE TABLE threads (id,title,cwd,archived,source,updated_at)")
+            db.execute("INSERT INTO threads VALUES (?,?,?,?,?,?)", ("thread1", "Long title " * 100, "/project", 0, "cli", 1))
+        before = source.read_bytes()
+        with patch("hq.discovery.Path.home", return_value=fake_home):
+            result = discover(self.store)
+        self.assertEqual(result["discovered"], 1)
+        self.assertLessEqual(len(self.store.session("codex:thread1")["name"]), 500)
+        self.assertEqual(source.read_bytes(), before)
+
+
+class HTTPTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.temp.name) / "http.sqlite3")
+        self.store.register("a", "Agent")
+        self.server = Server(0, self.store)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.temp.cleanup()
+
+    def request(self, path, data=None, headers=None):
+        req = urllib.request.Request(self.server.origin + path, data=json.dumps(data).encode() if data is not None else None,
+            headers={"Content-Type": "application/json", **(headers or {})})
+        return urllib.request.urlopen(req)
+
+    def test_roundtrip_and_html_assets(self):
+        with self.request("/") as response:
+            self.assertIn(self.server.token, response.read().decode())
+            self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+        with self.request("/app.js") as response:
+            self.assertEqual(response.status, 200)
+        headers = {"X-HQ-Token": self.server.token}
+        with self.request("/api/items", {"session_id": "a", "title": "Question", "kind": "question"}, headers) as response:
+            item = json.load(response)
+        with self.request(f"/api/items/{item['id']}/reply", {"text": "Yes"}, headers) as response:
+            self.assertEqual(json.load(response)["answer"], "Yes")
+
+    def test_cross_origin_dns_rebinding_and_unauthorized_reads_blocked(self):
+        for headers in ({}, {"Host": "attacker.example"}, {"Origin": "https://attacker.example", "X-HQ-Token": self.server.token}):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request("/api/state", headers=headers)
+            self.assertEqual(error.exception.code, 403)
+            error.exception.close()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/api/items", {"session_id": "a", "title": "Attack"})
+        self.assertEqual(error.exception.code, 403)
+        error.exception.close()
+
+
+class CodexRoutingTests(unittest.TestCase):
+    def client(self, thread):
+        client = CodexClient.__new__(CodexClient)
+        client.call = Mock(side_effect=[{"thread": thread}, {"turnId": "t"}])
+        return client
+
+    def test_active_turn_uses_expected_id(self):
+        client = self.client({"status": {"type": "active"}, "turns": [{"id": "active-t", "status": "inProgress"}]})
+        client.deliver("thread-b", "Go ahead")
+        method, args = client.call.call_args.args
+        self.assertEqual(method, "turn/steer")
+        self.assertEqual(args["threadId"], "thread-b")
+        self.assertEqual(args["expectedTurnId"], "active-t")
+
+    def test_idle_thread_starts_turn_without_changing_permissions(self):
+        client = self.client({"status": {"type": "idle"}})
+        client.deliver("thread-b", "Go ahead")
+        self.assertEqual(client.call.call_args.args, ("turn/start", {"threadId": "thread-b", "input": [{"type": "text", "text": "Go ahead"}]}))
+
+    def test_unknown_active_id_stays_saved(self):
+        client = self.client({"status": {"type": "active"}, "turns": []})
+        with self.assertRaises(RuntimeError):
+            client.deliver("thread-b", "Go ahead")
+        self.assertEqual(client.call.call_count, 1)
+
+
+class MCPTests(unittest.TestCase):
+    channel = False
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.temp.name) / "hq.sqlite3")
+        self.store.register("a", "MCP agent")
+        command = [sys.executable, str(ROOT / "bin/hq"), "mcp"]
+        if self.channel:
+            command += ["--channel", "--session-id", "a", "--provider", "claude-code"]
+        self.process = subprocess.Popen(command,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "HQ_HOME": self.temp.name})
+        self.messages = queue.Queue()
+        def reader():
+            for line in self.process.stdout:
+                self.messages.put(json.loads(line))
+        threading.Thread(target=reader, daemon=True).start()
+
+    def tearDown(self):
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        for pipe in (self.process.stdout, self.process.stderr):
+            pipe.close()
+        self.temp.cleanup()
+
+    def send(self, method, id=None, params=None):
+        data = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        if id is not None:
+            data["id"] = id
+        self.process.stdin.write(json.dumps(data) + "\n")
+        self.process.stdin.flush()
+
+    def test_full_mcp_human_response_and_concurrent_ping(self):
+        self.send("initialize", 1, {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
+        self.assertEqual(self.messages.get(timeout=3)["id"], 1)
+        self.send("notifications/initialized")
+        self.send("tools/list", 2)
+        self.assertTrue(any(t["name"] == "hq_request_input" for t in self.messages.get(timeout=3)["result"]["tools"]))
+        self.send("tools/call", 3, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 5}})
+        deadline = time.monotonic() + 3
+        while not self.store.snapshot()["items"] and time.monotonic() < deadline:
+            time.sleep(.02)
+        item = self.store.snapshot()["items"][0]
+        self.send("ping", 4)
+        self.assertEqual(self.messages.get(timeout=3)["id"], 4)
+        self.store.reply(item["id"], "Ship the smaller change")
+        message = self.messages.get(timeout=3)
+        self.assertEqual(message["id"], 3)
+        self.assertEqual(json.loads(message["result"]["content"][0]["text"])["answer"], "Ship the smaller change")
+        self.assertEqual(self.store.item(item["id"])["delivery"], "received")
+
+    def test_cancellation_keeps_question(self):
+        self.send("tools/call", 1, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 60}})
+        time.sleep(.2)
+        self.send("notifications/cancelled", params={"requestId": 1})
+        result = self.messages.get(timeout=3)
+        self.assertEqual(json.loads(result["result"]["content"][0]["text"])["status"], "cancelled")
+        self.assertEqual(len(self.store.snapshot(status="open")["items"]), 1)
+
+
+class ChannelTests(MCPTests):
+    channel = True
+
+    def test_channel_push_and_explicit_acknowledgement(self):
+        self.send("initialize", 10)
+        initialized = self.messages.get(timeout=3)
+        self.assertIn("claude/channel", initialized["result"]["capabilities"]["experimental"])
+        self.send("notifications/initialized")
+        mine = self.store.add("a", "Which plan?", kind="question")
+        self.store.register("b", "Other Claude conversation", "claude-code")
+        other = self.store.add("b", "Other plan?", kind="question")
+        self.store.reply(other["id"], "Private to b")
+        self.store.reply(mine["id"], "Annual")
+        notification = self.messages.get(timeout=3)
+        self.assertEqual(notification["method"], "notifications/claude/channel")
+        self.assertEqual(notification["params"]["meta"]["item_id"], mine["id"])
+        self.assertNotIn("Private to b", notification["params"]["content"])
+        self.send("tools/call", 11, {"name": "hq_acknowledge", "arguments": {"session_id": "a", "item_id": mine["id"]}})
+        self.assertEqual(self.messages.get(timeout=3)["id"], 11)
+        self.assertEqual(self.store.item(mine["id"])["delivery"], "received")
+        self.assertEqual(self.store.item(other["id"])["delivery"], "pending")
+
+
+if __name__ == "__main__":
+    unittest.main()
