@@ -218,6 +218,8 @@ def parser():
     agent.add_argument("--resume", help="Claude Code conversation UUID to resume")
     agent.add_argument("--socket", help="Existing Codex owning control socket")
     agent.add_argument("arguments", nargs="*", help="Agent arguments after --")
+    proxy = commands.add_parser("codex-desktop-proxy", help="Experimental desktop stdio bridge to its shared runtime")
+    proxy.add_argument("--socket", required=True)
     return root
 
 
@@ -238,6 +240,9 @@ def main():
             return run_hook(args.provider)
         if args.command == "launch":
             return sys.exit(launch_agent(args.provider, args.arguments, args.resume, args.socket))
+        if args.command == "codex-desktop-proxy":
+            from .desktop import bridge
+            return bridge(args.socket)
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)
             return

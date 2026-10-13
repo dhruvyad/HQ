@@ -238,6 +238,27 @@ thread. This proves the owning-server route, not attachment to existing desktop
 conversations. Server acceptance is **Sent**; **Received** still requires the
 agent to acknowledge the response or reply to the clarification.
 
+An isolated **actual desktop instance** using the app's matching 0.160.0 runtime
+also passed idle wake-up: an HQ clarification started the exact chat, the agent
+answered on the original HQ item through the CLI, and the reply reached the
+desktop connection. Active/idle status notifications arrived on that connection.
+Active steering also passed through `turn/steer`; two independent clarifications
+were answered on the same still-open item, and both replies reached the desktop.
+The normal desktop app and its existing chats have **not** been migrated.
+
+The installed desktop's internal local-daemon switch falls back to stdio under
+its startup guards. A global WebSocket override also redirects remote hosts and
+must not be used as a normal-app setup. The experiment instead preserved the
+desktop's complete startup arguments and bridged its stdio connection to one
+matching Unix WebSocket runtime. `hq codex-desktop-proxy --socket PATH` provides
+that experimental protocol bridge; it does not launch or reconfigure the app.
+It subscribes only to exact chats whose timelines the desktop requests, without
+starting a turn or adding permission/model overrides, and passes native approval
+requests through. A normal-app launcher, auxiliary sandbox isolation, live approval
+handling, and disconnect recovery still need validation before installation.
+The isolated test profile forbade MCP writes; CLI acknowledgement succeeded
+without changing the normal app's approval settings.
+
 ### Hooks and paused conversations
 
 Hooks use native lifecycle events and read HQ's exact-session queue; they do not
