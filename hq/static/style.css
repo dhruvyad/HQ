@@ -177,7 +177,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .choice.selected { border-color: hsl(var(--ring)); background: hsl(var(--secondary)); }
 .choice.recommended { border-color: hsl(var(--foreground) / .25); }
 .choice > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
-.choice small { font-size: 10px; color: hsl(var(--muted-foreground)); }
+.choice small { font-size: 10px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
 .choice-note { font-size: 12px; color: hsl(var(--muted-foreground)); }
 .form-error { font-size: 12px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
