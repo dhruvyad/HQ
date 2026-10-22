@@ -233,6 +233,26 @@ class StoreTests(unittest.TestCase):
         self.assertIn("Team offsite", index["noclick"]["workstreams"])
         self.assertIn("Coordinator", index["noclick"]["workstreams"])
 
+    def test_skip_closes_the_item_and_tells_the_agent_to_drop_it(self):
+        item = self.question()
+        question = self.store.ask_agent(item["id"], "Why annual?")
+        self.store.update(item["id"], pinned=True)
+        skipped = self.store.skip(item["id"], "Not a priority this month")
+        self.assertEqual((skipped["status"], skipped["bucket"], skipped["skipped"], skipped["pinned"]), ("done", "done", True, False))
+        inbox = self.store.inbox("a")
+        self.assertEqual(len(inbox), 1)
+        self.assertTrue(inbox[0]["text"].startswith("Skipped: Dhruv decided not to do this."))
+        self.assertIn("Reason: Not a priority this month", inbox[0]["text"])
+        self.assertEqual(self.store.comment(question["id"])["state"], "cancelled")
+        waited = self.store.wait(item["id"], "a", 1)  # an agent blocked on the decision hears at once
+        self.assertEqual(waited["status"], "received")
+        self.assertTrue(waited["answer"].startswith("Skipped:"))
+        self.assertEqual(self.store.inbox("a"), [])
+        with self.assertRaises(ValueError):
+            self.store.skip(item["id"])
+        with self.assertRaises(ValueError):
+            self.store.skip(self.question()["id"], "x" * 2001)
+
     def test_due_dates_and_pins_persist_and_validate(self):
         item = self.store.add("a", "Prepare the visit checklist", due="2026-10-21")
         self.assertEqual(item["due"], "2026-10-21")
@@ -575,6 +595,19 @@ class HTTPTests(unittest.TestCase):
             self.request("/../store.py")
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
+
+    def test_http_skip(self):
+        headers = {"X-HQ-Token": self.server.token}
+        with self.request("/api/items", {"session_id": "a", "title": "Upload the file", "owner": "human"}, headers) as response:
+            item = json.load(response)
+        with self.request(f"/api/items/{item['id']}/skip", {"reason": "Done another way"}, headers) as response:
+            skipped = json.load(response)
+        self.assertEqual((skipped["status"], skipped["skipped"]), ("done", True))
+        self.assertIn("Done another way", self.store.inbox("a")[0]["text"])
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            self.request(f"/api/items/{item['id']}/skip", {}, headers)
+        self.assertEqual(refused.exception.code, 400)
+        refused.exception.close()
 
     def test_item_move_and_external_response_roundtrip(self):
         headers = {"X-HQ-Token": self.server.token}

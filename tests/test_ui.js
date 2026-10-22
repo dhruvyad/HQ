@@ -153,4 +153,14 @@ assert.ok(html.includes('Unsent question'));
 assert.ok(html.includes("Didn&#39;t see: Second")); // what wasn't ticked, ready to send
 html = run("detailHTML(model.items.find(i => i.id === 'a2'))");
 assert.ok(!html.includes('Hard to read?')); // agents' own work isn't sent back to them
+// Skip sits with the other not-now choices and reads as its own outcome once taken.
+assert.ok(run("movesHTML(model.items.find(i => i.id === 'a1'))").includes('data-move="skip"'));
+run("openMove = 'skip'");
+assert.ok(run("movesHTML(model.items.find(i => i.id === 'a1'))").includes('tells the agent to drop it'));
+run("openMove = null");
+context.skipped = item({id: 's1', status: 'done', bucket: 'done', skipped: true, answer: 'Skipped: …', delivery: 'received', updated: now});
+context.skipped.lane = 'done';
+assert.ok(run('metaHTML(skipped)').startsWith('Skipped'));
+html = run('detailHTML(skipped)');
+assert.ok(html.includes('You skipped this') && html.includes('the agent knows to drop it') && !html.includes('data-move="skip"'));
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping and draft checks passed');

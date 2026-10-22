@@ -409,7 +409,7 @@ function metaHTML(i, {withLane = false, where = false, age = false} = {}) {
     else parts.push(`<span class="dot ${agentState(i.session)}" title="${esc(i.session_name)} · ${ACTIVITY[agentState(i.session)]}"></span>${ago(i.updated || i.created)}`);
   } else if (i.lane === 'waiting') parts.push(`On ${esc(i.waiting_on || 'someone')}`);
   else if (i.lane === 'later') parts.push(fmtDate(i.defer_until));
-  else if (i.lane === 'done') parts.push(fmtDate(i.updated));
+  else if (i.lane === 'done') parts.push(i.skipped ? `Skipped · ${fmtDate(i.updated)}` : fmtDate(i.updated));
   return parts.join('<span class="sep">·</span>');
 }
 function emptyHTML(lane) {
@@ -426,7 +426,7 @@ function laneLine(i) {
   if (i.lane === 'agents') return i.status === 'answered' ? `${deliveryText(i)} · agent next` : i.asking ? 'Agent is answering your question' : 'With the agent';
   if (i.lane === 'waiting') return `Waiting on ${i.waiting_on || 'someone'}`;
   if (i.lane === 'later') return `Back on ${fmtDate(i.defer_until)}`;
-  return `Done ${fmtDate(i.updated)}`;
+  return `${i.skipped ? 'Skipped' : 'Done'} ${fmtDate(i.updated)}`;
 }
 const stateLine = (i) => [i.pinned ? 'Pinned' : '', i.due && i.lane !== 'done' ? dueLabel(i) : '', laneLine(i)].filter(Boolean).join(' · ');
 const isReadable = (item) => Boolean(item.matters || item.needs_you || item.steps?.some((step) => typeof step === 'object'));
@@ -466,7 +466,8 @@ function detailHTML(i) {
   const respond = i.status === 'open' && i.owner !== 'agent';
   const report = readable && respond && checks.length;
   const ticks = draft.checks || [];
-  const sent = i.answer ? `<div class="win ${i.delivery === 'failed' ? 'failed' : ''}">${icon(i.delivery === 'failed' ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(i.delivery === 'failed' ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${i.delivery === 'failed' ? '<div class="moves"><button class="pill outline sm" data-retry>Retry delivery</button></div>' : ''}` : '';
+  const sent = i.skipped ? `<div class="win skipped ${i.delivery === 'failed' ? 'failed' : ''}">${icon('x', 'sm')}<span><strong>You skipped this</strong> · ${esc(i.delivery === 'received' ? 'the agent knows to drop it' : i.delivery === 'failed' ? `couldn't tell the agent${i.delivery_error ? `: ${i.delivery_error}` : ''}` : 'the agent will be told when it next checks in')}</span></div>${i.delivery === 'failed' ? '<div class="moves"><button class="pill outline sm" data-retry>Retry delivery</button></div>' : ''}`
+    : i.answer ? `<div class="win ${i.delivery === 'failed' ? 'failed' : ''}">${icon(i.delivery === 'failed' ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(i.delivery === 'failed' ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${i.delivery === 'failed' ? '<div class="moves"><button class="pill outline sm" data-retry>Retry delivery</button></div>' : ''}` : '';
   const legacy = readable ? '' : `${i.detail ? `<div class="d-text">${blocks(i.detail)}</div>` : ''}
       ${i.unlocks ? `<div class="d-section"><div class="d-label">Unlocks</div>${blocks(i.unlocks)}</div>` : ''}`;
   return `<div class="d-bar"><div class="crumbs">${crumbs}</div>
@@ -521,8 +522,10 @@ function movesHTML(i) {
   quiet.push('<button class="link" data-move="due">Due date</button>');
   if (i.owner !== 'human') quiet.push('<button class="link" data-needs-me>Needs me now</button>');
   quiet.push('<button class="link" data-move="owner">Hand off</button>');
+  quiet.push('<button class="link" data-move="skip">Skip</button>');
   const owner = draft.owner || i.owner;
-  const form = openMove === 'due' ? `<form class="inline-form" id="due-form"><input class="field" type="date" name="due" data-draft="due" required value="${esc(draft.due ?? i.due ?? '')}"><button class="pill primary sm">Set</button>${i.due ? '<button type="button" class="pill ghost sm" data-clear-due>Clear</button>' : ''}</form>`
+  const form = openMove === 'skip' ? `<form class="inline-form" id="skip-form"><input class="field" name="reason" data-draft="skip" maxlength="2000" placeholder="Why skip? (optional)" value="${esc(draft.skip || '')}"><button class="pill primary sm">Skip it</button><button type="button" class="pill ghost sm" data-move="skip">Cancel</button><span class="hint">Closes it and tells the agent to drop it.</span></form>`
+    : openMove === 'due' ? `<form class="inline-form" id="due-form"><input class="field" type="date" name="due" data-draft="due" required value="${esc(draft.due ?? i.due ?? '')}"><button class="pill primary sm">Set</button>${i.due ? '<button type="button" class="pill ghost sm" data-clear-due>Clear</button>' : ''}</form>`
     : openMove === 'later' ? `<form class="inline-form" id="later-form"><input class="field" type="date" name="defer_until" data-draft="later" min="${today()}" required value="${esc(draft.later ?? i.defer_until)}"><button class="pill primary sm">Snooze</button></form>`
     : openMove === 'owner' ? `<form class="inline-form" id="owner-form"><select class="field" name="owner" data-draft="owner">${[['human', 'Needs you'], ['agent', 'With the agent'], ['external', 'Waiting on someone']].map(([v, l]) => `<option value="${v}" ${owner === v ? 'selected' : ''}>${l}</option>`).join('')}</select><input class="field" name="waiting_on" data-draft="waiting" placeholder="Who or what" value="${esc(draft.waiting ?? i.waiting_on)}" ${owner === 'external' ? 'required' : 'hidden'}><button class="pill primary sm">Move</button></form>` : '';
   return `${links.length ? `<div class="moves">${links.join('')}</div>` : ''}<div class="notnow"><span>Not now?</span>${quiet.join('')}</div>${form}<p class="form-error" id="move-error" aria-live="polite"></p>`;
@@ -802,6 +805,16 @@ function bindDetail(detail) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(owner));
     if (await update(id, {owner: f.owner, waiting_on: f.owner === 'external' ? f.waiting_on : ''}, 'Moved')) {openMove = null; setDraft(id, {owner: undefined, waiting: undefined});}
+  };
+  const skip = detail.querySelector('#skip-form');
+  if (skip) skip.onsubmit = async (e) => {
+    e.preventDefault();
+    const next = visibleIds()[visibleIds().indexOf(id) + 1] || null;
+    if (await act(api(`items/${id}/skip`, {reason: new FormData(skip).get('reason') || ''}), 'Skipped. The agent will be told to drop it', $('#move-error'))) {
+      openMove = null;
+      setDraft(id, {skip: undefined});
+      go({item: next});
+    }
   };
   const retry = detail.querySelector('[data-retry]');
   if (retry) retry.onclick = () => act(api(`items/${id}/retry`, {}), 'Queued again');

@@ -145,6 +145,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = store.update(parts[2], **body)
                 elif parts[3] == "retry":
                     result = store.retry(parts[2])
+                elif parts[3] == "skip":
+                    result = store.skip(parts[2], body.get("reason", ""))
                 else:
                     return self.output(404, {"error": "Not found"})
             elif len(parts) == 4 and parts[:2] == ["api", "comments"]:

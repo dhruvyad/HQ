@@ -268,7 +268,7 @@ class Store:
     def presentation(**fields):
         result = {"unlocks": "", "recommendation": "", "steps": [], "link": None, "paste": [], "minutes": None,
                   "rank": 9999, "source": "", "agent_note": "", "matters": None, "needs_you": None,
-                  "project": "", "workstream": "", "due": "", "pinned": False, **fields}
+                  "project": "", "workstream": "", "due": "", "pinned": False, "skipped": False, **fields}
         for key in ("project", "workstream"):
             if not isinstance(result[key], str) or len(result[key]) > 60:
                 raise ValueError(f"{key} must be text, at most 60 characters")
@@ -525,6 +525,27 @@ class Store:
             db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)",
                        (str(uuid.uuid4()), id, text, now))
             db.execute("UPDATE items SET status='answered',updated=? WHERE id=?", (now, id))
+        return self.item(id)
+
+    def skip(self, id, reason=""):
+        """The human decides not to do this: close it now and tell the agent to drop it."""
+        if not isinstance(reason, str) or len(reason) > 2000:
+            raise ValueError("reason must be text, at most 2000 characters")
+        text = "Skipped: Dhruv decided not to do this. Stop any work that depends on it and don't report it again."
+        if reason.strip():
+            text += f" Reason: {reason.strip()}"
+        now = time.time()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
+            if not row or row["status"] != "open":
+                raise ValueError("Only open items can be skipped")
+            presentation = {**json.loads(row["presentation"]), "skipped": True, "pinned": False}
+            # The reply reaches the agent through its usual inbox, hook or live route.
+            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (str(uuid.uuid4()), id, text, now))
+            db.execute("""UPDATE comments SET state='cancelled' WHERE item_id=? AND author='human' AND state!='cancelled'
+                AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (id,))
+            db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
         return self.item(id)
 
     def resolve(self, id, note=""):

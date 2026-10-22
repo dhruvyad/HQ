@@ -121,6 +121,10 @@ owning server or use a verified app relay. Permission approvals still need
 the client's normal approval. A hook being configured is not proof of trust,
 receipt, or a live push connection. Keep any unfinished setup in HQ.
 
+A reply that starts with "Skipped:" means Dhruv decided not to do the item.
+The item is already closed: acknowledge it, stop work that depends on it, and
+don't report it again unless something new makes it worth his time.
+
 Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
 loop with hq_resolve and a one-line note describing what you did. A received
