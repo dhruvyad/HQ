@@ -61,10 +61,21 @@ provider or project. This keeps long conversations and replies separated.
 ```sh
 hq session add codex:my-thread --name "Billing migration" --provider codex
 hq add "Update the webhook handler" --session codex:my-thread --tags billing,backend
-hq add "Need the staging endpoint" --session codex:my-thread --kind blocker --tags billing
-hq ask "Monthly or annual billing?" --session codex:my-thread \
-  --tags billing --option Monthly --option Annual
+hq add "Add the staging endpoint" --session codex:my-thread --kind blocker --tags billing \
+  --fields readable.json
+hq ask "Choose monthly or annual billing" --session codex:my-thread \
+  --tags billing --option Monthly --option Annual --fields readable.json
 ```
+
+An agent's item that needs you must arrive readable, or HQ refuses it. It
+needs minutes, steps (or options for a decision), `matters` (why it matters)
+and `needs_you` (why you, not the agent). Each step is one action and carries
+its own link, text to copy, or checks to tick. `--fields` takes those fields
+as JSON, and `hq report item.json` takes a whole item. Reports also return
+`readability` notes, such as an overlong title or a step that is really a
+paragraph, for the agent to fix with `hq update`. Your own items stay
+free-form. On any item, **Hard to read?** sends it back to its agent to
+rewrite. `hq instructions` prints the full format with a worked example.
 
 Each conversation can have any number of independent decisions, human actions,
 agent tasks, and outside blockers. Ownership is separate from the item type:

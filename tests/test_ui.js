@@ -173,4 +173,22 @@ run('streamEvent(\'event: ping\\ndata: {}\')');
 assert.equal(run('liveHealthy'), true);
 run('streamEvent(\'event: ping\\ndata: {"healthy":false}\')');
 assert.equal(run('liveHealthy'), false);
+// Readable items escape every agent-written field and refuse unsafe links.
+const readable = {id: 'r', status: 'open', owner: 'human', title: 'Send one message', minutes: 3,
+  steps: [{text: 'Open <b>it</b>', link: {label: 'x', url: 'javascript:alert(1)'}}, {text: 'Send', copy: '<img onerror=x>'},
+          {text: 'Check', checks: ['<script>a()</script>', 'Second']}, 'Plain step'],
+  matters: {lead: '<i>lead</i>', points: ['**fact**']}, needs_you: {lead: 'Only you', points: []}};
+context.readable = readable;
+assert.equal(run('isReadable(readable)'), true);
+assert.equal(run("isReadable({steps: ['a']})"), false);
+const plan = run('planHTML(readable)');
+assert.ok(!plan.includes('javascript:'));
+assert.ok(!plan.includes('<script>') && !plan.includes('<img') && !plan.includes('<b>'));
+assert.ok(plan.includes('0 of 2'));
+assert.equal((plan.match(/data-check=/g) || []).length, 2);
+assert.ok(plan.includes('Plain step'));
+const reasons = run('reasonsHTML(readable)');
+assert.ok(reasons.includes('Why it matters') && reasons.includes('Why you, not the agent'));
+assert.ok(reasons.includes('<strong>fact</strong>') && !reasons.includes('<i>'));
+assert.deepEqual(run('checksOf(readable).map(c => c.key)'), ['2:0', '2:1']);
 console.log('UI presence, stale-update protection, conversation isolation, and draft checks passed');

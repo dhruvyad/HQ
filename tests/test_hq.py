@@ -21,6 +21,9 @@ from hq.server import Server
 from hq.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
+# The readable shape every agent item that needs the human must carry.
+READABLE = {"minutes": 2, "matters": {"lead": "Unblocks the release", "points": ["Customers wait on it"]},
+            "needs_you": {"lead": "Shipping is your call"}}
 
 
 class StoreTests(unittest.TestCase):
@@ -113,8 +116,10 @@ class StoreTests(unittest.TestCase):
                 env={**os.environ, "HQ_HOME": self.temp.name}, capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
         cli("session", "add", "cli", "--name", "CLI conversation")
+        fields = Path(self.temp.name) / "fields.json"
+        fields.write_text(json.dumps({**READABLE, "steps": ["Upload the file"]}))
         waiting = cli("add", "Vendor approval", "--session", "cli", "--owner", "external", "--waiting-on", "Vendor")
-        action = cli("add", "Upload file", "--session", "cli", "--owner", "human")
+        action = cli("add", "Upload file", "--session", "cli", "--owner", "human", "--fields", str(fields))
         updated = cli("update", waiting["id"], "--session", "cli", "--owner", "human")
         self.assertEqual(updated["bucket"], "needs")
         self.assertEqual({i["id"] for i in cli("list", "--session", "cli", "--bucket", "needs")}, {waiting["id"], action["id"]})
@@ -148,9 +153,68 @@ class StoreTests(unittest.TestCase):
                 self.store.add("a", "Action", **fields)
         self.assertEqual(self.store.snapshot()["items"], [])
 
+    def test_agent_items_that_need_the_human_must_arrive_readable(self):
+        with self.assertRaises(ValueError) as refused:
+            self.store.add("a", "Choose the plan", kind="question", options=["Monthly", "Annual"], readable=True)
+        for field in ("minutes", "matters", "needs_you"):
+            self.assertIn(field, str(refused.exception))
+        self.assertNotIn("steps", str(refused.exception))  # options are enough for a decision
+        with self.assertRaises(ValueError) as refused:
+            self.store.add("a", "Upload the file", owner="human", **READABLE, readable=True)
+        self.assertIn("steps", str(refused.exception))
+        self.assertEqual(self.store.snapshot()["items"], [])
+        self.store.add("a", "Choose the plan", kind="question", options=["Monthly", "Annual"], **READABLE, readable=True)
+        self.store.add("a", "Refactor the parser", owner="agent", readable=True)
+        self.store.add("a", "Vendor approval", owner="external", waiting_on="Vendor", readable=True)
+        self.store.add("a", "Call the bank", owner="human")  # the human's own items stay free-form
+        self.assertEqual(len(self.store.snapshot()["items"]), 4)
+
+    def test_steps_carry_links_copy_text_and_checks(self):
+        steps = [{"text": "Open NoClick", "link": {"label": "noclick.com", "url": "https://noclick.com"}},
+                 {"text": "Send this message", "copy": "build me an agent"},
+                 {"text": "Check what it asks", "checks": ["A repository list", "A Linear team list"]}, "Reply here"]
+        item = self.store.add("a", "Send one message", owner="human", steps=steps, **READABLE, readable=True)
+        reopened = Store(self.store.path).item(item["id"])
+        self.assertEqual(reopened["steps"], steps)
+        self.assertEqual(reopened["needs_you"], {"lead": "Shipping is your call", "points": []})
+        updated = self.store.update(item["id"], "a", matters={"lead": "Proves the lists work", "points": ["Live since 10-18"]})
+        self.assertEqual(updated["matters"]["points"], ["Live since 10-18"])
+        with self.store.db() as db:  # sessions on older HQ code read `steps` as plain text
+            stored = json.loads(db.execute("SELECT presentation FROM items WHERE id=?", (item["id"],)).fetchone()[0])
+        self.assertTrue(all(isinstance(step, str) for step in stored["steps"]))
+        self.assertEqual(stored["steps"][1], "Send this message: build me an agent")
+        self.assertEqual(stored["plan"], steps)
+        plain = self.store.update(item["id"], "a", steps=["Just send the message"])  # an older session rewrites steps
+        self.assertEqual(plain["steps"], ["Just send the message"])
+        self.assertEqual(Store(self.store.path).item(item["id"])["steps"], ["Just send the message"])
+        self.store.update(item["id"], "a", steps=steps)
+        for bad in ({"steps": [{"text": "Open", "link": {"label": "x", "url": "javascript:alert(1)"}}]},
+                    {"steps": [{"text": "Check", "checks": []}]}, {"steps": [{"link": {"label": "x", "url": "https://a.b"}}]},
+                    {"steps": [{"text": "Run", "command": "rm -rf /"}]}, {"matters": {"points": ["No lead"]}},
+                    {"needs_you": {"lead": "Why", "points": ["1", "2", "3", "4", "5", "6"]}}):
+            with self.assertRaises(ValueError):
+                self.store.add("a", "Action", owner="human", **{**READABLE, "steps": ["Do it"], **bad}, readable=True)
+        self.assertEqual(len(self.store.snapshot()["items"]), 1)
+
+    def test_readability_notes_flag_wording_without_blocking(self):
+        long_step = "Open the billing page, find the restriction notice near the top, and work out whether a failed payment or the spending limit caused it"
+        item = self.store.add("a", "Review the GitHub billing restriction that stopped the CI run on the HQ pull request",
+            detail="x" * 700, owner="human", steps=[long_step, "b", "c", "d", "e", "f"], readable=True,
+            **{**READABLE, "matters": {"lead": "Unblocks CI", "points": ["1", "2", "3", "4"]}})
+        notes = Store.readability_notes(item)
+        self.assertTrue(any(n.startswith("Title is") for n in notes))
+        self.assertTrue(any(n.startswith("6 steps") for n in notes))
+        self.assertTrue(any(n.startswith("Step 1 is") for n in notes))
+        self.assertTrue(any(n.startswith("matters has 4 points") for n in notes))
+        self.assertTrue(any(n.startswith("Context is 700") for n in notes))
+        old = self.store.add("a", "Old paragraph item", detail="Everything in one paragraph", owner="human")
+        self.assertTrue(any("must include" in n for n in Store.readability_notes(old)))
+        clean = self.store.add("a", "Send one message", owner="human", steps=["Send it"], **READABLE, readable=True)
+        self.assertEqual(Store.readability_notes(clean), [])
+
     def test_structured_cli_report_and_shared_instructions(self):
         fields = {"title": "Upload the certificate", "owner": "human", "steps": ["Open portal", "Upload file"],
-                  "unlocks": "Starts vendor review", "minutes": 3}
+                  "unlocks": "Starts vendor review", **READABLE, "minutes": 3}
         report_path = Path(self.temp.name) / "report.json"
         report_path.write_text(json.dumps(fields))
         env = {**os.environ, "HQ_HOME": self.temp.name}
@@ -158,7 +222,7 @@ class StoreTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "bin/hq"), "report", str(report_path), "--session", "cli"], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)["steps"], fields["steps"])
         guide = subprocess.run([sys.executable, str(ROOT / "bin/hq"), "instructions"], env=env, capture_output=True, text=True, check=True)
-        self.assertIn("human action", guide.stdout)
+        self.assertIn("needs_you", guide.stdout)
         self.assertIn("never put key values", guide.stdout)
 
     def test_answer_returns_to_exact_waiting_session(self):
@@ -362,7 +426,9 @@ class StoreTests(unittest.TestCase):
                 env={**os.environ, "HQ_HOME": self.temp.name}, capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
         cli("session", "add", "cli", "--name", "CLI")
-        item = cli("add", "Choose plan", "--session", "cli", "--kind", "question")
+        fields = Path(self.temp.name) / "fields.json"
+        fields.write_text(json.dumps({**READABLE, "steps": ["Pick the plan"]}))
+        item = cli("add", "Choose plan", "--session", "cli", "--kind", "question", "--fields", str(fields))
         question = cli("question", item["id"], "Why this plan?")
         cli("comment-ack", question["id"], "--session", "cli")
         self.assertEqual(len(cli("comments", "--session", "cli", "--pending")), 1)
@@ -583,11 +649,11 @@ class MCPTests(unittest.TestCase):
         self.send("initialize", 1, {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
         initialized = self.messages.get(timeout=3)
         self.assertEqual(initialized["id"], 1)
-        self.assertIn("NoClick Queue writing format", initialized["result"]["instructions"])
+        self.assertIn("Why you, not the agent", initialized["result"]["instructions"])
         self.send("notifications/initialized")
         self.send("tools/list", 2)
         self.assertTrue(any(t["name"] == "hq_request_input" for t in self.messages.get(timeout=3)["result"]["tools"]))
-        self.send("tools/call", 3, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 5}})
+        self.send("tools/call", 3, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "options": ["Ship", "Wait"], **READABLE, "timeout": 5}})
         deadline = time.monotonic() + 3
         while not self.store.snapshot()["items"] and time.monotonic() < deadline:
             time.sleep(.02)
@@ -609,6 +675,12 @@ class MCPTests(unittest.TestCase):
                 if message.get("id") == request_id:
                     return message["result"]
             self.fail("No matching tool result")
+        refused = call(20, "hq_report", {"session_id": "a", "title": "Upload the certificate", "owner": "human", "detail": "One long paragraph"})
+        self.assertTrue(refused["isError"])
+        self.assertIn("needs_you", refused["content"][0]["text"])
+        noted = call(19, "hq_report", {"session_id": "a", "title": "Upload the certificate to the vendor portal before the review window closes on Friday", "owner": "human", "steps": ["Upload it"], **READABLE})
+        self.assertTrue(json.loads(noted["content"][0]["text"])["readability"][0].startswith("Title is"))
+        self.store.resolve(json.loads(noted["content"][0]["text"])["id"])
         result = call(21, "hq_report", {"session_id": "a", "title": "Wait for approval", "owner": "external", "waiting_on": "Vendor", "unlocks": "Launch", "steps": ["Wait for the vendor"], "options": [{"label": "Continue", "recommended": True}]})
         self.assertFalse(result["isError"])
         item = json.loads(result["content"][0]["text"])
@@ -649,7 +721,7 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(json.loads(result["result"]["content"][0]["text"])["answer"], "Go ahead")
 
     def test_cancellation_keeps_question(self):
-        self.send("tools/call", 1, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "timeout": 60}})
+        self.send("tools/call", 1, {"name": "hq_request_input", "arguments": {"session_id": "a", "title": "Ship?", "options": ["Ship", "Wait"], **READABLE, "timeout": 60}})
         time.sleep(.2)
         self.send("notifications/cancelled", params={"requestId": 1})
         result = self.messages.get(timeout=3)

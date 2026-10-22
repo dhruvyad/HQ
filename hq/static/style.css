@@ -208,6 +208,39 @@ textarea { resize: vertical; line-height: 1.6; }
 #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
+/* Readable items: the action, numbered steps that carry what they need, then why. */
+.state-line { margin: 0; color: hsl(var(--muted-foreground)); font-size: 13px; }
+.readable-title { margin: 6px 0 0; font: 500 22px/1.3 var(--font); letter-spacing: -.015em; }
+.plan { list-style: none; margin: 26px 0 0; padding: 0; display: flex; flex-direction: column; gap: 24px; }
+.pstep { display: grid; grid-template-columns: 30px 1fr; align-items: start; }
+.pstep .num { font: 500 15px/30px var(--font); color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
+.phead { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; font-size: 16px; font-weight: 500; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.phead .button { border-radius: 999px; text-decoration: none; }
+.tally { font-size: 13px; font-weight: 400; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.copy-line { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; padding: 12px 8px 12px 14px; border-radius: 14px; background: hsl(0 0% 7%); border: 1px solid var(--hairline); font-size: 14.5px; line-height: 1.55; color: hsl(var(--foreground) / .92); }
+.copy-line span { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.copy-line .button { margin-top: -4px; border-radius: 999px; }
+.checks { display: flex; flex-direction: column; gap: 2px; margin: 8px -10px 0; }
+.check { display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 8px 10px; border: 0; border-radius: 12px; background: none; text-align: left; font-size: 14.5px; line-height: 1.5; color: hsl(var(--foreground) / .9); }
+.check:hover { background: var(--row-hover); }
+.check .box { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-top: 2px; flex: none; border-radius: 6px; border: 1.5px solid hsl(var(--foreground) / .35); color: transparent; }
+.check .box .icon { width: 12px; height: 12px; stroke-width: 3; }
+.check[aria-checked="true"] { color: hsl(var(--muted-foreground)); }
+.check[aria-checked="true"] .box { background: hsl(var(--foreground)); border-color: hsl(var(--foreground)); color: hsl(var(--primary-foreground)); }
+.report { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
+.report .button { border-radius: 999px; min-height: 36px; padding: 6px 16px; font-size: 13px; }
+.reasons { display: flex; flex-direction: column; gap: 22px; margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--hairline); }
+.reason > span { font-size: 12px; color: hsl(var(--muted-foreground)); }
+.reason-lead { margin: 4px 0 0; color: hsl(var(--foreground)); font-size: 15px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.reason ul { margin: 8px 0 0; padding-left: 18px; }
+.reason li { font-size: 14px; line-height: 1.55; color: hsl(var(--foreground) / .72); overflow-wrap: anywhere; }
+.reason li + li { margin-top: 4px; }
+.more-context { margin-top: 24px; border-top: 1px solid var(--hairline); padding-top: 12px; }
+.more-context summary { cursor: pointer; color: hsl(var(--muted-foreground)); font-size: 13px; }
+.more-context p { margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: hsl(var(--foreground) / .75); overflow-wrap: anywhere; white-space: pre-wrap; }
+.detail-meta.from { margin-top: 24px; }
+.hard-to-read { margin-top: 18px; padding-left: 0; }
+
 @media (max-width: 1050px) {
   :root { --rail-width: 196px; }
   .topbar { padding: 0 20px; }

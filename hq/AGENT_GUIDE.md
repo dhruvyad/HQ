@@ -6,33 +6,73 @@ Conversations are the primary category. One item is one action or decision;
 a conversation can have many.
 Use hq_update for changes to an existing item instead of creating duplicates.
 
-Use the NoClick Queue writing format:
+Write every item so a reader with ADHD can act on it in one glance. An item
+that needs the human (owner=human) is refused unless it has **minutes**,
+**steps** (or **options** for a decision), **matters** and **needs_you**. The
+report result can also carry `readability` notes: fix them with hq_update
+before you finish.
 
-- **Title:** start with the human action: “Choose the launch plan”, “Upload the
-  certificate”, “Add the staging key”. Use plain language and name the thing.
-- **Next step:** kind=question for a decision, todo for an action, blocker for a
-  blocked dependency. owner=human needs Dhruv, agent is work with the agent,
-  external waits on the named person/team/service in waiting_on. External waits
-  are separate from things Dhruv can act on. defer_until=YYYY-MM-DD hides later
-  work until that local date. Empty clears it.
-- **Tags (optional):** reuse a small set of existing workstream tags when useful.
-  Avoid making a new tag for each task or item. Conversation and harness already
-  identify the agent's work.
-- **Context:** detail is a short explanation of why this matters. No transcripts,
-  long progress reports, or implementation dumps.
-- **Unlocks:** one sentence saying what this action makes possible.
-- **Recommendation:** recommend a choice and give a brief reason. Decision
-  options can be {id, label, note, recommended}; use human-readable labels, with
-  one recommended choice. Strings still work for simple options.
-- **Steps:** an ordered list of short actions. Give a direct HTTPS link with a
-  useful button label. Use paste blocks for exact text to copy, with a label
-  and optional mono=true for code. Bold, inline code, and HTTPS links work in
-  context, unlocks, recommendations, and steps; copy blocks stay plain text.
-- **Effort:** minutes is Dhruv's own time, excluding agent/vendor waiting. rank
-  sorts lower first: urgent decisions 10–150, actions 200–370, waits 400+.
-  source is “agent/worktree · task”. Include only fields that help the human act.
-- **Secrets:** key names are okay; never put key values, credentials, or tokens
-  in titles, context, links, options, or copy blocks.
+- **Title = the one action**, under 70 characters, in plain words: "Send one
+  message to NoClick, then check what it asks". No internal names or jargon
+  ("pickers", "wand builder", file paths). Not a summary, not a question.
+- **minutes:** the human's own time, specific (3, not "a bit").
+- **steps:** at most 5, one action each, numbered by the dashboard. A step
+  carries what it needs instead of describing it: `link` {label, url} to open,
+  `copy` with the exact text to paste, `checks` listing what to look for (the
+  human ticks them, and the item ends in Looks right / Something was off).
+  Plain-text steps still work for simple actions.
+- **options:** for a decision, 2–4 human-readable choices, one recommended,
+  each with a one-line trade-off in note.
+- **matters** {lead, points}: *Why it matters*. lead = what this unblocks, in
+  one line; points = up to 3 short facts. No hedging.
+- **needs_you** {lead, points}: *Why you, not the agent*. lead = the real
+  reason (a sign-in, a payment, an account only they have, a call only they
+  can make); points = up to 3 short facts. If you can do it yourself, do it
+  instead of reporting it.
+- **detail:** optional background, shown collapsed under More context, under
+  600 characters. Never put the steps or the why here.
+- **kind/owner:** kind=question for a decision, todo for an action, blocker
+  for a blocked dependency. owner=human needs Dhruv, agent is work with the
+  agent, external waits on the named person/team/service in waiting_on.
+  defer_until=YYYY-MM-DD hides the item until that local date; empty clears it.
+- **Tags (optional):** reuse a small set of existing workstream tags.
+- **rank** sorts lower first: urgent decisions 10–150, actions 200–370,
+  waits 400+. source is "agent/worktree · task".
+- **Secrets:** key names are okay; never put key values, credentials, or
+  tokens in any field.
+
+Worked example (owner=human action):
+
+```json
+{
+  "session_id": "claude-code:your-session",
+  "title": "Send one message to NoClick, then check what it asks",
+  "owner": "human",
+  "minutes": 3,
+  "steps": [
+    {"text": "Open NoClick", "link": {"label": "noclick.com", "url": "https://noclick.com"}},
+    {"text": "Send this message", "copy": "build me an agent that runs whenever a github issue is created and creates a pr and linear ticket"},
+    {"text": "Check what it asks you", "checks": [
+      "A list of your GitHub repositories to pick from (no question if you have only one)",
+      "A list of your Linear teams, the same way",
+      "No question about which issues are unclear"]}
+  ],
+  "matters": {"lead": "Proves the account lists work for a real person, not just test accounts",
+    "points": ["NoClick now shows a list from your account instead of asking you to type a name (live since 10-18)",
+               "It has only run on test accounts so far",
+               "If a list is wrong, the agent learns which one and fixes it"]},
+  "needs_you": {"lead": "It needs a real GitHub and Linear, and only you can sign in to them",
+    "points": ["Test accounts have no GitHub or Linear connected, so there is no list to show",
+               "Connecting one means signing in as a person, which the agent can't do"]},
+  "tags": ["coordinator"],
+  "rank": 300,
+  "source": "noclick4 · coordinator pickers"
+}
+```
+
+A decision uses options instead of steps, with the same matters and
+needs_you. After the human acts, update the same item (for example
+owner=external with waiting_on="Vendor review") rather than reporting a new one.
 
 Keep the unfinished work visible. Before starting, when resuming, and before
 finishing, use hq_list for this session's open and answered items. Report every
@@ -83,32 +123,3 @@ buried in context or a completion note. Never claim delivery without receipt.
 
 End user-facing work reports with one short HQ line and the item that matters
 now, rather than repeating the whole queue. Link to the running local dashboard.
-
-Example hq_report arguments (use your real session id):
-
-```json
-{
-  "session_id": "codex:your-thread",
-  "title": "Choose the launch plan",
-  "kind": "question",
-  "owner": "human",
-  "tags": ["launch"],
-  "detail": "We can ship the core flow now or include the optional importer.",
-  "unlocks": "Finalizes the release scope.",
-  "recommendation": "Ship the core flow now; the importer can follow separately.",
-  "options": [
-    {"id": "core", "label": "Ship the core flow", "note": "Ready for review.", "recommended": true},
-    {"id": "importer", "label": "Include the importer", "note": "Adds two days."}
-  ],
-  "minutes": 2,
-  "rank": 20,
-  "source": "agent1 · launch"
-}
-```
-
-Example human action: title “Upload the vendor certificate”, owner=human,
-steps=[“Open the vendor portal”, “Upload the signed certificate”],
-link={label:"Open vendor portal", url:"https://example.com/portal"}.
-After submission, update that same item to owner=external with
-waiting_on="Vendor review". When the vendor responds, send the update back to
-the owning session; the agent completes the follow-through and resolves it.

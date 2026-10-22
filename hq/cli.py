@@ -14,7 +14,7 @@ import webbrowser
 from pathlib import Path
 
 from .discovery import discover
-from .mcp import AGENT_INSTRUCTIONS, run as run_mcp
+from .mcp import AGENT_INSTRUCTIONS, run as run_mcp, with_notes
 from .server import serve
 from .store import Store, data_dir
 from .connections import connect_chatgpt, connect_codex, install_hooks, launch as launch_agent
@@ -143,6 +143,7 @@ def parser():
         action.add_argument("--session", required=True)
         action.add_argument("--detail", default="")
         action.add_argument("--tags", default="", help="Comma-separated workstream tags")
+        action.add_argument("--fields", type=Path, help="JSON file with readable fields: steps, matters, needs_you, minutes, …")
         if command == "add":
             action.add_argument("--kind", choices=["todo", "blocker", "question"], default="todo")
             action.add_argument("--owner", choices=["human", "agent", "external"])
@@ -268,7 +269,7 @@ def main():
             if not isinstance(fields, dict) or "session_id" in fields:
                 raise ValueError("Report file must be an item object; pass the conversation with --session")
             try:
-                return output(store.add(args.session, **fields))
+                return output(with_notes(store.add(args.session, **fields, readable=True)))
             except TypeError as error:
                 raise ValueError(f"Invalid report fields: {error}") from None
         if args.command == "stop":
@@ -290,14 +291,17 @@ def main():
         if args.command in {"add", "ask"}:
             if args.command == "ask" and not 0 < args.timeout <= 86400:
                 raise ValueError("timeout must be between 1 and 86400 seconds")
+            fields = json.loads(args.fields.read_text()) if args.fields else {}
+            if not isinstance(fields, dict) or set(fields) & {"session_id", "title", "detail", "kind", "tags", "options", "owner", "waiting_on", "defer_until"}:
+                raise ValueError("--fields holds readable fields only (steps, matters, needs_you, minutes, …); pass the rest as flags")
             item = store.add(args.session, args.title, args.detail,
                              getattr(args, "kind", "question"), [t.strip() for t in args.tags.split(",") if t.strip()],
                              getattr(args, "option", []), getattr(args, "owner", None),
-                             getattr(args, "waiting_on", ""), getattr(args, "defer_until", ""))
+                             getattr(args, "waiting_on", ""), getattr(args, "defer_until", ""), **fields, readable=True)
             if args.command == "ask" and not args.no_wait:
                 print(f"Waiting for a human answer in HQ. Item: {item['id']}", file=sys.stderr)
                 return output(store.wait(item["id"], args.session, args.timeout))
-            return output(item)
+            return output(with_notes(item))
         if args.command == "await":
             return output(store.wait(args.item_id, args.session, args.timeout))
         if args.command == "update":

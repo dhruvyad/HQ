@@ -22,10 +22,13 @@ ATTENTION = {"owner": {"enum": ["human", "agent", "external"]}, "waiting_on": TE
 READABLE = {
     "unlocks": {"type": "string", "description": "One short sentence: what this action makes possible."},
     "recommendation": {"type": "string", "description": "Recommend one choice and explain why briefly."},
-    "steps": {"type": "array", "items": TEXT, "description": "Short ordered steps for the human; one action per step."},
+    "steps": {"type": "array", "items": {"anyOf": [TEXT, schema({"text": TEXT, "link": schema({"label": TEXT, "url": TEXT}, ["label", "url"]), "copy": TEXT, "checks": STRINGS}, ["text"])]},
+              "description": "At most 5 numbered actions for the human, each one action in plain words. A step carries what it needs: link {label, url} to open, copy (exact text to paste), or checks (what to look for; the human ticks them)."},
+    "matters": schema({"lead": TEXT, "points": STRINGS}, ["lead"]) | {"description": "Why it matters: lead = one line on what this unblocks; points = up to 3 short facts."},
+    "needs_you": schema({"lead": TEXT, "points": STRINGS}, ["lead"]) | {"description": "Why the human, not you: lead = one line; points = up to 3 short facts (a sign-in, a payment, a decision only they can make)."},
     "link": schema({"label": TEXT, "url": {"type": "string", "description": "Direct HTTPS destination, without credentials."}}, ["label", "url"]),
     "paste": {"type": "array", "items": schema({"label": TEXT, "text": TEXT, "mono": {"type": "boolean"}}, ["label", "text"]), "description": "Ready-to-copy text; key names only, never secret values."},
-    "minutes": {"type": "integer", "minimum": 0, "description": "The human's own effort in minutes, excluding vendor/agent wait."},
+    "minutes": {"type": "integer", "minimum": 0, "description": "The human's own effort in minutes, excluding vendor/agent wait. Required when owner=human."},
     "rank": {"type": "integer", "minimum": 0, "description": "Lower means sooner; urgent decisions 10–150, actions 200–370, waits 400+."},
     "source": {"type": "string", "description": "Agent/worktree · task."},
 }
@@ -36,7 +39,7 @@ TOOLS = [
     ("hq_register_session", "Identify this exact conversation; reuse its stable session id on every call.",
      schema({"session_id": TEXT, "name": TEXT, "provider": TEXT, "external_id": TEXT, "cwd": TEXT}, ["session_id", "name"])),
     ("hq_report", "Proactively report every unfinished requirement, setup gap, and unverified behavior as an independent item; a conversation can have many. owner=human needs action, agent is pending work, external waits on waiting_on. defer_until is an optional YYYY-MM-DD date. Defaults: tasks belong to agent, questions/blockers to human.",
-     schema({"session_id": TEXT, "title": {"type": "string", "description": "Start with the human action: Choose…, Upload…, Add…, Review…. Use plain language."}, "detail": {"type": "string", "description": "Brief context for the human, not a transcript. Use steps/link/paste for instructions."}, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": CHOICES, **ATTENTION, **READABLE}, ["session_id", "title"])),
+     schema({"session_id": TEXT, "title": {"type": "string", "description": "The one action, in plain words, under 70 characters: Choose…, Send…, Add…. No jargon or internal names."}, "detail": {"type": "string", "description": "Optional background, shown collapsed under More context, under 600 characters. Never put the steps or the why here."}, "kind": {"enum": ["todo", "blocker", "question"]}, "tags": STRINGS, "options": CHOICES, **ATTENTION, **READABLE}, ["session_id", "title"])),
     ("hq_update", "Update an existing open item instead of duplicating it. Change ownership, who it waits on, context, or defer_until (empty clears deferral). Other items in this conversation remain independent.",
      schema({"session_id": TEXT, "item_id": TEXT, "title": TEXT, "detail": TEXT, **ATTENTION, **READABLE}, ["session_id", "item_id"])),
     ("hq_list", "List pending work and answers across conversations, optionally filtered by session, tag, or status.",
@@ -58,6 +61,11 @@ TOOLS = [
     ("hq_resolve", "Close the loop after acting on an item; note is a one-line account of what you did. A response must be received before closing an answered question.",
      schema({"session_id": TEXT, "item_id": TEXT, "note": TEXT}, ["session_id", "item_id"])),
 ]
+
+
+def with_notes(item):
+    notes = Store.readability_notes(item)
+    return {**item, "readability": notes} if notes else item
 
 
 def run(provider="other", channel=False, session_id=None):
@@ -98,10 +106,10 @@ def run(provider="other", channel=False, session_id=None):
                 if not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
                     raise ValueError("timeout must be between 1 and 86400 seconds")
                 args["kind"] = "question"
-            item = store.add(**args)
-            return store.wait(item["id"], id, timeout, cancel) if name == "hq_request_input" else item
+            item = store.add(**args, readable=True)
+            return store.wait(item["id"], id, timeout, cancel) if name == "hq_request_input" else with_notes(item)
         if name == "hq_update":
-            return store.update(**args)
+            return with_notes(store.update(**args))
         if name == "hq_wait":
             return store.wait(args["item_id"], id, args.get("timeout", 120), cancel)
         if name == "hq_inbox":

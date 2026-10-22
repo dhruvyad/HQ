@@ -219,7 +219,8 @@ class Store:
 
     def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
             owner=None, waiting_on="", defer_until="", *, unlocks="", recommendation="",
-            steps=None, link=None, paste=None, minutes=None, rank=9999, source=""):
+            steps=None, link=None, paste=None, minutes=None, rank=9999, source="",
+            matters=None, needs_you=None, readable=False):
         self.session(session_id)
         title = required(title, "title", 500)
         if kind not in {"todo", "blocker", "question"}:
@@ -234,8 +235,11 @@ class Store:
         tags = sorted(set(required(t, "tag", 60) for t in tags))
         options = [self.option(o) for o in options]
         presentation = self.presentation(unlocks=unlocks, recommendation=recommendation, steps=[] if steps is None else steps,
-                                         link=link, paste=[] if paste is None else paste, minutes=minutes, rank=rank, source=source)
+                                         link=link, paste=[] if paste is None else paste, minutes=minutes, rank=rank, source=source,
+                                         matters=matters, needs_you=needs_you)
         owner, waiting_on, defer_until = self.attention(("agent" if kind == "todo" else "human") if owner is None else owner, waiting_on, defer_until)
+        if readable:
+            self.require_readable(owner, options, presentation)
         id, now = str(uuid.uuid4()), time.time()
         with self.db() as db:
             db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until,presentation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -260,27 +264,28 @@ class Store:
 
     @staticmethod
     def presentation(**fields):
-        result = {"unlocks": "", "recommendation": "", "steps": [], "link": None,
-                  "paste": [], "minutes": None, "rank": 9999, "source": "", "agent_note": "", **fields}
+        result = {"unlocks": "", "recommendation": "", "steps": [], "link": None, "paste": [], "minutes": None,
+                  "rank": 9999, "source": "", "agent_note": "", "matters": None, "needs_you": None, **fields}
         for key in ("unlocks", "recommendation", "source", "agent_note"):
             if not isinstance(result[key], str) or len(result[key]) > 4000:
                 raise ValueError(f"{key} must be text, at most 4000 characters")
         if not isinstance(result["steps"], list) or len(result["steps"]) > 20:
             raise ValueError("steps must be a list of at most 20 short instructions")
-        result["steps"] = [required(step, "step", 2000) for step in result["steps"]]
-        link = result["link"]
-        if link is not None:
-            if not isinstance(link, dict) or set(link) != {"label", "url"}:
-                raise ValueError("link must contain label and url")
-            url = required(link["url"], "link url", 4000)
-            try:
-                parsed = urlsplit(url)
-                valid = parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password
-            except ValueError:
-                valid = False
-            if not valid or any(c.isspace() or ord(c) < 32 for c in url):
-                raise ValueError("link must be an HTTPS URL without credentials")
-            result["link"] = {"label": required(link["label"], "link label", 200), "url": url}
+        steps = [Store.step(step) for step in result["steps"]]
+        plan = result.pop("plan", None)
+        # Rich steps are stored apart, with plain text in `steps`, because sessions still running older HQ
+        # code read `steps` as text. A plan survives only while that text still matches it.
+        if any(isinstance(step, dict) for step in steps):
+            result["plan"], steps = steps, [Store.plain_step(step) for step in steps]
+        elif plan:
+            plan = [Store.step(step) for step in plan]
+            if [Store.plain_step(step) for step in plan] == steps:
+                result["plan"] = plan
+        result["steps"] = steps
+        if result["link"] is not None:
+            result["link"] = Store.link(result["link"])
+        result["matters"] = Store.reason(result["matters"], "matters")
+        result["needs_you"] = Store.reason(result["needs_you"], "needs_you")
         if not isinstance(result["paste"], list) or len(result["paste"]) > 10:
             raise ValueError("paste must be a list of at most 10 copy blocks")
         blocks = []
@@ -299,6 +304,106 @@ class Store:
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100000:
                 raise ValueError(f"{key} must be a nonnegative integer at most 100000")
         return result
+
+    @staticmethod
+    def link(link):
+        if not isinstance(link, dict) or set(link) != {"label", "url"}:
+            raise ValueError("link must contain label and url")
+        url = required(link["url"], "link url", 4000)
+        try:
+            parsed = urlsplit(url)
+            valid = parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password
+        except ValueError:
+            valid = False
+        if not valid or any(c.isspace() or ord(c) < 32 for c in url):
+            raise ValueError("link must be an HTTPS URL without credentials")
+        return {"label": required(link["label"], "link label", 200), "url": url}
+
+    @staticmethod
+    def step(value):
+        # One action, carrying what it needs: a link to open, text to copy, or things to check.
+        if isinstance(value, str):
+            return required(value, "step", 2000)
+        if not isinstance(value, dict) or set(value) - {"text", "link", "copy", "checks"}:
+            raise ValueError("a step must be text or an object with text and optional link, copy, and checks")
+        result = {"text": required(value.get("text"), "step text", 500)}
+        if value.get("link") is not None:
+            result["link"] = Store.link(value["link"])
+        if value.get("copy") is not None:
+            result["copy"] = required(value["copy"], "step copy text", 20000)
+        if value.get("checks") is not None:
+            checks = value["checks"]
+            if not isinstance(checks, list) or not 0 < len(checks) <= 10:
+                raise ValueError("step checks must be a list of 1 to 10 things to check")
+            result["checks"] = [required(check, "check", 500) for check in checks]
+        return result
+
+    @staticmethod
+    def plain_step(step):
+        if isinstance(step, str):
+            return step
+        extras = [step["link"]["url"]] if "link" in step else []
+        extras += [step["copy"]] if "copy" in step else []
+        extras += ["; ".join(step.get("checks", []))] if "checks" in step else []
+        text = step["text"] + (": " + " · ".join(extras) if extras else "")
+        return text if len(text) <= 2000 else text[:1999] + "…"
+
+    @staticmethod
+    def reason(value, name):
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) - {"lead", "points"}:
+            raise ValueError(f"{name} must be an object with a lead line and optional points")
+        points = value.get("points", [])
+        if not isinstance(points, list) or len(points) > 5:
+            raise ValueError(f"{name} points must be a list of at most 5 short lines")
+        return {"lead": required(value.get("lead"), f"{name} lead", 300), "points": [required(p, f"{name} point", 500) for p in points]}
+
+    @staticmethod
+    def require_readable(owner, options, presentation):
+        # An agent's item that needs the human has to arrive readable: the dashboard has nothing to show without these.
+        if owner != "human":
+            return
+        missing = []
+        if presentation["minutes"] is None:
+            missing.append("minutes (the human's own time)")
+        if not presentation["steps"] and not options:
+            missing.append("steps (one action each, with its link, copy text or checks) or options (for a decision)")
+        if not presentation["matters"]:
+            missing.append("matters {lead, points}: what this unblocks and why it matters")
+        if not presentation["needs_you"]:
+            missing.append("needs_you {lead, points}: why the agent can't do it")
+        if missing:
+            raise ValueError("An item that needs the human must include " + "; ".join(missing)
+                             + ". Read hq_reporting_guide (or `hq instructions`) for the worked example.")
+
+    @staticmethod
+    def readability_notes(item):
+        """Wording checks returned to the reporting agent. They never block a report."""
+        notes = []
+        if len(item["title"]) > 70:
+            notes.append(f"Title is {len(item['title'])} characters; aim for under 70 and start with the action.")
+        steps = item["steps"]
+        if len(steps) > 5:
+            notes.append(f"{len(steps)} steps; use at most 5 and fold trivial ones into the step before.")
+        for n, step in enumerate(steps, 1):
+            text = step if isinstance(step, str) else step["text"]
+            if len(text) > 120:
+                notes.append(f"Step {n} is {len(text)} characters; make it one action and move detail into copy or checks.")
+        for key, label in (("matters", "matters"), ("needs_you", "needs_you")):
+            reason = item[key]
+            if reason and len(reason["points"]) > 3:
+                notes.append(f"{label} has {len(reason['points'])} points; keep the 3 that matter most.")
+            if reason and any(len(p) > 160 for p in reason["points"]):
+                notes.append(f"{label} has a point over 160 characters; one fact per line.")
+        if len(item["detail"]) > 600:
+            notes.append(f"Context is {len(item['detail'])} characters; keep it under 600 and put actions in steps, the why in matters and needs_you.")
+        if item["owner"] == "human" and item["status"] == "open":
+            try:
+                Store.require_readable("human", item["options"], item)
+            except ValueError as error:
+                notes.append(str(error))
+        return notes
 
     @staticmethod
     def attention(owner, waiting_on, defer_until):
@@ -320,7 +425,7 @@ class Store:
         return owner, waiting_on if owner == "external" else "", defer_until
 
     def update(self, item_id, session_id=None, **patch):
-        allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste", "minutes", "rank", "source"}
+        allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste", "minutes", "rank", "source", "matters", "needs_you"}
         if not patch or set(patch) - allowed:
             raise ValueError("Update title, detail, owner, waiting_on, or defer_until")
         with self.db() as db:
@@ -360,7 +465,9 @@ class Store:
         data = dict(row)
         for key in ("tags", "options"):
             data[key] = json.loads(data[key])
-        data.update(Store.presentation(**json.loads(data.pop("presentation"))))
+        presentation = Store.presentation(**json.loads(data.pop("presentation")))
+        plan = presentation.pop("plan", None)
+        data.update(presentation, steps=plan or presentation["steps"])
         data["bucket"] = Store.bucket(data)
         return data
 
