@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .workstreams import place
+
 PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "other"}
 ROUTES = {"inbox", "codex"}
 
@@ -220,7 +222,7 @@ class Store:
     def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
             owner=None, waiting_on="", defer_until="", *, unlocks="", recommendation="",
             steps=None, link=None, paste=None, minutes=None, rank=9999, source="",
-            matters=None, needs_you=None, readable=False):
+            matters=None, needs_you=None, project="", workstream="", due="", readable=False):
         self.session(session_id)
         title = required(title, "title", 500)
         if kind not in {"todo", "blocker", "question"}:
@@ -236,7 +238,7 @@ class Store:
         options = [self.option(o) for o in options]
         presentation = self.presentation(unlocks=unlocks, recommendation=recommendation, steps=[] if steps is None else steps,
                                          link=link, paste=[] if paste is None else paste, minutes=minutes, rank=rank, source=source,
-                                         matters=matters, needs_you=needs_you)
+                                         matters=matters, needs_you=needs_you, project=project, workstream=workstream, due=due)
         owner, waiting_on, defer_until = self.attention(("agent" if kind == "todo" else "human") if owner is None else owner, waiting_on, defer_until)
         if readable:
             self.require_readable(owner, options, presentation)
@@ -265,7 +267,20 @@ class Store:
     @staticmethod
     def presentation(**fields):
         result = {"unlocks": "", "recommendation": "", "steps": [], "link": None, "paste": [], "minutes": None,
-                  "rank": 9999, "source": "", "agent_note": "", "matters": None, "needs_you": None, **fields}
+                  "rank": 9999, "source": "", "agent_note": "", "matters": None, "needs_you": None,
+                  "project": "", "workstream": "", "due": "", "pinned": False, **fields}
+        for key in ("project", "workstream"):
+            if not isinstance(result[key], str) or len(result[key]) > 60:
+                raise ValueError(f"{key} must be text, at most 60 characters")
+            result[key] = result[key].strip()
+        if result["due"]:
+            try:
+                if not isinstance(result["due"], str) or date.fromisoformat(result["due"]).isoformat() != result["due"]:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError("due must be a date in YYYY-MM-DD format or empty") from None
+        if not isinstance(result["pinned"], bool):
+            raise ValueError("pinned must be true or false")
         for key in ("unlocks", "recommendation", "source", "agent_note"):
             if not isinstance(result[key], str) or len(result[key]) > 4000:
                 raise ValueError(f"{key} must be text, at most 4000 characters")
@@ -425,7 +440,8 @@ class Store:
         return owner, waiting_on if owner == "external" else "", defer_until
 
     def update(self, item_id, session_id=None, **patch):
-        allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste", "minutes", "rank", "source", "matters", "needs_you"}
+        allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste",
+                   "minutes", "rank", "source", "matters", "needs_you", "project", "workstream", "due", "pinned"}
         if not patch or set(patch) - allowed:
             raise ValueError("Update title, detail, owner, waiting_on, or defer_until")
         with self.db() as db:
@@ -468,13 +484,14 @@ class Store:
         presentation = Store.presentation(**json.loads(data.pop("presentation")))
         plan = presentation.pop("plan", None)
         data.update(presentation, steps=plan or presentation["steps"])
+        data.update(place(data, data.pop("session_cwd", None)))
         data["bucket"] = Store.bucket(data)
         return data
 
     def item(self, id):
         with self.db() as db:
-            row = db.execute("""SELECT i.*,r.text AS answer,r.state AS delivery,r.error AS delivery_error
-                FROM items i LEFT JOIN replies r ON i.id=r.item_id WHERE i.id=?""", (id,)).fetchone()
+            row = db.execute("""SELECT i.*,s.cwd AS session_cwd,r.text AS answer,r.state AS delivery,r.error AS delivery_error
+                FROM items i JOIN sessions s ON s.id=i.session_id LEFT JOIN replies r ON i.id=r.item_id WHERE i.id=?""", (id,)).fetchone()
         if not row:
             raise ValueError("Item not found")
         result = self.decode(row)
@@ -484,7 +501,7 @@ class Store:
     def snapshot(self, session_id=None, tag=None, status=None, bucket=None):
         with self.db() as db:
             sessions = [dict(r) for r in db.execute("SELECT * FROM sessions ORDER BY seen DESC")]
-            items = [self.decode(r) for r in db.execute("""SELECT i.*,s.name AS session_name,s.provider,
+            items = [self.decode(r) for r in db.execute("""SELECT i.*,s.name AS session_name,s.provider,s.cwd AS session_cwd,
                 r.text AS answer,r.state AS delivery,r.error AS delivery_error
                 FROM items i JOIN sessions s ON s.id=i.session_id
                 LEFT JOIN replies r ON i.id=r.item_id ORDER BY i.created DESC""")]

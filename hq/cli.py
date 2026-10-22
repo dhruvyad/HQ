@@ -16,6 +16,7 @@ from pathlib import Path
 from .discovery import discover
 from .mcp import AGENT_INSTRUCTIONS, run as run_mcp, with_notes
 from .server import serve
+from . import workstreams
 from .store import Store, data_dir
 from .connections import connect_chatgpt, connect_codex, install_hooks, launch as launch_agent
 from .hooks import run as run_hook
@@ -260,10 +261,13 @@ def main():
             if args.action == "uninstall":
                 return output(uninstall_launcher())
             return output(install_launcher(args.app) if args.action == "install" else desktop_status(args.app))
+        store = Store()
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)
+            print("Projects and their workstreams (reuse one when you report):\n")
+            for project in workstreams.index(store.snapshot()["items"]).values():
+                print(f"- {project['name']}: {', '.join(project['workstreams'])}")
             return
-        store = Store()
         if args.command == "report":
             fields = json.loads(args.file.read_text())
             if not isinstance(fields, dict) or "session_id" in fields:

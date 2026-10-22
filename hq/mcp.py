@@ -9,6 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import workstreams
 from .store import Store
 
 
@@ -29,6 +30,9 @@ READABLE = {
     "link": schema({"label": TEXT, "url": {"type": "string", "description": "Direct HTTPS destination, without credentials."}}, ["label", "url"]),
     "paste": {"type": "array", "items": schema({"label": TEXT, "text": TEXT, "mono": {"type": "boolean"}}, ["label", "text"]), "description": "Ready-to-copy text; key names only, never secret values."},
     "minutes": {"type": "integer", "minimum": 0, "description": "The human's own effort in minutes, excluding vendor/agent wait. Required when owner=human."},
+    "project": {"type": "string", "description": "Optional. Defaults to your repo; set it only when the work belongs to another project (e.g. HQ work done from the noclick repo)."},
+    "workstream": {"type": "string", "description": "The ongoing line of work inside the project, e.g. Coordinator or Support. Reuse one listed by hq_reporting_guide; tags decide when empty."},
+    "due": {"type": "string", "description": "YYYY-MM-DD, only when a real deadline exists (an appointment, an expiring link, a scheduled run). Never invent one."},
     "rank": {"type": "integer", "minimum": 0, "description": "Lower means sooner; urgent decisions 10–150, actions 200–370, waits 400+."},
     "source": {"type": "string", "description": "Agent/worktree · task."},
 }
@@ -89,7 +93,7 @@ def run(provider="other", channel=False, session_id=None):
             if name == "hq_list":
                 args["session_id"] = bound_id
         if name == "hq_reporting_guide":
-            return {"instructions": AGENT_INSTRUCTIONS}
+            return {"instructions": AGENT_INSTRUCTIONS, "projects": workstreams.index(store.snapshot()["items"])}
         if name == "hq_register_session":
             args["id"] = args.pop("session_id")
             args.setdefault("provider", provider)

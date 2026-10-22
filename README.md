@@ -1,19 +1,27 @@
 # HQ
 
 A small, private inbox for the work your AI agents are doing. Run `hq` to open
-a dark dashboard on your laptop. Choose a conversation, answer blockers,
-and let agents pick up your response.
+a dark dashboard on your laptop, see what needs you by project and workstream,
+act on it, and let agents pick up your response.
 
-The dashboard follows NoClick's product design language: pure black, layered
-zinc surfaces, quiet hairline groups, rounded state tabs, and white primary
-controls. Inter and Outfit variable fonts are bundled locally with their OFL
-licences; no fonts load from external services. The [design guidelines](DESIGN.md)
-record the source tokens and HQ-specific layout adaptations. The deployed staging
-site could not be inspected; visual parity remains unverified. The sidebar lists
-conversations with unfinished work and verified live agents, showing their harness,
-activity, and item count. Empty historical chats stay out of navigation. Done also exposes
-conversations with completed history; a selected conversation stays visible when
-its last item completes. Connect agents is in the top bar.
+The dashboard follows NoClick's app shell: a pure black sidebar, rounded 15px
+rows, Instrument Serif page titles, pill tabs and white primary controls. Inter,
+Outfit and Instrument Serif are bundled locally with their OFL licences; no
+fonts load from external services. The [design guidelines](DESIGN.md) record
+the sources.
+
+The sidebar has **Needs you** (everything only you can act on), **Agents**
+(conversations that are running or hold open work) and **Projects**. The
+project you open expands into its workstreams. A project is the repo the agent
+works in unless an item names another; a workstream comes from the agent's
+report, or from the item's tags through `hq/workstreams.py`. Every project,
+workstream and agent page has the same tabs: Needs you, With agents, Waiting,
+Later, Done. Items open in a pane on the right; j/k steps through them.
+
+Pinned items and items due within two days lead every list. Unranked items sort
+blockers, then decisions, then actions. A dot marks items added in the last day
+that you have not opened, and **Newest** turns a list into a feed. Search covers
+titles, context, tags, projects, workstreams and agents.
 
 Activity is independent of pending work and reply connectivity: Active, Idle,
 Waiting, Offline, or Unknown. Claude Code's live process inventory is checked
@@ -24,15 +32,6 @@ updates the dashboard after local database changes, normally within 200 ms of
 observation. It reconnects automatically, renews its token after a service restart,
 rejects older snapshots, and preserves unsent drafts. Stale or unavailable observers
 never imply Idle. These timings are targets, not a hard real-time guarantee.
-
-All conversations groups independent items under their conversation. Selecting
-one conversation scopes every status tab and its counts to that exact session.
-Human pending shows unfinished human actions and decisions; Agent pending shows
-agent work, outside blockers, and follow-through after human replies. Waiting,
-Later, and Done provide focused views. Rows show just the title and next step;
-context, optional tags, and replies stay in the side panel. Tags remain searchable
-and available through the CLI. Decorative dates and copy are omitted; dates
-appear only for deferred items. Adding an item preselects the current conversation.
 
 **Python 3.11+. Zero runtime dependencies. SQLite. No cloud storage.**
 

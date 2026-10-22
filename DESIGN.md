@@ -50,41 +50,32 @@ navigation and workstream tags. Preserve separate idle, selected, and hover fill
 
 ## Typography and layout
 
-Inter Variable is the interface font; Outfit Variable is limited to the HQ mark,
-page title, and detail title. Both are bundled locally with their SIL OFL licences.
-No font requests leave the laptop. Use system fallbacks and `font-display: swap`.
+Inter Variable is the interface font. Instrument Serif (one weight, never faux
+bold) sets page and dialog titles, as NoClick's app shell does; Outfit is the HQ
+wordmark. All are bundled locally with their SIL OFL licences.
 
-HQ uses readable 14px body/row titles, 12px supporting text, and 11px compact
-badges. Use a 4px spacing rhythm, 6px control corners, 12px group corners, a
-56px header, a 248px conversation rail, and 24–28px main padding. These dimensions
-are adaptations for HQ, not copied from staging. Main content tops out at 1200px.
-The detail drawer stays a single column, up to 560px wide.
+Rows are 15px, supporting text 13px. The sidebar is 264px of pure black with
+40px rounded rows (15px) and 36px workstream rows on a guide line. Page content
+is centred at up to 880px with 34px serif titles. The item pane is 500px on the
+right; under 1180px it floats over the list, and under 760px the sidebar becomes
+a sheet and the pane fills the screen.
 
 ## Components and content
 
-- Conversations are the primary navigation. Show conversations with unfinished
-  items and verified live agents, with a quiet harness badge, neutral activity
-  indicator, and item count. Hide historical chats with no reported work or live
-  status. Completed conversations appear in Done; keep the selected
-  conversation visible when its last item completes.
-- Activity labels distinguish Active, Idle, Waiting, Offline and Unknown. Use
-  fresh runtime evidence, keep unknown distinct from idle, and avoid decorative
-  animation or bright navigation colours.
-- Tags are optional context in item details and remain searchable. Keep tag
-  lists and tag pills out of the sidebar and queue rows.
-- Use compact rounded state tabs with counts; keep Human pending and Agent
-  pending visible. Waiting, Later, and Done remain accessible on small screens.
-- Conversations are quiet rounded groups with hairlines between items. Titles
-  carry the emphasis; badges and status are secondary. One item is one action.
-- Use a white primary button only for the main action. Connection instructions,
-  cancellation, copying, and moving an item use quieter controls.
-- Context, choices, steps, copy blocks, and per-item clarification threads stay
-  in the detail drawer. Agent responses must preserve typed form drafts.
-- Show only information that helps the human decide or act. No greetings,
-  decorative dates, marketing copy, global statistics, or duplicate navigation.
-- On narrow screens, hide the rail behind the existing menu, stack the toolbar,
-  keep tabs scrollable, and fit the drawer to the viewport. Respect reduced
-  motion and provide clear keyboard focus. Errors always include text.
+- Needs you, Agents and Projects are the only navigation. A project expands into
+  its workstreams only while you are in it, so the sidebar stays short.
+- Group lists by spacing, not rules: a quiet header (project › workstream), then
+  one-line rows with the title and at most two short facts (Decision · 3 min).
+- One pill-tab set per scope: Needs you, With agents, Waiting, Later, Done.
+- The item pane leads with the action: state line, title, numbered steps that
+  carry their link, copy text or checks, then Looks right / Something was off,
+  a quiet "Not now?" row, Why it matters, Why you, not the agent, and a
+  collapsed More context. Drafts, ticks and form fields survive live updates.
+- Activity labels distinguish Active, Idle, Waiting, Offline and Unknown; green
+  marks only an active agent, red only failures and overdue dates.
+- Use a white primary button only for the main action. No decorative icons on
+  rows, no tag pills in lists, no global statistics beyond the Needs you line.
+- Respect reduced motion; keyboard focus is always visible; errors carry text.
 
 ## Validation boundary
 

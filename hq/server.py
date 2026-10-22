@@ -86,7 +86,8 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
                   "/inter-latin.woff2": ("inter-latin.woff2", "font/woff2"),
-                  "/outfit-latin.woff2": ("outfit-latin.woff2", "font/woff2")}
+                  "/outfit-latin.woff2": ("outfit-latin.woff2", "font/woff2"),
+                  "/instrument-serif-latin.woff2": ("instrument-serif-latin.woff2", "font/woff2")}
         if path not in assets:
             return self.output(404, {"error": "Not found"})
         name, mime = assets[path]

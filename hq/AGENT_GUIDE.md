@@ -35,7 +35,14 @@ before you finish.
   for a blocked dependency. owner=human needs Dhruv, agent is work with the
   agent, external waits on the named person/team/service in waiting_on.
   defer_until=YYYY-MM-DD hides the item until that local date; empty clears it.
-- **Tags (optional):** reuse a small set of existing workstream tags.
+- **workstream:** the ongoing line of work this belongs to (Coordinator,
+  Support, Platform SDK…). Reuse one from the list hq_reporting_guide returns;
+  name a new one only for genuinely new work. **project** defaults to your
+  repo; set it only when the work belongs elsewhere.
+- **due:** YYYY-MM-DD only for a real deadline (an appointment, an expiring
+  link, a scheduled run). Never invent one; items with due dates lead the list.
+- **Tags (optional):** a few search words; they also place items when no
+  workstream is given.
 - **rank** sorts lower first: urgent decisions 10–150, actions 200–370,
   waits 400+. source is "agent/worktree · task".
 - **Secrets:** key names are okay; never put key values, credentials, or

@@ -212,6 +212,39 @@ class StoreTests(unittest.TestCase):
         clean = self.store.add("a", "Send one message", owner="human", steps=["Send it"], **READABLE, readable=True)
         self.assertEqual(Store.readability_notes(clean), [])
 
+    def test_items_are_placed_in_projects_and_workstreams(self):
+        from hq import workstreams
+        self.store.register("nc", "Claude Code · noclick4", "claude-code", cwd="/Users/me/Documents/code/noclick4")
+        self.store.register("cx", "Codex", "codex", cwd="/Users/me/.codex/worktrees/f48e/noclick/backend")
+        tagged = self.store.add("nc", "Fix a Crisp reply", tags=["crisp", "billing"])  # most specific group wins
+        named = self.store.add("cx", "Ship the SDK", workstream="platform sdk")
+        new = self.store.add("nc", "Plan the offsite", workstream="Team offsite")
+        moved = self.store.add("nc", "Restyle the inbox", tags=["design"], project="HQ")
+        loose = self.store.add("a", "No repo, no tags")
+        self.assertEqual((tagged["project"], tagged["project_name"], tagged["workstream"], tagged["workstream_name"]),
+                         ("noclick", "NoClick", "support", "Support"))
+        self.assertEqual((named["project"], named["workstream"], named["workstream_name"]), ("noclick", "platform", "Platform SDK"))
+        self.assertEqual((new["workstream"], new["workstream_name"]), ("team-offsite", "Team offsite"))
+        self.assertEqual((moved["project"], moved["workstream"]), ("hq", "design"))
+        self.assertEqual((loose["project"], loose["workstream"]), ("other", "other"))
+        listed = {i["id"]: i for i in self.store.snapshot()["items"]}
+        self.assertEqual(listed[tagged["id"]]["workstream"], "support")
+        index = workstreams.index(self.store.snapshot()["items"])
+        self.assertIn("Team offsite", index["noclick"]["workstreams"])
+        self.assertIn("Coordinator", index["noclick"]["workstreams"])
+
+    def test_due_dates_and_pins_persist_and_validate(self):
+        item = self.store.add("a", "Prepare the visit checklist", due="2026-10-21")
+        self.assertEqual(item["due"], "2026-10-21")
+        self.assertFalse(item["pinned"])
+        pinned = self.store.update(item["id"], pinned=True, due="")
+        self.assertTrue(pinned["pinned"])
+        self.assertEqual(Store(self.store.path).item(item["id"])["due"], "")
+        for bad in ({"due": "tomorrow"}, {"due": "2026-13-01"}, {"pinned": "yes"}, {"workstream": "x" * 61}):
+            with self.assertRaises(ValueError):
+                self.store.update(item["id"], **bad)
+        self.assertTrue(self.store.item(item["id"])["pinned"])
+
     def test_structured_cli_report_and_shared_instructions(self):
         fields = {"title": "Upload the certificate", "owner": "human", "steps": ["Open portal", "Upload file"],
                   "unlocks": "Starts vendor review", **READABLE, "minutes": 3}
@@ -223,6 +256,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["steps"], fields["steps"])
         guide = subprocess.run([sys.executable, str(ROOT / "bin/hq"), "instructions"], env=env, capture_output=True, text=True, check=True)
         self.assertIn("needs_you", guide.stdout)
+        self.assertIn("Projects and their workstreams", guide.stdout)
+        self.assertIn("Coordinator", guide.stdout)
         self.assertIn("never put key values", guide.stdout)
 
     def test_answer_returns_to_exact_waiting_session(self):
@@ -525,7 +560,7 @@ class HTTPTests(unittest.TestCase):
         error.exception.close()
 
     def test_local_fonts_are_served_as_bytes_and_paths_stay_allowlisted(self):
-        for name in ("inter", "outfit"):
+        for name in ("inter", "outfit", "instrument-serif"):
             with self.request(f"/{name}-latin.woff2") as response:
                 self.assertEqual(response.headers["Content-Type"], "font/woff2")
                 self.assertEqual(response.read(), (ROOT / "hq/static" / f"{name}-latin.woff2").read_bytes())
@@ -534,6 +569,7 @@ class HTTPTests(unittest.TestCase):
             page = response.read().decode()
             self.assertIn('href="/inter-latin.woff2"', page)
             self.assertIn('href="/outfit-latin.woff2"', page)
+            self.assertIn('href="/instrument-serif-latin.woff2"', page)
             self.assertIn('aria-labelledby="detail-title"', page)
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request("/../store.py")
