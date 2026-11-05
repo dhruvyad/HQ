@@ -127,11 +127,14 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 html.float .d-bar [data-step], html.float .d-bar [data-pin] {display: none;}
 html.float .detail {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 28px rgb(0 0 0 / 0.42); overflow: hidden; transform-origin: center bottom;}
 html.float .d-bar {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
-html.float .d-body {padding: 0 18px 24px;}
-html.float .d-title {font-size: 19px;}
-html.float .plan {margin-top: 20px; gap: 18px;}
+html.float .d-head {padding: 0 18px 2px;}
+html.float .d-state {font-size: 12.5px;}
+html.float .d-title {margin-top: 3px; font-size: 18px; line-height: 1.32; letter-spacing: -0.012em;}
+html.float .d-tabs {padding: 10px 14px 0;}
+html.float .d-body {padding: 18px 18px 18px;}
+html.float .d-dock {padding: 12px 14px 12px;}
+html.float .plan {gap: 18px;}
 html.float .phead {font-size: 15px;}
-html.float .respond, html.float .report {margin-top: 20px;}
 html.float #toast {bottom: 12px; max-width: calc(100vw - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
 
 /* Drag: the window covers the display and draws the targets itself. */

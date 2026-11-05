@@ -488,9 +488,19 @@ function boxSize(mode = document.body.dataset.mode) {
     const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
     return {width: LIST_WIDTH, height: Math.min(mode === 'settings' ? SETTINGS_MAX : LIST_MAX, head + rows + 2)};
   }
-  const last = $('.d-body')?.lastElementChild;
-  const natural = last ? last.offsetTop + last.offsetHeight + 28 : ITEM_MIN;
-  return {width: feel.width, height: Math.max(ITEM_MIN, Math.min(ITEM_MAX, natural + 2)) + STACK};
+  return {width: feel.width, height: Math.max(ITEM_MIN, Math.min(ITEM_MAX, itemHeight() + 2)) + STACK};
+}
+// An item is as tall as its head, tabs and dock plus the open tab's content. Within one item
+// the box only grows, so switching tabs or folding the answer never makes it jump.
+let tallest = {id: null, height: 0};
+function itemHeight() {
+  const detail = $('#detail'), body = $('.d-body'), inner = $('.d-panel-in');
+  if (!body || !inner) return ITEM_MIN;
+  const pad = parseFloat(getComputedStyle(body).paddingTop) + parseFloat(getComputedStyle(body).paddingBottom);
+  const natural = [...detail.children].reduce((n, el) => n + (el === body ? inner.offsetHeight + pad : el.offsetHeight), 0);
+  if (tallest.id !== route.item) tallest = {id: route.item, height: 0};
+  tallest.height = Math.max(tallest.height, natural);
+  return tallest.height;
 }
 function geometry(mode = document.body.dataset.mode) {
   const area = display.visible, rest = dockRect(dock, pillSize(), area);
@@ -967,6 +977,8 @@ function bootFloat() {
   new ResizeObserver(layoutSoon).observe($('#rail'));
   new MutationObserver(layoutSoon).observe($('#box'), {childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'open', 'hidden']});
   document.addEventListener('input', layoutSoon);
+  // The answer folds in place; once it settles, the box may need to grow to hold it.
+  $('#box').addEventListener('transitionend', (e) => {if (e.target.classList?.contains('d-fold')) layoutSoon();});
   document.addEventListener('toggle', layoutSoon, true);
   document.fonts?.ready.then(layoutSoon);
   window.addEventListener('resize', layoutSoon);

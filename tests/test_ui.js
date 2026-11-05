@@ -144,13 +144,30 @@ run('applyState(queue); model = derive()');
 html = run("detailHTML(model.items.find(i => i.id === 'r'))");
 assert.ok(html.includes('1 of 2') && html.includes('data-check="2:0" aria-checked="true"'));
 assert.ok(html.includes('value="2026-11-02"'));
-assert.ok(html.includes('More context') && html.includes('Original paragraph'));
 assert.ok(html.includes('Looks right') && !html.includes('id="reply"')); // the reply box waits for Something was off
-assert.ok(html.includes('Hard to read?'));
-run("askOpen.add('r'); openMove = 'off'");
+// Checks end in a wide Looks right, honest about what is still unticked.
+assert.ok(html.includes('data-report="ok"') && html.includes('Looks right (1 of 2 ticked)'));
+assert.ok(html.includes('class="ghost-pill" data-report="off">Something was off'));
+assert.equal(run('lookedRight(1, 2)'), 'Looked right (1 of 2 ticked)');
+assert.equal(run('lookedRight(2, 2)'), 'All 2 looked right');
+assert.equal(run('lookedRight(2, 2, true)'), 'Looks right');
+// The background and where it came from live in Context.
+assert.ok(!html.includes('Original paragraph'));
+run("setDraft('r', {tab: 'context'})");
+html = run("detailHTML(model.items.find(i => i.id === 'r'))");
+assert.ok(html.includes('Original paragraph') && html.includes('Hard to read?'));
+assert.ok(html.includes('data-tab="context" aria-selected="true"'));
+run("setDraft('r', {tab: 'ask'}); openMove = 'off'");
 html = run("detailHTML(model.items.find(i => i.id === 'r'))");
 assert.ok(html.includes('Unsent question'));
 assert.ok(html.includes("Didn&#39;t see: Second")); // what wasn't ticked, ready to send
+// Something was off swaps the row for the box; Escape brings the row back until you change it.
+assert.ok(!html.includes('data-report=') && html.includes('placeholder="What was off?"') && html.includes('data-state="off"'));
+const offEsc = (typed) => run(`offEscape(model.items.find(i => i.id === 'r'), draftOf('r'), ${JSON.stringify(typed)})`);
+assert.equal(offEsc("Didn't see: Second"), true);
+assert.equal(offEsc(''), true);
+assert.equal(offEsc("Didn't see: Second, and the preview was blank"), false);
+run("setDraft('r', {tab: undefined}); openMove = null");
 html = run("detailHTML(model.items.find(i => i.id === 'a2'))");
 assert.ok(!html.includes('Hard to read?')); // agents' own work isn't sent back to them
 // Skip sits with the other not-now choices and reads as its own outcome once taken.
@@ -163,6 +180,79 @@ context.skipped.lane = 'done';
 assert.ok(run('metaHTML(skipped)').startsWith('Skipped'));
 html = run('detailHTML(skipped)');
 assert.ok(html.includes('You skipped this') && html.includes('the agent knows to drop it') && !html.includes('data-move="skip"'));
+
+// The item page: tabs above, the answer docked below.
+context.decide = item({id: 'dq', kind: 'question', title: 'Pick a date', options: [
+  {label: 'Tuesday the 12th', note: 'Support gets a week', recommended: true}, {label: 'Thursday <14th>', note: 'More docs time'}, 'Later'],
+  matters: {lead: 'Unblocks the release', points: []}, needs_you: {lead: 'Your call', points: []}, recommendation: 'Tuesday'});
+context.plain = item({id: 'pl', title: 'Legacy item', detail: 'Only text'});
+context.failed = item({id: 'fd', status: 'answered', bucket: 'waiting', delivery: 'failed', answer: 'Annual', delivery_error: 'Codex is not running'});
+context.queue = {...context.queue, revision: 11, items: [...context.queue.items, context.decide, context.plain, context.failed]};
+run('applyState(queue); model = derive()');
+const pane = (id) => run(`detailHTML(model.items.find(i => i.id === '${id}'))`);
+const tabIds = (id) => Array.from(run(`tabsOf(model.items.find(i => i.id === '${id}')).map(t => t.id)`));
+// Steps leads when there are steps; without them Why, and a bare item opens on Context.
+assert.deepEqual(tabIds('r'), ['steps', 'why', 'context', 'ask']);
+assert.deepEqual(tabIds('dq'), ['why', 'context', 'ask']); // no steps, so no Steps tab
+assert.deepEqual(tabIds('pl'), ['context', 'ask']);
+assert.equal(run("tabOf(model.items.find(i => i.id === 'r'))"), 'steps');
+assert.equal(run("tabOf(model.items.find(i => i.id === 'dq'))"), 'why');
+assert.equal(run("tabOf(model.items.find(i => i.id === 'pl'))"), 'context');
+assert.equal(run("tabOf(model.items.find(i => i.id === 'dq'), {tab: 'steps'})"), 'why'); // a tab it lacks falls back
+html = pane('r');
+assert.ok(html.includes('role="tablist"') && html.includes('data-tab="steps" aria-selected="true"') && html.includes('Steps<span class="n">4</span>'));
+assert.ok(html.indexOf('class="d-head"') < html.indexOf('class="d-tabs"') && html.indexOf('class="d-body') < html.indexOf('class="d-dock"'));
+assert.ok(pane('q1').includes('Ask<span class="n">1</span>'));
+assert.ok(pane('pl').includes('Only text'));
+// Nothing picked: the box is the answer, with its arrow, and the send row is folded away.
+html = pane('dq');
+assert.ok(html.includes('data-state="free"') && html.includes('placeholder="Or answer in your own words…"'));
+assert.ok(html.includes('class="d-fold open" data-fold="note"') && html.includes('class="d-fold " data-fold="go" inert'));
+assert.ok(html.includes('role="radio" data-choice="Thursday &lt;14th&gt;" aria-checked="false"') && !html.includes('<14th>'));
+assert.ok(html.includes('aria-label="Send" disabled'));
+// Picked: the box folds away and the wide button sends the option.
+run("setDraft('dq', {choice: 'Tuesday the 12th'})");
+html = pane('dq');
+assert.ok(html.includes('data-state="picked"') && html.includes('class="d-fold " data-fold="note" inert') && html.includes('class="d-fold open" data-fold="go"'));
+assert.ok(html.includes('<span>Send: Tuesday the 12th</span>') && html.includes('</svg>Note</button>'));
+const reply = (draft, typed) => run(`replyText(model.items.find(i => i.id === 'dq'), ${JSON.stringify(draft)}, ${JSON.stringify(typed)})`);
+assert.equal(reply({choice: 'Tuesday the 12th'}, ''), 'Tuesday the 12th');
+// + Note opens the box above the row, with your text kept and the label saying so.
+run("setDraft('dq', {note: true, text: 'after standup'})");
+html = pane('dq');
+assert.ok(html.includes('data-state="note"') && html.includes('class="d-fold open" data-fold="note"') && html.includes('class="d-fold open" data-fold="go"'));
+assert.ok(html.includes('placeholder="Add a note to “Tuesday the 12th”…"') && html.includes('>after standup</textarea>'));
+assert.ok(html.includes('aria-pressed="true">Remove note') && html.includes('<span>Send: Tuesday the 12th + note</span>'));
+assert.equal(run("wideLabel('Later', '')"), 'Send: Later');
+assert.equal(reply({choice: 'Tuesday the 12th', note: true}, ' after standup '), 'Tuesday the 12th — after standup'); // as replies always were
+// Text typed before picking becomes the note; unpicking turns it back into the answer.
+const state = (draft) => run(`answerState(model.items.find(i => i.id === 'dq'), ${JSON.stringify(draft)})`);
+assert.equal(state({choice: 'Later', text: 'because'}), 'note');
+assert.equal(state({choice: null, text: 'because'}), 'free');
+assert.equal(reply({text: 'because'}, 'because'), 'because');
+assert.equal(state({choice: 'Gone option'}), 'free'); // an option the agent removed is not sent
+// Escape closes an empty note first; with text in it, Escape is left alone.
+assert.equal(run("noteEscape(model.items.find(i => i.id === 'dq'), {choice: 'Later', note: true}, '  ')"), true);
+assert.equal(run("noteEscape(model.items.find(i => i.id === 'dq'), {choice: 'Later', note: true}, 'kept')"), false);
+assert.equal(run("noteEscape(model.items.find(i => i.id === 'dq'), {}, '')"), false);
+assert.equal(state({choice: 'Later', note: false}), 'picked');
+run("setDraft('dq', {choice: undefined, note: undefined, text: undefined})");
+// Enter sends, Shift+Enter is a new line, and an input method's Enter is its own.
+assert.equal(run("composeKey({key: 'Enter'})"), 'send');
+assert.equal(run("composeKey({key: 'Enter', metaKey: true})"), 'send');
+assert.equal(run("composeKey({key: 'Enter', shiftKey: true})"), 'newline');
+assert.equal(run("composeKey({key: 'Enter', isComposing: true})"), null);
+assert.equal(run("composeKey({key: 'Enter', keyCode: 229})"), null);
+assert.equal(run("composeKey({key: 'a'})"), null);
+// Free replies keep their own words, in a box with no footer or hint line below it.
+html = pane('a1');
+assert.ok(html.includes('placeholder="Tell the agent what you did…"') && !html.includes('compose-hint') && !html.includes('composer-foot'));
+assert.ok(!html.includes('data-fold="go"'));
+assert.ok(html.includes('data-done>Mark done') && !pane('dq').includes('data-done')); // decisions are answered or skipped
+// A reply that failed to deliver offers the wide Retry.
+html = pane('fd');
+assert.ok(html.includes('<button class="wide" type="button" data-retry><span>Retry delivery</span>') && html.includes('Codex is not running'));
+assert.ok(!html.includes('id="respond"'));
 
 // The floating panel shares this state and reuses the item pane.
 const floatSource = fs.readFileSync('hq/static/float.js', 'utf8');

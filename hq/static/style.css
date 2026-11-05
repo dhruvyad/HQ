@@ -153,10 +153,29 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .d-bar {display: flex; align-items: center; gap: 2px; height: 56px; padding: 0 12px 0 28px; flex: none;}
 .d-bar .crumbs {flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .d-bar .crumbs button:hover {color: var(--foreground);}
-.icon-btn {display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; color: rgb(250 250 250 / 0.7); transition: background .15s, color .15s;}
+.icon-btn {display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; color: rgb(250 250 250 / 0.7); transition: background .15s, color .15s;}
 .icon-btn:hover {background: var(--hover); color: var(--foreground);}
+.icon-btn:focus-visible {border-radius: 50%;}
 .icon-btn:disabled {opacity: .3; cursor: default; background: none;}
-.d-body {flex: 1; min-height: 0; padding: 4px 28px 40px;}
+.d-head {flex: none; padding: 0 28px;}
+.d-tabs {flex: none; display: flex; gap: 2px; padding: 10px 17px 0; border-bottom: 1px solid var(--hairline); overflow-x: auto; scrollbar-width: none;}
+.d-tab {position: relative; flex: none; height: 34px; padding: 0 11px; font-size: 13px; color: var(--muted-foreground); white-space: nowrap; transition: color .15s;}
+.d-tab:hover, .d-tab[aria-selected="true"] {color: var(--foreground);}
+.d-tab[aria-selected="true"]::after {content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--foreground);}
+.d-tab .n {margin-left: 5px; font-variant-numeric: tabular-nums; color: var(--muted-foreground);}
+.d-tab:focus-visible {outline-offset: -4px;}
+.d-body {flex: 1; min-height: 0; padding: 20px 28px 28px;}
+.d-panel-in > :first-child {margin-top: 0;}
+.d-panel-in > .reasons:first-child {padding-top: 0; border-top: 0;}
+.d-quiet {margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted-foreground);}
+/* The dock: whatever you are asked to do, pinned below the tabs and never scrolled away. */
+.d-dock {flex: none; padding: 14px 20px 14px; background: var(--card); border-top: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 -10px 24px rgb(0 0 0 / 0.35);}
+.d-dock > :first-child {margin-top: 0;}
+.d-dock .win {margin-top: 0;}
+.d-dock .win + .go-row {margin-top: 10px;}
+.d-dock .moves {margin-top: 10px;}
+.d-dock .notnow {gap: 2px 12px; margin-top: 8px; font-size: 12.5px;}
+.d-dock .inline-form {margin-top: 8px;}
 .d-state {font-size: 13px; color: var(--muted-foreground);}
 .d-title {margin: 6px 0 0; font: 500 22px/1.3 var(--sans); letter-spacing: -0.015em;}
 .d-text {margin: 18px 0 0; font-size: 14.5px; line-height: 1.65; color: rgb(250 250 250 / 0.82); overflow-wrap: anywhere;}
@@ -180,23 +199,49 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .copy pre {margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--composer); border: 1px solid var(--hairline); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: rgb(250 250 250 / 0.88);}
 .copy pre.mono {font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, monospace;}
 
-.respond {margin-top: 30px;}
-.choices {display: flex; flex-direction: column; gap: 2px; margin: 0 -12px 12px;}
-.choice {display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background .12s;}
-.choice:hover {background: rgb(250 250 250 / 0.04);}
-.choice .radio {width: 16px; height: 16px; margin-top: 2px; flex: none; border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.35); transition: border .12s;}
-.choice[aria-checked="true"] .radio {border: 5px solid var(--foreground);}
-.choice .c-label {font-size: 14.5px; color: var(--foreground);}
-.choice .c-rec {margin-left: 8px; font-size: 12.5px; color: var(--muted-foreground);}
-.choice .c-note {display: block; margin-top: 2px; font-size: 13px; line-height: 1.5; color: var(--muted-foreground);}
-.composer {border-radius: 16px; background: var(--composer); border: 1px solid rgb(250 250 250 / 0.08); padding: 12px 12px 10px 14px; transition: border-color .15s;}
-.composer:focus-within {border-color: rgb(250 250 250 / 0.16);}
-.composer textarea {display: block; width: 100%; resize: none; min-height: 44px; background: none; border: 0; outline: 0; font-size: 14.5px; line-height: 1.55;}
-.composer textarea::placeholder {color: var(--placeholder);}
-.composer-foot {display: flex; align-items: center; gap: 8px; margin-top: 6px;}
-.composer-foot small {flex: 1; font-size: 12.5px; color: var(--muted-foreground);}
-.send {display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);}
-.send:disabled {background: rgb(250 250 250 / 0.12); color: rgb(250 250 250 / 0.4); cursor: default;}
+/* Options: a row each, numbered for the keys that pick them. */
+.choices {display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;}
+.choice {display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--hairline); text-align: left; transition: border-color .15s, background .15s;}
+.choice:hover {background: var(--hover);}
+.choice[aria-checked="true"] {border-color: rgb(250 250 250 / 0.55); background: rgb(250 250 250 / 0.06);}
+.choice .key {flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 6px; background: rgb(250 250 250 / 0.06); font: 600 11px/18px var(--sans); text-align: center; color: var(--muted-foreground);}
+.choice[aria-checked="true"] .key {background: var(--foreground); color: var(--background);}
+.choice .c-label {font-size: 14px; font-weight: 500; line-height: 1.35; color: var(--foreground);}
+.choice .c-rec {margin-left: 6px; font-size: 12px; color: var(--muted-foreground); white-space: nowrap;}
+.choice .c-note {display: block; margin-top: 1px; font-size: 12.5px; line-height: 1.4; color: var(--muted-foreground);}
+/* The composer. One line of text and the send button share a centre line; once the text
+   grows, the button stays pinned to the bottom right. */
+.compose {position: relative;}
+.composer {display: grid; grid-template-columns: 1fr auto; align-items: end; border-radius: 22px; background: var(--composer); border: 1px solid rgb(250 250 250 / 0.1); transition: border-color .15s, box-shadow .15s, border-radius .2s;}
+.composer.multi {border-radius: 18px;}
+.composer:focus-within {border-color: rgb(250 250 250 / 0.24); box-shadow: 0 0 0 3px rgb(250 250 250 / 0.05);}
+.composer textarea {display: block; width: 100%; min-width: 0; height: 42px; min-height: 42px; max-height: 142px; margin: 0; padding: 11px 0 11px 16px; overflow-y: hidden; resize: none; background: none; border: 0; border-radius: 0; outline: 0; font-size: 14.5px; line-height: 20px; color: var(--foreground); caret-color: #fafafa; scrollbar-width: thin;}
+.composer textarea::placeholder {color: rgb(161 161 170 / 0.75); opacity: 1;}
+.composer textarea:focus-visible {outline: 0;}
+.composer textarea.overflow {overflow-y: auto;}
+.send {display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin: 5px; border-radius: 999px; background: #fafafa; color: #18181b; transition: background .15s, color .15s;}
+.send .icon {width: 16px; height: 16px; stroke-width: 2.2;}
+.send:disabled {background: rgb(250 250 250 / 0.08); color: rgb(250 250 250 / 0.3); cursor: default;}
+/* Big buttons: the wide primary that sends, and a ghost pill beside it. */
+.go-row {display: flex; gap: 8px;}
+.wide {display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 8px; min-width: 0; height: 44px; padding: 0 18px; border-radius: 999px; background: #fafafa; color: #18181b; font-size: 14.5px; font-weight: 500; transition: background .15s, transform .2s;}
+.wide > span {overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+.wide:hover {background: rgb(250 250 250 / 0.9);}
+.wide:active {transform: scale(.985);}
+.ghost-pill {display: inline-flex; flex: none; align-items: center; gap: 6px; height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 14px; font-weight: 500; color: var(--foreground); white-space: nowrap; transition: background .12s;}
+.ghost-pill:hover {background: var(--hover);}
+.ghost-pill .icon {width: 14px; height: 14px; stroke-width: 2.2;}
+.send:focus-visible, .wide:focus-visible, .ghost-pill:focus-visible {border-radius: 999px;}
+/* Folds: the composer collapses as the send row rises in, and back. */
+.respond {display: flex; flex-direction: column;}
+.d-fold.open + .d-fold.open {margin-top: 8px;}
+.d-fold {display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), margin-top .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), opacity .16s ease, visibility 0s linear .32s;}
+.d-fold.open {grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), margin-top .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), opacity .2s ease .06s, visibility 0s;}
+.d-fold-in {min-height: 0; overflow: hidden; margin: -4px; padding: 4px;} /* the padding keeps the focus ring unclipped */
+.respond[data-state="note"] .composer .send {display: none;}
+.respond[data-state="note"] .composer textarea {padding-right: 16px;}
+.respond .compose, .ask-form .compose {margin-bottom: 0;}
+.respond .form-error:empty, .ask-form .form-error:empty, #move-error:empty {display: none;}
 .answer {margin-top: 30px;}
 .answer p {margin: 0; font-size: 14.5px; line-height: 1.6;}
 .delivery {margin-top: 6px; font-size: 13px; color: var(--muted-foreground);}
@@ -205,11 +250,9 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .inline-form {display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;}
 .field {height: 34px; padding: 0 12px; border-radius: 10px; background: var(--composer); border: 1px solid rgb(250 250 250 / 0.1); font-size: 14px; color-scheme: dark;}
 .field:focus {outline: 0; border-color: rgb(250 250 250 / 0.22);}
-.ask {margin-top: 34px;}
-.reasons + .ask {margin-top: 30px;}
-.ask-toggle {display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 0; font-size: 14px; color: rgb(250 250 250 / 0.8); border-top: 1px solid var(--hairline);}
-.ask-toggle:hover {color: var(--foreground);}
-.ask-toggle .chev {margin-left: auto;}
+.ask .thread {margin: 12px 0;}
+.ask-form {margin-top: 12px;}
+.thread + .ask-form {margin-top: 0;}
 .thread {display: flex; flex-direction: column; gap: 12px; margin: 6px 0 12px;}
 .msg .who {font-size: 12.5px; color: var(--muted-foreground);}
 .msg p {margin: 2px 0 0; font-size: 14px; line-height: 1.55;}
@@ -264,7 +307,10 @@ dialog .close {position: absolute; top: 14px; right: 14px;}
   .group-head {padding: 0 8px;}
   .detail {width: 100%; border-left: 0;}
   .d-bar {padding-left: 16px;}
-  .d-body {padding: 4px 16px 40px;}
+  .d-head {padding: 0 16px;}
+  .d-tabs {padding: 8px 7px 0;}
+  .d-body {padding: 18px 16px 28px;}
+  .d-dock {padding: 12px 12px 14px;}
   .agent-row .on {max-width: none;}
 }
 @media (prefers-reduced-motion: reduce) {* {transition: none !important;}}
@@ -285,8 +331,6 @@ dialog .close {position: absolute; top: 14px; right: 14px;}
 .check .box .icon {width: 12px; height: 12px; stroke-width: 3;}
 .check[aria-checked="true"] {color: var(--muted-foreground);}
 .check[aria-checked="true"] .box {background: var(--foreground); border-color: var(--foreground); color: var(--primary-foreground);}
-.report {display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px;}
-.composer.off {margin-top: 12px;}
 details.bg {margin-top: 30px; border-top: 1px solid var(--hairline);}
 details.bg summary {display: flex; align-items: center; justify-content: space-between; padding: 12px 0; font-size: 14px; color: rgb(250 250 250 / 0.8); cursor: pointer; list-style: none;}
 details.bg summary::-webkit-details-marker {display: none;}

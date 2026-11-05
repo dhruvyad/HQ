@@ -40,7 +40,7 @@ let token = document.querySelector('meta[name="hq-token"]').content;
 let state = {sessions: [], items: []}, model = null, snapshotSignature = '';
 let liveHealthy = false, lastLive = 0, streamController = null, loading = null, booted = false;
 const seenInstances = new Set();
-const drafts = new Map(), askOpen = new Set();
+const drafts = new Map();
 let search = '', doneLimit = 40, sheetOpen = false, openMove = null, showQuiet = false;
 const folded = new Set(remember('hq-folded') || []);
 const seen = new Set(remember('hq-seen') || []);
@@ -454,73 +454,174 @@ function reasonsHTML(item) {
   const reason = (label, r) => (r ? `<section class="reason"><div class="d-label">${label}</div><p class="r-lead">${inline(r.lead)}</p>${r.points?.length ? `<ul>${r.points.map((t) => `<li>${inline(t)}</li>`).join('')}</ul>` : ''}</section>` : '');
   return item.matters || item.needs_you ? `<div class="reasons">${reason('Why it matters', item.matters)}${reason('Why you, not the agent', item.needs_you)}</div>` : '';
 }
+// The item pane: a fixed head and tabs, one scrolling tab panel, and the answer docked
+// below it, so what you are asked to do is always in view.
+const FOCUS_KEYS = ['id', 'data-tab', 'data-choice', 'data-note', 'data-wide', 'data-report', 'data-retry', 'data-check', 'data-copy-step', 'data-move', 'data-done'];
+function focusKey(el) {
+  const name = FOCUS_KEYS.find((n) => el.hasAttribute?.(n));
+  return name ? {selector: `[${name}="${CSS.escape(el.getAttribute(name))}"]`, start: el.selectionStart, end: el.selectionEnd} : null;
+}
 function renderDetail() {
   const i = route.item && model.items.find((x) => x.id === route.item);
   const pane = $('#detail');
   pane.hidden = !i;
-  if (!i) return (pane.innerHTML = '');
+  if (!i) {renderDetail.shown = null; return (pane.innerHTML = '');}
+  // A re-render of the same item and tab keeps your place and your focus.
+  const shown = `${i.id}\n${tabOf(i)}`, body = pane.querySelector('.d-body');
+  const top = renderDetail.shown === shown && body ? body.scrollTop : 0;
+  const same = renderDetail.shown?.startsWith(`${i.id}\n`);
+  const focus = same && pane.contains(document.activeElement) ? focusKey(document.activeElement) : null;
   pane.innerHTML = detailHTML(i);
+  renderDetail.shown = shown;
+  const again = pane.querySelector('.d-body');
+  if (again) again.scrollTop = top;
+  pane.querySelectorAll('.composer textarea').forEach(grow);
+  const target = focus && pane.querySelector(focus.selector);
+  if (target) {
+    target.focus({preventScroll: true});
+    if (focus.start != null && target.setSelectionRange) target.setSelectionRange(focus.start, focus.end);
+  }
+}
+const optionsOf = (i) => (i.options || []).map((raw) => (typeof raw === 'string' ? {label: raw} : raw));
+function tabsOf(i) {
+  const steps = (i.steps || []).length, questions = (i.comments || []).filter((c) => c.author === 'human').length;
+  return [
+    ['steps', 'Steps', steps, steps || (i.paste || []).length || (i.link && safeURL(i.link.url))],
+    ['why', 'Why', 0, i.recommendation || i.matters || i.needs_you],
+    ['context', 'Context', 0, true],
+    ['ask', 'Ask', questions, true],
+  ].filter((t) => t[3]).map(([id, label, n]) => ({id, label, n}));
+}
+// The tab you chose for an item, while the page lives; otherwise Steps, else Why.
+function tabOf(i, draft = draftOf(i.id)) {
+  const tabs = tabsOf(i);
+  return tabs.some((t) => t.id === draft.tab) ? draft.tab : tabs[0].id;
+}
+// free: no option picked, so the box is the answer. picked: an option, sent by the wide
+// button. note: an option plus a note, which typed text always becomes.
+function answerState(i, draft) {
+  if (!draft.choice || !optionsOf(i).some((o) => o.label === draft.choice)) return 'free';
+  return draft.note || (draft.text || '').trim() ? 'note' : 'picked';
+}
+const wideLabel = (choice, note) => `Send: ${choice}${note ? ' + note' : ''}`;
+// What the agent receives: the option, the note, or both, as replies always have.
+function replyText(i, draft, typed) {
+  const state = answerState(i, draft);
+  return [state === 'free' ? '' : draft.choice, state === 'picked' ? '' : typed.trim()].filter(Boolean).join(' — ');
+}
+// Escape in an empty note closes the note, not the item.
+const noteEscape = (i, draft, typed) => answerState(i, draft) === 'note' && !typed.trim();
+// Enter sends and Shift+Enter starts a new line; never mid-composition in an input method.
+function composeKey(e) {
+  if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return null;
+  return e.shiftKey || e.altKey ? 'newline' : 'send';
+}
+function replyPlaceholder(i, draft, state) {
+  if (state === 'note') return `Add a note to “${draft.choice}”…`;
+  if (optionsOf(i).length) return 'Or answer in your own words…';
+  return i.owner === 'external' ? 'What came back?' : i.kind === 'todo' ? 'Tell the agent what you did…' : 'Reply to the agent…';
 }
 function detailHTML(i) {
   const visible = visibleIds(), at = visible.indexOf(i.id);
   const p = projectOf(i.project);
   const lone = i.workstream === OTHER && (p?.workstreams.length || 0) <= 1;
   const crumbs = `<button data-href="${esc(href({page: 'project', project: i.project, lane: i.lane, item: null}))}">${esc(i.project_name)}</button>${lone ? '' : ` › <button data-href="${esc(href({page: 'workstream', project: i.project, workstream: i.workstream, lane: i.lane, item: null}))}">${esc(i.workstream_name)}</button>`}`;
-  const draft = draftOf(i.id);
-  const readable = isReadable(i), checks = checksOf(i);
-  const respond = i.status === 'open' && i.owner !== 'agent';
-  const report = readable && respond && checks.length;
-  const ticks = draft.checks || [];
-  const sent = i.skipped ? `<div class="win skipped ${i.delivery === 'failed' ? 'failed' : ''}">${icon('x', 'sm')}<span><strong>You skipped this</strong> · ${esc(i.delivery === 'received' ? 'the agent knows to drop it' : i.delivery === 'failed' ? `couldn't tell the agent${i.delivery_error ? `: ${i.delivery_error}` : ''}` : 'the agent will be told when it next checks in')}</span></div>${i.delivery === 'failed' ? '<div class="moves"><button class="pill outline sm" data-retry>Retry delivery</button></div>' : ''}`
-    : i.answer ? `<div class="win ${i.delivery === 'failed' ? 'failed' : ''}">${icon(i.delivery === 'failed' ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(i.delivery === 'failed' ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${i.delivery === 'failed' ? '<div class="moves"><button class="pill outline sm" data-retry>Retry delivery</button></div>' : ''}` : '';
-  const legacy = readable ? '' : `${i.detail ? `<div class="d-text">${blocks(i.detail)}</div>` : ''}
-      ${i.unlocks ? `<div class="d-section"><div class="d-label">Unlocks</div>${blocks(i.unlocks)}</div>` : ''}`;
+  const draft = draftOf(i.id), tab = tabOf(i, draft);
+  const tabs = tabsOf(i).map((t) => `<button class="d-tab" role="tab" id="d-tab-${t.id}" data-tab="${t.id}" aria-selected="${t.id === tab}" aria-controls="d-panel" tabindex="${t.id === tab ? 0 : -1}">${t.label}${t.n ? `<span class="n">${t.n}</span>` : ''}</button>`).join('');
   return `<div class="d-bar"><div class="crumbs">${crumbs}</div>
       ${i.status === 'open' ? `<button class="icon-btn" data-pin aria-pressed="${Boolean(i.pinned)}" aria-label="${i.pinned ? 'Unpin' : 'Pin'}" title="${i.pinned ? 'Unpin' : 'Pin to the top'}">${icon('pin', i.pinned ? 'filled' : '')}</button>` : ''}
       <button class="icon-btn" data-step="-1" aria-label="Previous item" ${at <= 0 ? 'disabled' : ''}>${icon('up')}</button>
       <button class="icon-btn" data-step="1" aria-label="Next item" ${at < 0 || at >= visible.length - 1 ? 'disabled' : ''}>${icon('down')}</button>
       <button class="icon-btn" data-close aria-label="Close">${icon('x')}</button></div>
-    <div class="d-body scroll">
+    <div class="d-head">
       <div class="d-state">${i.due && i.lane !== 'done' && daysUntil(i.due) < 0 ? `<span class="overdue">${esc(stateLine(i))}</span>` : esc(stateLine(i))}</div>
       <h2 class="d-title" id="detail-title">${esc(i.title)}</h2>
-      ${legacy}
-      ${planHTML(i, draft)}
-      ${i.recommendation ? `<div class="d-section"><div class="d-label">Recommended</div>${blocks(i.recommendation)}</div>` : ''}
-      ${i.link && safeURL(i.link.url) ? `<div class="d-actions"><a class="pill outline" href="${esc(i.link.url)}" target="_blank" rel="noreferrer">${esc(i.link.label)}${icon('out', 'sm')}</a></div>` : ''}
-      ${(i.paste || []).map((b, n) => `<section class="copy"><div class="copy-head"><span>${esc(b.label)}</span><button class="pill ghost sm" data-copy="${n}">Copy</button></div><pre class="${b.mono ? 'mono' : ''}">${esc(b.text)}</pre></section>`).join('')}
-      ${i.agent_note ? `<div class="d-section"><div class="d-label">From the agent</div>${blocks(i.agent_note)}</div>` : ''}
-      ${report ? `<div class="report"><button class="pill ${ticks.length === checks.length ? 'primary' : 'outline'}" data-report="ok">${icon('check', 'sm')}Looks right</button><button class="pill ghost" data-report="off">Something was off</button></div>` : ''}
-      ${respond && (!report || openMove === 'off') ? respondHTML(i, draft, report) : ''}
-      ${movesHTML(i)}
-      ${sent}
-      ${reasonsHTML(i)}
-      ${readable && i.detail ? `<details class="more-context"><summary>More context</summary><div class="d-text">${blocks(i.detail)}</div></details>` : ''}
-      ${askHTML(i, draft)}
-      <dl class="from">
-        <dt>Agent</dt><dd><span class="dot ${agentState(i.session)}"></span><a href="${esc(href({page: 'agent', agent: i.session_id, lane: 'you', item: null}))}">${esc(i.session_name)}</a><span>· ${esc(harness(i.provider))}</span></dd>
-        ${i.source ? `<dt>Source</dt><dd>${esc(i.source)}</dd>` : ''}
-        ${i.tags.length ? `<dt>Tags</dt><dd>${esc(i.tags.join(', '))}</dd>` : ''}
-        <dt>Added</dt><dd>${fmtDate(i.created)} · ${ago(i.created)}</dd>
-      </dl>
-      ${i.status !== 'done' && i.owner !== 'agent' && !i.asking ? '<button class="hard-to-read" data-hard>Hard to read? Send it back to the agent</button>' : ''}
-    </div>`;
+    </div>
+    <div class="d-tabs" role="tablist" aria-label="About this item">${tabs}</div>
+    <div class="d-body scroll" id="d-panel" role="tabpanel" aria-labelledby="d-tab-${tab}"><div class="d-panel-in">${panelHTML(i, draft, tab)}</div></div>
+    ${dockHTML(i, draft)}`;
 }
-function respondHTML(i, draft, report) {
-  const options = i.options.map((raw) => (typeof raw === 'string' ? {label: raw} : raw));
-  const missed = checksOf(i).filter((c) => !(draft.checks || []).includes(c.key)).map((c) => c.text);
-  const prefill = report && missed.length && missed.length < checksOf(i).length ? `Didn't see: ${missed.join('; ')}` : '';
-  const placeholder = report ? 'What was off?' : i.owner === 'external' ? 'What came back?' : i.kind === 'todo' ? 'Tell the agent what you did…' : 'Reply to the agent…';
-  return `<form class="respond" id="respond">
-    ${options.length ? `<div class="choices" role="radiogroup" aria-label="Options">${options.map((o) => `<button type="button" class="choice" role="radio" data-choice="${esc(o.label)}" aria-checked="${draft.choice === o.label}"><span class="radio"></span><span><span class="c-label">${esc(o.label)}</span>${o.recommended ? '<span class="c-rec">Recommended</span>' : ''}${o.note ? `<span class="c-note">${esc(o.note)}</span>` : ''}</span></button>`).join('')}</div>` : ''}
-    <div class="composer"><textarea id="reply" data-draft="text" rows="2" maxlength="20000" placeholder="${placeholder}" aria-label="Reply">${esc(draft.text ?? prefill)}</textarea>
-      <div class="composer-foot"><small>${options.length ? 'Pick one, add a note if you like' : 'The agent picks this up when it next checks in'}</small><button class="send" type="submit" aria-label="Send" ${draft.text || draft.choice || prefill ? '' : 'disabled'}>${icon('send', 'sm')}</button></div>
-    </div><p class="form-error" aria-live="polite"></p></form>`;
+function panelHTML(i, draft, tab) {
+  const recommended = i.recommendation ? `<div class="d-section"><div class="d-label">Recommended</div>${blocks(i.recommendation)}</div>` : '';
+  if (tab === 'why') return recommended + reasonsHTML(i);
+  if (tab === 'ask') return askHTML(i, draft);
+  if (tab === 'context') return contextHTML(i);
+  return `${planHTML(i, draft)}
+    ${i.link && safeURL(i.link.url) ? `<div class="d-actions"><a class="pill outline" href="${esc(i.link.url)}" target="_blank" rel="noreferrer">${esc(i.link.label)}${icon('out', 'sm')}</a></div>` : ''}
+    ${(i.paste || []).map((b, n) => `<section class="copy"><div class="copy-head"><span>${esc(b.label)}</span><button class="pill ghost sm" data-copy="${n}">Copy</button></div><pre class="${b.mono ? 'mono' : ''}">${esc(b.text)}</pre></section>`).join('')}
+    ${recommended}`;
+}
+function contextHTML(i) {
+  const parts = [
+    i.detail ? `<div class="d-text">${blocks(i.detail)}</div>` : '',
+    i.unlocks ? `<div class="d-section"><div class="d-label">Unlocks</div>${blocks(i.unlocks)}</div>` : '',
+    i.agent_note ? `<div class="d-section"><div class="d-label">From the agent</div>${blocks(i.agent_note)}</div>` : '',
+  ].join('');
+  return `${parts || '<p class="d-quiet">No more context from the agent.</p>'}
+    <dl class="from">
+      <dt>Agent</dt><dd><span class="dot ${agentState(i.session)}"></span><a href="${esc(href({page: 'agent', agent: i.session_id, lane: 'you', item: null}))}">${esc(i.session_name)}</a><span>· ${esc(harness(i.provider))}</span></dd>
+      ${i.source ? `<dt>Source</dt><dd>${esc(i.source)}</dd>` : ''}
+      ${i.tags.length ? `<dt>Tags</dt><dd>${esc(i.tags.join(', '))}</dd>` : ''}
+      <dt>Added</dt><dd>${fmtDate(i.created)} · ${ago(i.created)}</dd>
+    </dl>
+    ${i.status !== 'done' && i.owner !== 'agent' && !i.asking ? '<button class="hard-to-read" data-hard>Hard to read? Send it back to the agent</button>' : ''}`;
+}
+// One composer everywhere: the reply, a note on an option, and a question.
+function composeHTML({id, draft, value, placeholder, label, send, ready}) {
+  return `<div class="compose"><div class="composer"><textarea id="${id}" data-draft="${draft}" rows="1" maxlength="20000" placeholder="${esc(placeholder)}" aria-label="${label}" enterkeyhint="send">${esc(value)}</textarea><button class="send" type="submit" aria-label="${send}" ${ready ? '' : 'disabled'}>${icon('send')}</button></div></div>`;
+}
+const foldHTML = (name, open, inner) => `<div class="d-fold ${open ? 'open' : ''}" data-fold="${name}" ${open ? '' : 'inert'}><div class="d-fold-in">${inner}</div></div>`;
+function dockHTML(i, draft) {
+  const inner = `${sentHTML(i)}${answerHTML(i, draft)}${movesHTML(i)}`;
+  return inner.trim() ? `<div class="d-dock">${inner}</div>` : '';
+}
+function sentHTML(i) {
+  const failed = i.delivery === 'failed';
+  const retry = failed ? '<div class="go-row"><button class="wide" type="button" data-retry><span>Retry delivery</span></button></div>' : '';
+  if (i.skipped) return `<div class="win skipped ${failed ? 'failed' : ''}">${icon('x', 'sm')}<span><strong>You skipped this</strong> · ${esc(i.delivery === 'received' ? 'the agent knows to drop it' : failed ? `couldn't tell the agent${i.delivery_error ? `: ${i.delivery_error}` : ''}` : 'the agent will be told when it next checks in')}</span></div>${retry}`;
+  if (i.answer) return `<div class="win ${failed ? 'failed' : ''}">${icon(failed ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(failed ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${retry}`;
+  return '';
+}
+function answerHTML(i, draft) {
+  if (i.status !== 'open' || i.owner === 'agent') return '';
+  return isReadable(i) && checksOf(i).length ? reportHTML(i, draft) : respondHTML(i, draft);
+}
+function respondHTML(i, draft) {
+  const options = optionsOf(i), state = answerState(i, draft), text = draft.text ?? '';
+  const rows = options.map((o, n) => `<button type="button" class="choice" role="radio" data-choice="${esc(o.label)}" aria-checked="${draft.choice === o.label}"><span class="key">${n + 1}</span><span><span class="c-label">${esc(o.label)}</span>${o.recommended ? '<span class="c-rec">Recommended</span>' : ''}${o.note ? `<span class="c-note">${esc(o.note)}</span>` : ''}</span></button>`).join('');
+  const go = `<div class="go-row"><button type="button" class="ghost-pill" data-note aria-pressed="${state === 'note'}">${state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`}</button><button type="submit" class="wide" data-wide><span>${esc(wideLabel(draft.choice, state === 'note' && text.trim()))}</span></button></div>`;
+  return `<form class="respond" id="respond" data-state="${state}">
+    ${options.length ? `<div class="choices" role="radiogroup" aria-label="Options">${rows}</div>` : ''}
+    ${foldHTML('note', state !== 'picked', composeHTML({id: 'reply', draft: 'text', value: text, placeholder: replyPlaceholder(i, draft, state), label: state === 'note' ? 'Note' : 'Reply', send: 'Send', ready: Boolean(text.trim())}))}
+    ${options.length ? foldHTML('go', state !== 'free', go) : ''}
+    <p class="form-error" aria-live="polite"></p></form>`;
+}
+// Checks end in Looks right or Something was off, which swaps the row for the box, filled
+// with what you didn't tick. Escape, before you change it, brings the row back.
+function missedText(i, draft) {
+  const checks = checksOf(i), ticks = draft.checks || [];
+  const missed = checks.filter((c) => !ticks.includes(c.key)).map((c) => c.text);
+  return missed.length && missed.length < checks.length ? `Didn't see: ${missed.join('; ')}` : '';
+}
+function reportHTML(i, draft) {
+  const checks = checksOf(i), ticks = draft.checks || [];
+  const ticked = checks.filter((c) => ticks.includes(c.key)).length;
+  if (openMove !== 'off') return `<div class="respond" data-state="report"><div class="go-row"><button type="button" class="ghost-pill" data-report="off">Something was off</button><button type="button" class="wide" data-report="ok"><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div></div>`;
+  const text = draft.text ?? missedText(i, draft);
+  return `<form class="respond" id="respond" data-state="off">
+    ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'What was off?', label: 'What was off', send: 'Send', ready: Boolean(text.trim())})}
+    <p class="form-error" aria-live="polite"></p></form>`;
+}
+// Escape leaves Something was off while the box still holds only what was filled in for you.
+const offEscape = (i, draft, typed) => !typed.trim() || typed === missedText(i, draft);
+// The button's words, and the reply it sends: honest about checks left unticked.
+function lookedRight(ticked, total, button = false) {
+  if (ticked === total) return button ? 'Looks right' : `All ${total} looked right`;
+  return button ? `Looks right (${ticked} of ${total} ticked)` : `Looked right (${ticked} of ${total} ticked)`;
 }
 function movesHTML(i) {
   if (i.status !== 'open') return i.status === 'answered' && i.delivery === 'received' && !i.asking ? '<div class="moves"><button class="pill outline sm" data-done>Mark done</button></div>' : '';
   const draft = draftOf(i.id);
-  const links = [];
-  if (!isReadable(i) || !checksOf(i).length) links.push('<button class="pill outline sm" data-done>Mark done</button>');
   const quiet = [];
   if (i.lane === 'later') quiet.push('<button class="link" data-forward>Bring back now</button>');
   else quiet.push('<button class="link" data-move="later">Later</button>');
@@ -528,25 +629,27 @@ function movesHTML(i) {
   if (i.owner !== 'human') quiet.push('<button class="link" data-needs-me>Needs me now</button>');
   quiet.push('<button class="link" data-move="owner">Hand off</button>');
   quiet.push('<button class="link" data-move="skip">Skip</button>');
+  // A decision is answered or skipped, not marked done; checks end in Looks right.
+  if (!optionsOf(i).length && (!isReadable(i) || !checksOf(i).length)) quiet.push('<button class="link" data-done>Mark done</button>');
   const owner = draft.owner || i.owner;
   const form = openMove === 'skip' ? `<form class="inline-form" id="skip-form"><input class="field" name="reason" data-draft="skip" maxlength="2000" placeholder="Why skip? (optional)" value="${esc(draft.skip || '')}"><button class="pill primary sm">Skip it</button><button type="button" class="pill ghost sm" data-move="skip">Cancel</button><span class="hint">Closes it and tells the agent to drop it.</span></form>`
     : openMove === 'due' ? `<form class="inline-form" id="due-form"><input class="field" type="date" name="due" data-draft="due" required value="${esc(draft.due ?? i.due ?? '')}"><button class="pill primary sm">Set</button>${i.due ? '<button type="button" class="pill ghost sm" data-clear-due>Clear</button>' : ''}</form>`
     : openMove === 'later' ? `<form class="inline-form" id="later-form"><input class="field" type="date" name="defer_until" data-draft="later" min="${today()}" required value="${esc(draft.later ?? i.defer_until)}"><button class="pill primary sm">Snooze</button></form>`
     : openMove === 'owner' ? `<form class="inline-form" id="owner-form"><select class="field" name="owner" data-draft="owner">${[['human', 'Needs you'], ['agent', 'With the agent'], ['external', 'Waiting on someone']].map(([v, l]) => `<option value="${v}" ${owner === v ? 'selected' : ''}>${l}</option>`).join('')}</select><input class="field" name="waiting_on" data-draft="waiting" placeholder="Who or what" value="${esc(draft.waiting ?? i.waiting_on)}" ${owner === 'external' ? 'required' : 'hidden'}><button class="pill primary sm">Move</button></form>` : '';
-  return `${links.length ? `<div class="moves">${links.join('')}</div>` : ''}<div class="notnow"><span>Not now?</span>${quiet.join('')}</div>${form}<p class="form-error" id="move-error" aria-live="polite"></p>`;
+  return `<div class="notnow"><span>Not now?</span>${quiet.join('')}</div>${form}<p class="form-error" id="move-error" aria-live="polite"></p>`;
 }
+// The Ask tab is the thread itself: questions to the agent and its answers, then the box.
 function askHTML(i, draft) {
   const comments = i.comments || [];
   const questions = comments.filter((c) => c.author === 'human');
-  const open = askOpen.has(i.id) || questions.length;
   const thread = questions.map((q) => {
     const answer = comments.find((c) => c.parent_id === q.id);
     const status = q.answered || answer ? '' : ({pending: 'queued for the agent', sending: 'sending…', sent: 'sent, not yet confirmed', received: 'waiting for a reply', failed: 'delivery failed', cancelled: 'cancelled'})[q.state] || '';
     const actions = !q.answered && !answer && q.state !== 'cancelled' ? `<div class="moves">${q.state === 'failed' ? `<button class="pill outline sm" data-comment-action="retry" data-comment-id="${esc(q.id)}">Retry delivery</button>` : ''}<button class="pill ghost sm" data-comment-action="cancel" data-comment-id="${esc(q.id)}">Cancel question</button></div>` : '';
     return `<div class="msg"><div class="who">You${status ? ` · ${esc(status)}` : ''}</div><p>${esc(q.text)}</p>${q.error ? `<p class="form-error">${esc(q.error)}</p>` : ''}${actions}</div>${answer ? `<div class="msg"><div class="who">Agent</div><p>${inline(answer.text)}</p></div>` : ''}`;
   }).join('');
-  return `<div class="ask"><button class="ask-toggle" data-ask aria-expanded="${Boolean(open)}">Ask the agent about this<svg class="icon chev ${open ? 'open' : ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONS.chev}</svg></button>
-    ${open ? `${thread ? `<div class="thread">${thread}</div>` : ''}${i.status !== 'done' ? `<form id="ask-form" class="composer"><textarea id="question" data-draft="question" rows="1" maxlength="20000" placeholder="Ask about this item…" aria-label="Question">${esc(draft.question || '')}</textarea><div class="composer-foot"><small>Kept here until the agent replies</small><button class="send" type="submit" aria-label="Ask">${icon('send', 'sm')}</button></div></form><p class="form-error" aria-live="polite"></p>` : ''}` : ''}</div>`;
+  const box = i.status !== 'done' ? `<form id="ask-form" class="ask-form">${composeHTML({id: 'question', draft: 'question', value: draft.question || '', placeholder: 'Ask about this item…', label: 'Question', send: 'Ask', ready: Boolean((draft.question || '').trim())})}<p class="form-error" aria-live="polite"></p></form>` : '';
+  return `<div class="ask"><p class="d-quiet">Questions wait here until the agent replies. Your answer below stays as it is.</p>${thread ? `<div class="thread">${thread}</div>` : ''}${box}</div>`;
 }
 function visibleIds() {return [...document.querySelectorAll('#main [data-item]')].map((el) => el.dataset.item);}
 const nextVisible = (id) => {const ids = visibleIds(); return ids[ids.indexOf(id) + 1] || null;};
@@ -732,26 +835,106 @@ function bind() {
   input.oninput = () => {search = input.value.trim(); render();};
   if (route.item && !detail.hidden) bindDetail(detail);
 }
+// One line is 42px: 20px of text and 22px of padding. It grows to six lines (142px), then scrolls.
+function grow(textarea) {
+  if (!textarea?.offsetParent) return;
+  textarea.style.height = '42px';
+  const natural = textarea.scrollHeight;
+  textarea.style.height = `${Math.max(42, Math.min(natural, 142))}px`;
+  textarea.classList.toggle('overflow', natural > 142);
+  textarea.closest('.composer')?.classList.toggle('multi', natural > 44);
+}
+const stillMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function setSendable(button, ready) {
+  if (!button || button.disabled === !ready) return;
+  button.disabled = !ready;
+  if (!ready || stillMotion()) return;
+  const bounce = getComputedStyle(document.documentElement).getPropertyValue('--f-spring').trim() || 'cubic-bezier(.34,1.56,.64,1)';
+  button.animate([{transform: 'scale(.86)'}, {transform: 'scale(1)'}], {duration: 420, easing: bounce});
+}
+function setFold(fold, open) {
+  if (!fold || fold.classList.contains('open') === open) return;
+  fold.classList.toggle('open', open);
+  fold.inert = !open;
+}
+// Picking, unpicking and adding a note change the answer in place, so the box can fold
+// away and come back with your text and focus intact.
+function syncRespond(form, i) {
+  if (!form || !i || !['free', 'picked', 'note'].includes(form.dataset.state)) return;
+  const draft = draftOf(i.id), state = answerState(i, draft), text = (draft.text || '').trim();
+  form.dataset.state = state;
+  form.querySelectorAll('[data-choice]').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.choice === draft.choice)));
+  setFold(form.querySelector('[data-fold="note"]'), state !== 'picked');
+  setFold(form.querySelector('[data-fold="go"]'), state !== 'free');
+  const reply = form.querySelector('#reply');
+  reply.placeholder = replyPlaceholder(i, draft, state);
+  reply.setAttribute('aria-label', state === 'note' ? 'Note' : 'Reply');
+  setSendable(form.querySelector('.composer .send'), Boolean(text));
+  const pill = form.querySelector('[data-note]');
+  if (pill) {
+    pill.innerHTML = state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`;
+    pill.setAttribute('aria-pressed', String(state === 'note'));
+  }
+  const wide = form.querySelector('[data-wide] span');
+  if (wide && draft.choice) wide.textContent = wideLabel(draft.choice, state === 'note' && text);
+}
 function bindDetail(detail) {
   const id = route.item, item = () => model.items.find((x) => x.id === id);
   const rerender = () => {renderDetail(); bindDetail(detail);};
+  const respond = detail.querySelector('#respond'), reply = detail.querySelector('#reply');
   detail.querySelector('[data-close]').onclick = () => go({item: null});
   detail.querySelectorAll('[data-step]').forEach((el) => (el.onclick = () => step(Number(el.dataset.step))));
+  const tabs = [...detail.querySelectorAll('[data-tab]')];
+  const pick = (tab) => {setDraft(id, {tab: tab.dataset.tab}); rerender(); detail.querySelector(`[data-tab="${tab.dataset.tab}"]`)?.focus();};
+  tabs.forEach((el, n) => {
+    el.onclick = () => pick(el);
+    el.onkeydown = (e) => {
+      const to = {ArrowRight: n + 1, ArrowLeft: n - 1, Home: 0, End: tabs.length - 1}[e.key];
+      if (to === undefined) return;
+      e.preventDefault();
+      pick(tabs[(to + tabs.length) % tabs.length]);
+    };
+  });
   detail.oninput = (e) => {
     const key = e.target.dataset?.draft;
     if (!key) return;
     setDraft(id, {[key]: e.target.value});
-    if (key === 'text') {
-      const send = detail.querySelector('#respond .send');
-      if (send) send.disabled = !(e.target.value || draftOf(id).choice);
-      e.target.style.height = 'auto';
-      e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
+    if (e.target.matches('.composer textarea')) {
+      grow(e.target);
+      setSendable(e.target.closest('.composer').querySelector('.send'), Boolean(e.target.value.trim()));
     }
+    if (key === 'text') syncRespond(respond, item());
     if (key === 'owner') {
       const waiting = detail.querySelector('#owner-form [name="waiting_on"]');
       waiting.hidden = e.target.value !== 'external';
       waiting.required = e.target.value === 'external';
     }
+  };
+  detail.querySelectorAll('.composer textarea').forEach((box) => (box.onkeydown = (e) => {
+    if (composeKey(e) === 'send') {
+      e.preventDefault();
+      box.closest('form')?.requestSubmit();
+    } else if (e.key === 'Escape' && box.id === 'reply' && noteEscape(item(), draftOf(id), box.value)) {
+      // Escape closes an empty note first, and only then the item.
+      e.preventDefault();
+      e.stopPropagation();
+      setDraft(id, {note: false});
+      syncRespond(respond, item());
+      detail.querySelector('[data-note]')?.focus();
+    } else if (e.key === 'Escape' && respond?.dataset.state === 'off' && offEscape(item(), draftOf(id), box.value)) {
+      e.preventDefault();
+      e.stopPropagation();
+      openMove = null;
+      setDraft(id, {text: undefined});
+      rerender();
+      detail.querySelector('[data-report="off"]')?.focus();
+    }
+  }));
+  // ⌘Enter sends from anywhere in the pane: the question if you are asking, else the answer.
+  detail.onkeydown = (e) => {
+    if (e.defaultPrevented || e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return;
+    const form = e.target.closest?.('#ask-form') || respond;
+    if (form) {e.preventDefault(); form.requestSubmit();}
   };
   detail.querySelectorAll('[data-copy]').forEach((el) => (el.onclick = async () => {
     try {await navigator.clipboard.writeText(item().paste[Number(el.dataset.copy)].text); toast('Copied');} catch {toast('Copy unavailable; select the text instead');}
@@ -768,37 +951,57 @@ function bindDetail(detail) {
     rerender();
   }));
   detail.querySelectorAll('[data-choice]').forEach((el) => (el.onclick = () => {
-    setDraft(id, {choice: draftOf(id).choice === el.dataset.choice ? null : el.dataset.choice});
-    detail.querySelectorAll('[data-choice]').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.choice === draftOf(id).choice)));
-    const send = detail.querySelector('#respond .send');
-    if (send) send.disabled = !(draftOf(id).text || draftOf(id).choice);
+    const d = draftOf(id), choice = d.choice === el.dataset.choice ? null : el.dataset.choice;
+    // Text you already typed becomes the note; unpicking turns it back into your answer.
+    setDraft(id, {choice, note: Boolean(choice && (d.note || (d.text || '').trim()))});
+    syncRespond(respond, item());
   }));
-  const reply = detail.querySelector('#reply');
-  if (reply) reply.onkeydown = (e) => {if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) detail.querySelector('#respond').requestSubmit();};
-  const respond = detail.querySelector('#respond');
+  const note = detail.querySelector('[data-note]');
+  if (note) note.onclick = () => {
+    const open = answerState(item(), draftOf(id)) === 'note';
+    if (open) {
+      setDraft(id, {note: false, text: ''});
+      reply.value = '';
+      grow(reply);
+    } else setDraft(id, {note: true});
+    syncRespond(respond, item());
+    if (!open) reply.focus({preventScroll: true});
+  };
   if (respond) respond.onsubmit = async (e) => {
     e.preventDefault();
-    const d = draftOf(id), text = [d.choice, reply.value.trim()].filter(Boolean).join(' — ');
+    const text = replyText(item(), draftOf(id), reply.value);
     if (!text) return;
     const next = nextVisible(id);
     if (await act(api(`items/${id}/reply`, {text}), 'Reply saved for the agent', respond.querySelector('.form-error'))) {
-      setDraft(id, {text: undefined, choice: undefined});
+      setDraft(id, {text: undefined, choice: undefined, note: undefined});
       openMove = null;
+      // Sending from the box leaves focus in it, which holds off live refreshes; show the result now.
+      if (route.item === id) rerender();
       moveOn(next, true);
     }
   };
   const ok = detail.querySelector('[data-report="ok"]');
   if (ok) ok.onclick = async () => {
-    const next = nextVisible(id);
-    if (await act(api(`items/${id}/reply`, {text: `All ${checksOf(item()).length} looked right`}), 'Reply saved for the agent')) moveOn(next, true);
+    const next = nextVisible(id), checks = checksOf(item()), ticks = draftOf(id).checks || [];
+    const text = lookedRight(checks.filter((c) => ticks.includes(c.key)).length, checks.length);
+    if (await act(api(`items/${id}/reply`, {text}), 'Reply saved for the agent')) {
+      openMove = null;
+      if (route.item === id) rerender();
+      moveOn(next, true);
+    }
   };
   const off = detail.querySelector('[data-report="off"]');
-  if (off) off.onclick = () => {openMove = openMove === 'off' ? null : 'off'; rerender(); detail.querySelector('#reply')?.focus();};
-  const done = detail.querySelector('[data-done]');
-  if (done) done.onclick = async () => {
+  // Something was off puts the cursor at the end of what you missed, so Enter sends it.
+  if (off) off.onclick = () => {
+    openMove = 'off';
+    rerender();
+    const box = detail.querySelector('#reply');
+    if (box) {box.focus({preventScroll: true}); box.setSelectionRange(box.value.length, box.value.length);}
+  };
+  detail.querySelectorAll('[data-done]').forEach((el) => (el.onclick = async () => {
     const next = nextVisible(id);
     if (await act(api(`items/${id}/resolve`, {}), 'Marked done')) moveOn(next, false);
-  };
+  }));
   const pin = detail.querySelector('[data-pin]');
   if (pin) pin.onclick = () => update(id, {pinned: !item().pinned}, item().pinned ? 'Unpinned' : 'Pinned');
   const forward = detail.querySelector('[data-forward]');
@@ -833,12 +1036,14 @@ function bindDetail(detail) {
   const retry = detail.querySelector('[data-retry]');
   if (retry) retry.onclick = () => act(api(`items/${id}/retry`, {}), 'Queued again');
   detail.querySelectorAll('[data-comment-action]').forEach((el) => (el.onclick = () => act(api(`comments/${el.dataset.commentId}/${el.dataset.commentAction}`, {}), el.dataset.commentAction === 'cancel' ? 'Question cancelled' : 'Queued again')));
-  detail.querySelector('[data-ask]').onclick = () => {askOpen.has(id) ? askOpen.delete(id) : askOpen.add(id); rerender();};
   const ask = detail.querySelector('#ask-form');
   if (ask) ask.onsubmit = async (e) => {
     e.preventDefault();
     const text = ask.querySelector('textarea').value.trim();
-    if (text && await act(api(`items/${id}/ask`, {text}), 'Question saved', ask.nextElementSibling)) setDraft(id, {question: ''});
+    if (text && await act(api(`items/${id}/ask`, {text}), 'Question saved', ask.querySelector('.form-error'))) {
+      setDraft(id, {question: ''});
+      if (route.item === id) rerender();
+    }
   };
   const hard = detail.querySelector('[data-hard]');
   if (hard) hard.onclick = () => act(api(`items/${id}/ask`, {text: HARD_TO_READ}), 'Sent back to the agent to rewrite');
@@ -870,6 +1075,8 @@ function boot() {
       return;
     }
     if (typing || $('#dialog').open) return;
+    const option = route.item && /^[1-9]$/.test(e.key) && !(e.metaKey || e.ctrlKey || e.altKey) && document.querySelectorAll('#detail [data-choice]')[Number(e.key) - 1];
+    if (option) {e.preventDefault(); option.click(); return;}
     if (e.key === 'j' || e.key === 'ArrowDown') {e.preventDefault(); step(1);}
     if (e.key === 'k' || e.key === 'ArrowUp') {e.preventDefault(); step(-1);}
   });
