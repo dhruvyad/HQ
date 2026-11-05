@@ -4,7 +4,8 @@
 
 The dashboard binds only to `127.0.0.1`. It rejects cross-origin requests, DNS
 rebinding hostnames, and API requests without the page's random token. It uses
-no external scripts, fonts, analytics, or browser storage. Like other local
+no external scripts, fonts or analytics. The browser keeps only view settings for
+this origin: folded groups, sort order, and which items you have opened. Like other local
 tools, trusted processes running as your user can access the inbox; this is
 not a multi-user authorization boundary. Session names and responses are
 rendered as text, never executable HTML.
