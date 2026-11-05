@@ -9,6 +9,7 @@ const ICONS = {
   plug: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
+  stuck: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
@@ -151,12 +152,13 @@ function parseRoute(hash = globalThis.location?.hash || '') {
   const q = new URLSearchParams(query);
   const r = {page: 'needs', lane: q.get('lane') || 'you', item: q.get('item')};
   if (parts[0] === 'agents') Object.assign(r, {page: parts[1] ? 'agent' : 'agents', agent: parts[1]});
+  else if (parts[0] === 'stuck') r.page = 'stuck';
   else if (parts[0] === 'p' && parts[1]) Object.assign(r, {page: parts[2] ? 'workstream' : 'project', project: parts[1], workstream: parts[2]});
   return r;
 }
 function href(r) {
   const enc = encodeURIComponent;
-  const path = {agents: '/agents', agent: `/agents/${enc(r.agent)}`, project: `/p/${enc(r.project)}`, workstream: `/p/${enc(r.project)}/${enc(r.workstream)}`}[r.page] || '/';
+  const path = {stuck: '/stuck', agents: '/agents', agent: `/agents/${enc(r.agent)}`, project: `/p/${enc(r.project)}`, workstream: `/p/${enc(r.project)}/${enc(r.workstream)}`}[r.page] || '/';
   const q = new URLSearchParams();
   if (r.lane && r.lane !== 'you' && r.page !== 'needs') q.set('lane', r.lane);
   if (r.item) q.set('item', r.item);
@@ -253,6 +255,7 @@ function sidebarHTML() {
       <nav class="sb-nav" aria-label="Main">
         <a class="sb-item" href="#/" ${here('needs')}>${icon('inbox')}<span class="label">Needs you</span>${you ? `<span class="badge">${you}</span>` : ''}</a>
         <a class="sb-item" href="#/agents" ${['agents', 'agent'].includes(route.page) && !search ? 'aria-current="page"' : ''}>${icon('bot')}<span class="label">Agents</span>${running ? `<span class="sb-count">${running} running</span>` : ''}</a>
+        <a class="sb-item" href="#/stuck" ${here('stuck')}>${icon('stuck')}<span class="label">Not acted on</span>${stuckItems().length ? `<span class="sb-count stuck">${stuckItems().length}</span>` : ''}</a>
       </nav>
       <div class="sb-section">Projects</div>
       <nav class="sb-nav" aria-label="Projects">${projects.map(projectNavHTML).join('')}</nav>
@@ -284,7 +287,7 @@ function projectNavHTML(p) {
 }
 
 function mainHTML() {
-  const page = search ? searchPage() : {needs: needsPage, agents: agentsPage, agent: agentPage, project: projectPage, workstream: workstreamPage}[route.page]();
+  const page = search ? searchPage() : {needs: needsPage, stuck: stuckPage, agents: agentsPage, agent: agentPage, project: projectPage, workstream: workstreamPage}[route.page]();
   return `<div class="phone-bar"><button class="icon-btn" id="menu" aria-label="Open menu">${icon('menu')}</button><span class="t">${esc(page.title)}</span>${page.actions ? newItemIcon : ''}</div>
     <div class="page scroll" id="page"><div class="page-inner">
       ${page.crumb ? `<nav class="crumb" aria-label="Breadcrumb"><button data-href="${esc(page.crumb.href)}">${esc(page.crumb.label)}</button>${icon('chev', 'sm')}</nav>` : ''}
@@ -397,6 +400,16 @@ function tickTimes(root = document) {
   const now = Date.now() / 1000;
   root.querySelectorAll('.tick[data-since]').forEach((el) => {el.textContent = ranFor(now - Number(el.dataset.since));});
 }
+function stuckPage() {
+  const items = stuckItems(), projects = new Map();
+  for (const i of items) {
+    if (!projects.has(i.project)) projects.set(i.project, {name: i.project_name, items: []});
+    projects.get(i.project).items.push(i);
+  }
+  const body = [...projects.values()].map((p) => `<section class="group"><div class="group-head">${esc(p.name)}<span class="n">${p.items.length}</span></div>${p.items.map((i) => rowHTML(i, {stuck: true})).join('')}</section>`).join('');
+  return {title: 'Not acted on', desc: esc(items.length ? `${items.length} ${items.length === 1 ? 'decision' : 'decisions'} you made that no agent has acted on, oldest first` : ''),
+    body: body || '<div class="empty"><h3>Every decision has been acted on</h3><p>A decision lands here when its agent stops before acting on it, or does not hear it or close it within a day.</p></div>'};
+}
 function agentsPage() {
   const view = agentFolders(state.sessions, model.items), now = Date.now() / 1000;
   const row = (a) => `<a class="row agent-row" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" data-session="${esc(a.id)}">${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${esc(a.harness)} · ${agentMeta(a, now)}</span></span><span class="a-side">${agentSide(a)}</span></a>`;
@@ -453,8 +466,9 @@ function whereLabel(i) {
   const lone = i.workstream === OTHER && (projectOf(i.project)?.workstreams.length || 0) <= 1;
   return lone ? i.project_name : `${i.project_name} › ${i.workstream_name}`;
 }
-function metaHTML(i, {withLane = false, where = false, age = false, kind = false} = {}) {
+function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false} = {}) {
   const parts = [];
+  if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].join('<span class="sep">·</span>');
   if (age && i.delivery === 'failed') parts.push('<span class="overdue">Reply failed</span>');
   if (kind && i.kind === 'question') parts.push('Decision');
   if (kind && i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
@@ -467,7 +481,7 @@ function metaHTML(i, {withLane = false, where = false, age = false, kind = false
     if (i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
     if (i.minutes) parts.push(`${i.minutes} min`);
   } else if (i.lane === 'agents' && !withLane && !where) {
-    if (i.status === 'answered') parts.push(deliveryText(i));
+    if (i.status === 'answered') parts.push(isStuck(i) ? `<span class="overdue">${esc(followupShort(i))}</span>` : esc(followupShort(i)));
     else if (i.asking) parts.push('Answering your question');
     else parts.push(`<span class="dot ${agentState(i.session)}" title="${esc(i.session_name)} · ${ACTIVITY[agentState(i.session)]}"></span>${ago(i.updated || i.created)}`);
   } else if (i.lane === 'waiting') parts.push(`On ${esc(i.waiting_on || 'someone')}`);
@@ -486,7 +500,7 @@ function deliveryText(i) {
 // Item pane
 function laneLine(i) {
   if (i.lane === 'you') return [i.kind === 'question' ? 'Your decision' : i.kind === 'blocker' ? 'Blocking, needs you' : 'Your action', i.minutes ? `${i.minutes} min` : ''].filter(Boolean).join(' · ');
-  if (i.lane === 'agents') return i.status === 'answered' ? `${deliveryText(i)} · agent next` : i.asking ? 'Agent is answering your question' : 'With the agent';
+  if (i.lane === 'agents') return i.status === 'answered' ? followupShort(i) : i.asking ? 'Agent is answering your question' : 'With the agent';
   if (i.lane === 'waiting') return `Waiting on ${i.waiting_on || 'someone'}`;
   if (i.lane === 'later') return `Back on ${fmtDate(i.defer_until)}`;
   return `${i.skipped ? 'Skipped' : 'Done'} ${fmtDate(i.updated)}`;
@@ -579,6 +593,63 @@ function replyPlaceholder(i, draft, state) {
   if (optionsOf(i).length) return 'Or answer in your own words…';
   return i.owner === 'external' ? 'What came back?' : i.kind === 'todo' ? 'Tell the agent what you did…' : 'Reply to the agent…';
 }
+// A decision you replied to stays open until its agent hears it and closes it, so nothing
+// you decided is lost if the agent stops first. These say where one stands.
+const DAY = 86400;
+const dayWords = (seconds) => (seconds < 2 * DAY ? 'a day' : `${Math.floor(seconds / DAY)} days`);
+const settleLabel = (i) => (i.skipped || i.settle === 'skip' ? 'Skipped' : i.settle === 'done' ? 'Marked done' : '');
+const isStuck = (i) => i.status === 'answered' && Boolean(i.followup?.stuck);
+function stuckItems(items = model.items) {
+  return items.filter(isStuck).sort((a, b) => (a.followup.replied || 0) - (b.followup.replied || 0));
+}
+// Where a decided item stands, in a few words for rows and in a sentence for its page.
+function followupShort(i) {
+  const f = i.followup;
+  if (i.delivery === 'failed') return 'Reply failed';
+  if (!f) return deliveryText(i);
+  const stage = f.stuck ? 'Not acted on' : f.stage === 'acknowledged' ? 'Agent has it' : 'Not heard yet';
+  return settleLabel(i) ? `${settleLabel(i)} · ${stage}` : stage;
+}
+function followupLine(i, now = Date.now() / 1000) {
+  const f = i.followup;
+  if (!f) return '';
+  if (f.stuck === 'stopped') return 'The agent stopped before acting on it';
+  if (f.stuck === 'unheard') return `Not heard in ${dayWords(now - (f.replied || now))}`;
+  if (f.stuck === 'unclosed') return `Heard ${dayWords(now - (f.heard || now))} ago, never closed`;
+  if (f.stage === 'acknowledged') return i.settle ? 'The agent has it, closing' : 'The agent has it, not closed yet';
+  return 'Waiting for the agent to hear it';
+}
+const clockAt = (seconds) => (seconds ? (Date.now() / 1000 - seconds < DAY
+  ? new Date(seconds * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : fmtDate(seconds)) : '');
+// You decided, the agent heard, the agent closed: the handshake, with when each happened.
+function progressHTML(i) {
+  const f = i.followup, heard = f.stage === 'acknowledged';
+  const first = settleLabel(i) ? `You ${settleLabel(i).toLowerCase()} it` : 'You decided';
+  const steps = [[first, true, f.replied], ['Agent heard', heard, f.heard], [i.settle ? 'Closed once heard' : 'Agent closed', false, null]];
+  return `<ol class="handshake" aria-label="Progress">${steps.map(([label, done, at], n) => `<li class="${done ? 'done' : n === steps.findIndex((s) => !s[1]) ? 'now' : ''}"><span class="mark">${done ? icon('check', 'sm') : ''}</span><span class="h-label">${esc(label)}</span>${at ? `<span class="h-at">${esc(clockAt(at))}</span>` : ''}</li>`).join('')}</ol>`;
+}
+// The exact command to pick the conversation back up, where HQ knows enough to write it.
+const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+function resumeCommand(session) {
+  if (!session?.external_id) return '';
+  if (session.provider === 'claude-code') return `${session.cwd ? `cd ${shellQuote(session.cwd)} && ` : ''}claude --resume ${session.external_id}`;
+  if (session.provider === 'codex') return `codex resume ${session.external_id}`;
+  return '';
+}
+function decidedHTML(i, draft) {
+  const f = i.followup;
+  if (i.status !== 'answered' || !f) return '';
+  const stuck = Boolean(f.stuck), resume = resumeCommand(i.session);
+  const adopted = i.adopted_from ? `<p class="d-note">Taken over from ${esc(i.adopted_from.name || 'another conversation')}</p>` : '';
+  const offered = i.handoff ? `<p class="d-note">Offered to the next agent in ${esc(i.project_name)}</p>` : '';
+  const closing = openMove === 'close'
+    ? `<form class="close-form" id="close-form">${composeHTML({id: 'close-note', draft: 'closeNote', value: draft.closeNote || '', placeholder: 'Close it myself, with a note for the record (optional)', label: 'Note', send: 'Close it', ready: true, optional: true})}<p class="form-error" aria-live="polite"></p></form>`
+    : '';
+  const handoff = !i.handoff && i.project !== OTHER ? '<button type="button" class="ghost-pill" data-handoff>Give to another agent</button>' : '';
+  return `<div class="decided">${adopted}${offered}${progressHTML(i)}<p class="d-follow ${stuck ? 'stuck' : ''}">${esc(followupLine(i))}</p>
+    ${closing || `<div class="go-row"><button type="button" class="ghost-pill" data-close-self>Close it myself</button>${handoff}</div>`}
+    ${resume ? `<div class="resume"><div class="d-label">Resume the conversation</div><div class="copy-line"><span>${esc(resume)}</span><button class="pill ghost sm" data-copy-resume>${draft.copiedResume ? `${icon('check', 'sm')}Copied` : 'Copy'}</button></div></div>` : ''}</div>`;
+}
 function detailHTML(i) {
   const visible = visibleIds(), at = visible.indexOf(i.id);
   const p = projectOf(i.project);
@@ -613,7 +684,7 @@ function contextHTML(i) {
   const parts = [
     i.detail ? `<div class="d-text">${blocks(i.detail)}</div>` : '',
     i.unlocks ? `<div class="d-section"><div class="d-label">Unlocks</div>${blocks(i.unlocks)}</div>` : '',
-    i.agent_note ? `<div class="d-section"><div class="d-label">From the agent</div>${blocks(i.agent_note)}</div>` : '',
+    i.agent_note ? `<div class="d-section"><div class="d-label">${i.closed_by === 'you' ? 'Your note' : 'From the agent'}</div>${blocks(i.agent_note)}</div>` : '',
   ].join('');
   return `${parts || '<p class="d-quiet">No more context from the agent.</p>'}
     <dl class="from">
@@ -625,20 +696,26 @@ function contextHTML(i) {
     ${i.status !== 'done' && i.owner !== 'agent' && !i.asking ? '<button class="hard-to-read" data-hard>Hard to read? Send it back to the agent</button>' : ''}`;
 }
 // One composer everywhere: the reply, a note on an option, and a question.
-function composeHTML({id, draft, value, placeholder, label, send, ready}) {
-  return `<div class="compose"><div class="composer"><textarea id="${id}" data-draft="${draft}" rows="1" maxlength="20000" placeholder="${esc(placeholder)}" aria-label="${label}" enterkeyhint="send">${esc(value)}</textarea><button class="send" type="submit" aria-label="${send}" ${ready ? '' : 'disabled'}>${icon('send')}</button></div></div>`;
+function composeHTML({id, draft, value, placeholder, label, send, ready, optional = false}) {
+  return `<div class="compose"><div class="composer" ${optional ? 'data-optional' : ''}><textarea id="${id}" data-draft="${draft}" rows="1" maxlength="20000" placeholder="${esc(placeholder)}" aria-label="${label}" enterkeyhint="send">${esc(value)}</textarea><button class="send" type="submit" aria-label="${send}" ${ready ? '' : 'disabled'}>${icon('send')}</button></div></div>`;
 }
 const foldHTML = (name, open, inner) => `<div class="d-fold ${open ? 'open' : ''}" data-fold="${name}" ${open ? '' : 'inert'}><div class="d-fold-in">${inner}</div></div>`;
 function dockHTML(i, draft) {
-  const inner = `${sentHTML(i)}${answerHTML(i, draft)}${movesHTML(i)}`;
+  const inner = `${sentHTML(i)}${decidedHTML(i, draft)}${answerHTML(i, draft)}${movesHTML(i)}`;
   return inner.trim() ? `<div class="d-dock">${inner}</div>` : '';
 }
+// What you decided, and, once it is settled or has gone wrong, what became of it. While it
+// is on its way, the handshake below says where it stands.
 function sentHTML(i) {
-  const failed = i.delivery === 'failed';
+  const failed = i.delivery === 'failed', skipped = i.skipped || i.settle === 'skip';
+  const what = skipped ? 'You skipped this' : i.settle === 'done' ? 'You marked it done' : i.answer;
+  if (!what) return '';
   const retry = failed ? '<div class="go-row"><button class="go-wide" type="button" data-retry><span>Retry delivery</span></button></div>' : '';
-  if (i.skipped) return `<div class="win skipped ${failed ? 'failed' : ''}">${icon('x', 'sm')}<span><strong>You skipped this</strong> · ${esc(i.delivery === 'received' ? 'the agent knows to drop it' : failed ? `couldn't tell the agent${i.delivery_error ? `: ${i.delivery_error}` : ''}` : 'the agent will be told when it next checks in')}</span></div>${retry}`;
-  if (i.answer) return `<div class="win ${failed ? 'failed' : ''}">${icon(failed ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(failed ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${retry}`;
-  return '';
+  const status = failed ? `${skipped ? "couldn't tell the agent" : deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}`
+    : i.closed_by === 'you' ? (i.delivery === 'withdrawn' ? 'Withdrawn: you closed it' : 'You closed it')
+    : i.status !== 'done' ? ''
+    : skipped ? 'the agent knows to drop it' : i.settle === 'done' ? 'the agent knows' : deliveryText(i);
+  return `<div class="win ${skipped ? 'skipped' : ''} ${failed ? 'failed' : ''}">${icon(failed || skipped ? 'x' : 'check', 'sm')}<span><strong>${esc(what)}</strong>${status ? ` · ${esc(status)}` : ''}</span></div>${retry}`;
 }
 function answerHTML(i, draft) {
   if (i.status !== 'open' || i.owner === 'agent') return '';
@@ -678,7 +755,7 @@ function lookedRight(ticked, total, button = false) {
   return button ? `Looks right (${ticked} of ${total} ticked)` : `Looked right (${ticked} of ${total} ticked)`;
 }
 function movesHTML(i) {
-  if (i.status !== 'open') return i.status === 'answered' && i.delivery === 'received' && !i.asking ? '<div class="moves"><button class="pill outline sm" data-done>Mark done</button></div>' : '';
+  if (i.status !== 'open') return '';
   const draft = draftOf(i.id);
   const quiet = [];
   if (i.lane === 'later') quiet.push('<button class="link" data-forward>Bring back now</button>');
@@ -959,7 +1036,7 @@ function bindDetail(detail) {
     setDraft(id, {[key]: e.target.value});
     if (e.target.matches('.composer textarea')) {
       grow(e.target);
-      setSendable(e.target.closest('.composer').querySelector('.send'), Boolean(e.target.value.trim()));
+      if (!('optional' in e.target.closest('.composer').dataset)) setSendable(e.target.closest('.composer').querySelector('.send'), Boolean(e.target.value.trim()));
     }
     if (key === 'text') syncRespond(respond, item());
     if (key === 'owner') {
@@ -979,6 +1056,12 @@ function bindDetail(detail) {
       setDraft(id, {note: false});
       syncRespond(respond, item());
       detail.querySelector('[data-note]')?.focus();
+    } else if (e.key === 'Escape' && box.id === 'close-note' && !box.value.trim()) {
+      e.preventDefault();
+      e.stopPropagation();
+      openMove = null;
+      rerender();
+      detail.querySelector('[data-close-self]')?.focus();
     } else if (e.key === 'Escape' && respond?.dataset.state === 'off' && offEscape(item(), draftOf(id), box.value)) {
       e.preventDefault();
       e.stopPropagation();
@@ -1058,7 +1141,7 @@ function bindDetail(detail) {
   };
   detail.querySelectorAll('[data-done]').forEach((el) => (el.onclick = async () => {
     const next = nextVisible(id);
-    if (await act(api(`items/${id}/resolve`, {}), 'Marked done')) moveOn(next, false);
+    if (await act(api(`items/${id}/done`, {}), 'Marked done · tells the agent')) moveOn(next, false);
   }));
   const pin = detail.querySelector('[data-pin]');
   if (pin) pin.onclick = () => update(id, {pinned: !item().pinned}, item().pinned ? 'Unpinned' : 'Pinned');
@@ -1085,11 +1168,32 @@ function bindDetail(detail) {
   if (skip) skip.onsubmit = async (e) => {
     e.preventDefault();
     const next = nextVisible(id);
-    if (await act(api(`items/${id}/skip`, {reason: new FormData(skip).get('reason') || ''}), 'Skipped. The agent will be told to drop it', $('#move-error'))) {
+    if (await act(api(`items/${id}/skip`, {reason: new FormData(skip).get('reason') || ''}), 'Skipped · tells the agent', $('#move-error'))) {
       openMove = null;
       setDraft(id, {skip: undefined});
       moveOn(next, false);
     }
+  };
+  const closeSelf = detail.querySelector('[data-close-self]');
+  if (closeSelf) closeSelf.onclick = () => {openMove = 'close'; rerender(); detail.querySelector('#close-note')?.focus();};
+  const closing = detail.querySelector('#close-form');
+  if (closing) closing.onsubmit = async (e) => {
+    e.preventDefault();
+    const next = nextVisible(id), note = closing.querySelector('textarea').value.trim();
+    if (await act(api(`items/${id}/close`, {note}), 'Closed it yourself', closing.querySelector('.form-error'))) {
+      openMove = null;
+      setDraft(id, {closeNote: undefined});
+      if (route.item === id) rerender();
+      moveOn(next, false);
+    }
+  };
+  const handoff = detail.querySelector('[data-handoff]');
+  if (handoff) handoff.onclick = () => act(api(`items/${id}/handoff`, {}), `Offered to the next agent in ${item().project_name}`);
+  const resume = detail.querySelector('[data-copy-resume]');
+  if (resume) resume.onclick = async () => {
+    try {await navigator.clipboard.writeText(resumeCommand(item().session));} catch {return toast('Copy unavailable; select the text instead');}
+    setDraft(id, {copiedResume: true});
+    rerender();
   };
   const retry = detail.querySelector('[data-retry]');
   if (retry) retry.onclick = () => act(api(`items/${id}/retry`, {}), 'Queued again');

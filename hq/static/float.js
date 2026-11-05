@@ -44,7 +44,7 @@ const PANEL_KEYS = {
   open: {name: 'Open', key: 'ArrowRight'},
   back: {name: 'Back', key: 'ArrowLeft'},
 };
-const NOTIFY = {items: 'Items added or removed', agents: 'Agents starting or stopping', usage: 'Usage running low'};
+const NOTIFY = {items: 'Items added or removed', agents: 'Agents starting or stopping', usage: 'Usage running low', stuck: 'Decisions an agent did not act on'};
 const USAGE_LOW = 10, USAGE_STALE = 3600;
 ICONS.more = '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>';
 
@@ -78,6 +78,10 @@ const METRICS = {
     const n = model.agents.filter((a) => agentState(a) === 'active').length;
     return {value: n, live: n > 0, tag: plural(n, 'agent running', 'agents running')};
   }},
+  stuck: {name: 'Decisions not acted on', read: () => {
+    const n = stuckItems().length;
+    return {value: n, tag: n ? stuckWords(n) : 'Every decision acted on'};
+  }},
   claude: {name: 'Claude usage left', read: () => readUsage('claude', 'Claude')},
   codex: {name: 'Codex usage left', read: () => readUsage('codex', 'Codex')},
 };
@@ -106,7 +110,7 @@ let swallowClick = false, customizing = false, hovering = false, circles = [...D
 let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
 let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
-let lastItems = null, lastUsage = null, pending = [], notice = null;
+let lastItems = null, lastUsage = null, lastStuck = null, pending = [], notice = null;
 let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null;
 const agentMemory = new Map();
 
@@ -193,7 +197,8 @@ function describeAdded(i) {
   return {group: 'items', metric: 'needs', delta: 1, plural: 'new items', item: i.id, title: i.title, sub: `${kind[0]} · ${i.project_name}`};
 }
 function describeRemoved(i, latest) {
-  const why = !latest || latest.status === 'done' ? (latest?.skipped ? 'Skipped' : 'Done')
+  const why = latest && settleLabel(latest) ? settleLabel(latest)
+    : !latest || latest.status === 'done' ? 'Done'
     : latest.status === 'answered' ? 'Reply saved'
     : latest.lane === 'later' ? 'Snoozed'
     : latest.asking ? 'Asked the agent'
@@ -251,7 +256,6 @@ function coalesce(events) {
   return {group: events[0].group, metric: events[0].metric, delta, title: `${events.length} updates`,
     sub: [...counts].map(([label, n]) => `${n} ${n === 1 ? label.replace(/ies(?= |$)/, 'y').replace(/s(?= |$)/, '') : label}`).join(' · ')};
 }
-// A real spring, sampled into CSS linear() so the compositor runs it.
 // A spring sampled into CSS linear(), so it runs on the compositor. The tolerance says how
 // close counts as there: a looser one ends the curve before a long, invisible tail.
 function springSamples({stiffness, damping, tolerance = 0.002}) {
@@ -439,9 +443,26 @@ function panelKeysHTML() {
 function floatListHTML(items, live = liveHealthy) {
   const head = `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header>`;
   const rows = items.map((i) => rowHTML(i, {where: true, age: true, kind: true})).join('');
-  return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows || `<div class="f-empty">${EMPTY.you[0]}</div>`}</div></div>`;
+  const stuck = stuckItems().length;
+  const quiet = stuck ? `<button class="f-quiet f-stuck" type="button" data-view="stuck">${stuckWords(stuck)}</button>` : '';
+  return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows || `<div class="f-empty">${EMPTY.you[0]}</div>`}${quiet}</div></div>`;
 }
 
+// Decisions an agent has not acted on, oldest first: a quiet view under Needs you.
+function stuckPanelHTML(live = liveHealthy) {
+  const items = stuckItems();
+  const rows = items.map((i) => rowHTML(i, {stuck: true})).join('');
+  return `<header class="f-head"><button class="f-return" type="button" data-view="needs">${icon('back', 'sm')}Needs you</button><span class="f-title">Not acted on</span>${offlineNote(live)}${moreButton}</header>
+    <div class="f-rows scroll"><div class="f-rows-in">${rows || '<div class="f-empty">Every decision has been acted on</div>'}</div></div>`;
+}
+const stuckWords = (n) => `${n} ${n === 1 ? 'decision' : 'decisions'} not acted on`;
+// A decision turning stuck is news once, when it turns.
+function stuckChanges(before, after) {
+  const was = new Set(before.map((i) => i.id));
+  return after.filter((i) => !was.has(i.id)).map((i) => ({group: 'stuck', metric: 'stuck', delta: 1, plural: 'decisions not acted on', item: i.id,
+    title: `${{stopped: 'An agent stopped before acting on', unheard: 'Not heard in a day', unclosed: 'Heard but never closed'}[i.followup.stuck] || 'Not acted on'}: ${i.title}`,
+    sub: i.project_name, dot: 'bad'}));
+}
 // The two lists share one header: Needs you, and Agents beside it.
 function listTabs(items) {
   const running = model.agents.filter((a) => agentState(a) === 'active').length;
@@ -509,6 +530,7 @@ function backToList() {
     cursor = agentOpen;
     return showList('agents');
   }
+  if (listView === 'stuck') return showList('needs');
 }
 function panelKey(e) {
   if (!floatOpen || customizing || drag || recording || recordingPanel || e.defaultPrevented) return;
@@ -528,7 +550,7 @@ function panelKey(e) {
     else return;
   } else if (action === 'previous' || action === 'next') moveCursor(action === 'next' ? 1 : -1);
   else if (action === 'open') openCursor();
-  else if (action === 'back' && agentOpen) backToList();
+  else if (action === 'back' && (agentOpen || listView === 'stuck')) backToList();
   else return;
   e.preventDefault();
   e.stopImmediatePropagation();
@@ -553,7 +575,7 @@ function recordPanelKey(e) {
 }
 // Moving between lists slides the way the header reads: Agents and an agent's page sit to the right.
 function showList(view, agent = null) {
-  const depth = (v, a) => (v === 'needs' ? 0 : a ? 2 : 1);
+  const depth = (v, a) => (v === 'needs' ? 0 : a ? 2 : 1);  // Not acted on and Agents both sit one step in
   const from = depth(listView, agentOpen), to = depth(view, agent);
   listMotion = to > from ? 'push' : to < from ? 'pop' : null;
   if (view === 'agents' && listView !== 'agents') agentsAll = false;
@@ -601,7 +623,7 @@ function paintFloat({background = false} = {}) {
   pill.setAttribute('aria-label', pillLabel(items, live));
   pill.title = 'Click to open. Drag to move. Right-click for more.';
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
-  setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : floatListHTML(items, live));
+  setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
   if (mode === 'list') {markCursor(); slideList(listMotion); glideAgents(tops);}
   listMotion = null;
   const detail = $('#detail'), active = document.activeElement;
@@ -624,8 +646,11 @@ function noteChanges(items) {
   if (!snapshotSignature) return;
   if (lastItems) enqueue(itemChanges(lastItems, items, model.items));
   if (lastUsage) enqueue(usageChanges(lastUsage, state.usage));
+  const stuck = stuckItems();
+  if (lastStuck) enqueue(stuckChanges(lastStuck, stuck));
   lastItems = items;
   lastUsage = state.usage;
+  lastStuck = stuck;
 }
 function watchAgents() {
   if (!liveHealthy || !model) return;
@@ -1272,7 +1297,7 @@ function bootFloat() {
       // notice, opens Agents. Clicking the list that is already open closes it.
       const item = notice?.item, rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
       const metric = e.target.closest('[data-metric]')?.dataset.metric || (spot.on ? rows[spot.index]?.dataset.metric : null);
-      const target = notice?.group === 'agents' || (!notice && metric === 'agents') ? 'agents' : 'needs';
+      const target = notice?.group === 'agents' || (!notice && metric === 'agents') ? 'agents' : !notice && metric === 'stuck' ? 'stuck' : 'needs';
       if (floatOpen && target === listView && !agentOpen) return setOpen(false);
       if (floatOpen) return showList(target);
       listView = target;
@@ -1280,6 +1305,7 @@ function bootFloat() {
       agentsAll = false;
       setOpen(true);
       if (target === 'needs' && item && model.items.some((i) => i.id === item)) openItem(item);
+      // An item that is no longer in Needs you, such as a stuck decision, still opens.
     } else if (e.target.closest('[data-more]')) native({type: 'menu'});
     else if (toggle) {
       notify = {...notify, [toggle.dataset.notify]: !notify[toggle.dataset.notify]};
@@ -1310,7 +1336,7 @@ function bootFloat() {
     if (e.key !== 'Escape') return;
     if (drag) cancelDrag();
     else if (customizing) {customizing = false; render();}
-    else if (floatOpen && !route.item && agentOpen) backToList();
+    else if (floatOpen && !route.item && (agentOpen || listView === 'stuck')) backToList();
     else if (floatOpen && !route.item) setOpen(false);
     else return;
     e.stopImmediatePropagation();

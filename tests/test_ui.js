@@ -724,7 +724,7 @@ assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle.label, '⌃⌥H'); // a b
 assert.ok(!('gone' in shortcut({gone: mine})));
 assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: ${JSON.stringify(mine)}, next: null}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
 assert.equal(new Set(Object.values(shortcut()).filter(Boolean).map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
-assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {items: true, agents: false, usage: true});
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {stuck: true, items: true, agents: false, usage: true});
 html = run('shortcutsHTML()');
 assert.ok(html.includes('Open or minimize Needs you') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
 run("recording = 'toggle'; refused = ['next']");
@@ -778,5 +778,81 @@ for (const name of ['wide', 'loud', 'live', 'low', 'none', 'gauge', 'stale', 'di
 // The panel's window covers the whole display, so its rows stay narrow without a width query.
 const panelCss = fs.readFileSync('hq/static/float.css', 'utf8');
 assert.ok(/:where\(html\.float\) \.row \{[^}]*flex-direction: column/.test(panelCss));
+
+// A decision you replied to is not done until its agent hears it and acts.
+const day = 86400, follow = (stage, extra = {}) => ({stage, stuck: null, adoptable: false, replied: now - 600, heard: stage === 'acknowledged' ? now - 300 : null, ...extra});
+const decided = (fields) => item({status: 'answered', bucket: 'pending', kind: 'question', answer: 'Annual', delivery: 'sent', session_id: 'claude:r', ...fields});
+context.queue = {instance: 'server-follow', revision: 1, sessions: [
+  {id: 'claude:r', name: 'Pricing chat', provider: 'claude-code', external_id: 'abc-123', cwd: "/Users/someone/it's here", activity: {state: 'offline'}},
+  {id: 'codex:r', name: 'Codex chat', provider: 'codex', external_id: 'thread-9', cwd: '/x', activity: {state: 'idle'}},
+  {id: 'other:r', name: 'Desktop chat', provider: 'claude-desktop', activity: {state: 'unknown'}}], items: [
+  decided({id: 'f1', title: 'Pick the plan', followup: follow('delivering')}),
+  decided({id: 'f2', title: 'Pick the name', delivery: 'received', followup: follow('acknowledged')}),
+  decided({id: 'f3', title: 'Stopped one', project: 'hq', project_name: 'HQ', followup: follow('delivering', {stuck: 'stopped', replied: now - 2 * day})}),
+  decided({id: 'f4', title: 'Unheard one', session_id: 'codex:r', followup: follow('delivering', {stuck: 'unheard', replied: now - 3 * day})}),
+  decided({id: 'f5', title: 'Unclosed one', session_id: 'other:r', delivery: 'received', followup: follow('acknowledged', {stuck: 'unclosed', replied: now - 9 * day, heard: now - 8 * day})}),
+  decided({id: 'f6', title: 'Skipped one', skipped: true, settle: 'skip', answer: 'Skipped: Dhruv decided not to do this.', followup: follow('delivering')}),
+  decided({id: 'f7', title: 'Handed off', handoff: true, followup: follow('delivering', {adoptable: true})}),
+  decided({id: 'f8', title: 'Adopted', adopted_from: {session_id: 'claude:old', name: 'Old <chat>', at: now - 60}, delivery: 'received', followup: follow('acknowledged')}),
+  item({id: 'f9', title: 'Closed by me', status: 'done', bucket: 'done', answer: 'Annual', delivery: 'withdrawn', closed_by: 'you', agent_note: 'Did it by hand'}),
+  decided({id: 'f10', title: 'Marked done', settle: 'done', answer: 'Done: The user marked this done.', followup: follow('delivering')}),
+]};
+run('applyState(queue); model = derive()');
+const decidedPane = (id) => run(`detailHTML(model.items.find((i) => i.id === '${id}'))`);
+// Nothing reads a skip, a done or an answer as finished: they wait with the agent.
+for (const id of ['f1', 'f6', 'f10']) assert.equal(run(`model.items.find((i) => i.id === '${id}').lane`), 'agents', id);
+assert.ok(!run('attention().map((i) => i.id)').includes('f6')); // nor do they need you again
+html = decidedPane('f1');
+assert.ok(html.includes('<li class="done"><span class="mark">') && html.includes('You decided') && html.includes('<li class="now"><span class="mark"></span><span class="h-label">Agent heard'));
+assert.ok(html.includes('Waiting for the agent to hear it') && html.includes('data-close-self>Close it myself') && html.includes('data-handoff>Give to another agent'));
+assert.ok(html.includes("cd &#39;/Users/someone/it&#39;\\&#39;&#39;s here&#39; &amp;&amp; claude --resume abc-123")); // quoted for the shell
+assert.ok(!html.includes('data-done')); // Mark done is gone; Close it myself takes its place
+assert.ok(decidedPane('f2').includes('The agent has it, not closed yet') && decidedPane('f2').includes('<li class="done"><span class="mark"><svg'));
+assert.ok(decidedPane('f3').includes('<p class="d-follow stuck">The agent stopped before acting on it</p>'));
+assert.ok(decidedPane('f4').includes('Not heard in 3 days') && decidedPane('f4').includes('codex resume thread-9'));
+assert.ok(decidedPane('f5').includes('Heard 8 days ago, never closed') && !decidedPane('f5').includes('Resume the conversation')); // no command we can vouch for
+assert.ok(decidedPane('f6').includes('<strong>You skipped this</strong></span>') && decidedPane('f6').includes('You skipped it'));
+assert.ok(decidedPane('f10').includes('You marked it done') && !decidedPane('f10').includes('Done: The user'));
+assert.ok(decidedPane('f7').includes('Offered to the next agent in NoClick') && !decidedPane('f7').includes('data-handoff'));
+assert.ok(decidedPane('f8').includes('Taken over from Old &lt;chat&gt;'));
+html = decidedPane('f9');
+assert.ok(html.includes('Withdrawn: you closed it') && !html.includes('class="decided"'));
+run("setDraft('f9', {tab: 'context'})");
+assert.ok(decidedPane('f9').includes('Your note') && !decidedPane('f9').includes('From the agent'));
+run("openMove = 'close'");
+html = decidedPane('f1');
+assert.ok(html.includes('id="close-form"') && html.includes('data-optional') && html.includes('placeholder="Close it myself, with a note for the record (optional)"'));
+run('openMove = null');
+// Rows say where a decision stands.
+assert.equal(run("followupShort(model.items.find((i) => i.id === 'f6'))"), 'Skipped · Not heard yet');
+assert.equal(run("followupShort(model.items.find((i) => i.id === 'f2'))"), 'Agent has it');
+assert.equal(run("followupShort(model.items.find((i) => i.id === 'f3'))"), 'Not acted on');
+assert.ok(run("metaHTML(model.items.find((i) => i.id === 'f3'))").includes('<span class="overdue">Not acted on</span>'));
+assert.equal(run("dayWords(86400 + 5)"), 'a day');
+assert.equal(run("resumeCommand({provider: 'claude-code', external_id: 'u1'})"), 'claude --resume u1');
+assert.equal(run("resumeCommand({provider: 'claude-desktop', external_id: 'u1'})"), '');
+// Not acted on: every stuck decision, oldest first, by project.
+assert.deepEqual(Array.from(run('stuckItems().map((i) => i.id)')), ['f5', 'f4', 'f3']);
+run("route = parseRoute('#/stuck')");
+assert.equal(run('route.page'), 'stuck');
+assert.equal(run("href({page: 'stuck'})"), '#/stuck');
+const stuckPageHTML = run('stuckPage().body');
+assert.ok(stuckPageHTML.indexOf('NoClick') < stuckPageHTML.indexOf('>HQ<') && stuckPageHTML.includes('Heard 8 days ago, never closed'));
+assert.ok(run('sidebarHTML()').includes('Not acted on</span><span class="sb-count stuck">3</span>'));
+run("route = parseRoute('#/')");
+// The panel: a quiet line under Needs you opens the same list.
+html = run('floatListHTML(attention(), true)');
+assert.ok(html.includes('data-view="stuck">3 decisions not acted on</button>'));
+assert.ok(run('stuckPanelHTML(true)').includes('data-item="f5"') && run('stuckPanelHTML(true)').includes('data-view="needs"'));
+// The pill can show it, off by default, and says when a decision turns stuck.
+assert.ok(!run('DEFAULT_CIRCLES').includes('stuck'));
+assert.equal(run('METRICS.stuck.read([]).value'), 3);
+assert.ok(run('settingsHTML(attention())').includes('data-circle="stuck"'));
+const turned = JSON.parse(run("JSON.stringify(stuckChanges([model.items.find((i) => i.id === 'f5')], stuckItems()))"));
+assert.deepEqual(turned.map((e) => [e.item, e.group, e.title]), [['f4', 'stuck', 'Not heard in a day: Unheard one'], ['f3', 'stuck', 'An agent stopped before acting on: Stopped one']]);
+assert.equal(run("cleanNotify({}).stuck"), true);
+assert.ok(run("describeRemoved({title: 'x', project_name: 'P'}, model.items.find((i) => i.id === 'f6'))").sub.startsWith('Skipped'));
+// Skip and Mark done say they still have to reach the agent.
+assert.ok(source.includes("'Skipped · tells the agent'") && source.includes("'Marked done · tells the agent'") && source.includes('items/${id}/done'));
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');
