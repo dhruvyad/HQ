@@ -267,6 +267,15 @@ class Store:
                                    if observation else {"state": "unknown", "source": None, "since": None})
             session["last_active"] = last_active.get(session["id"])
 
+    def agent_activity(self, now=None):
+        """For each kind of agent: whether one is running now, and when one last ran."""
+        now = now or time.time()
+        with self.db() as db:
+            rows = db.execute("""SELECT s.provider,MAX(a.last_active) AS last,
+                MAX(CASE WHEN a.state='active' AND a.expires>? THEN 1 ELSE 0 END) AS running
+                FROM activity a JOIN sessions s ON s.id=a.session_id GROUP BY s.provider""", (now,))
+            return {r["provider"]: {"last": r["last"], "running": bool(r["running"])} for r in rows}
+
     def claim_hook_messages(self, session_id, limit=4):
         """Queue context once; only an agent acknowledgement establishes receipt."""
         with self.db() as db:

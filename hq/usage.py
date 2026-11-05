@@ -12,6 +12,7 @@ an estimate.
 """
 import json
 import math
+import random
 import os
 from pathlib import Path
 import shutil
@@ -28,12 +29,20 @@ import urllib.request
 from .adapters import CodexClient
 from .store import data_dir
 
-CODEX_POLL = 60
-# The usage endpoint rate-limits hard, and these windows move slowly: ask every 5 minutes,
-# and after a refusal wait as long as it says, or back off from 10 minutes up to an hour.
-CLAUDE_POLL = 300
+# Usage moves only while you use an agent, so ask often while one is at work and rarely
+# otherwise, at random within each range so nothing ever asks in lockstep. Claude's usage
+# endpoint rate-limits hard: after a refusal, wait as long as it says, or back off from
+# 10 minutes up to an hour.
+CLAUDE_BUSY = (240, 480)
+CODEX_BUSY = (60, 120)
+IDLE = (1800, 3600)
+IDLE_AFTER = 600       # an agent that ran in the last 10 minutes still counts as busy
+SOON = (20, 60)        # when an agent starts again, check this soon
+SPACING = 120          # but never two requests closer together than this
+CLAUDE_POLL, CODEX_POLL = CLAUDE_BUSY[1], CODEX_BUSY[1]
 CLAUDE_RETRY = 600
 CLAUDE_BACKOFF_MOST = 3600
+CLAUDE_AGENTS, CODEX_AGENTS = {"claude-code", "claude-desktop"}, {"codex"}
 CLAUDE_LOGIN_ITEM = "Claude Code-credentials"
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_RETRY = 600  # A failed read is usually a missing login, which a minute will not fix.
@@ -385,8 +394,12 @@ class SampleUsage:
 
 
 class UsageWorker:
-    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic, login=None, cache=None, now=time.time):
+    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic, login=None, cache=None, now=time.time,
+                 activity=None, rand=random.uniform):
         self.usage, self.claude, self.codex, self.clock = usage, claude, codex, clock
+        self.activity, self.rand, self.now = activity, rand, now
+        self.busy_before = {"claude": True, "codex": True}
+        self.asked = {"claude": -math.inf, "codex": -math.inf}
         self.login = login or ClaudeLogin()
         self.stop = threading.Event()
         self.next_codex = self.next_login = -math.inf
@@ -416,30 +429,54 @@ class UsageWorker:
         except OSError:
             pass
 
+    def busy(self, agents):
+        """Whether one of these agents is at work, or was in the last few minutes."""
+        if self.activity is None:
+            return True
+        try:
+            seen, now = self.activity(), self.now()
+        except Exception:
+            return True
+        return any(state["running"] or (state["last"] and now - state["last"] < IDLE_AFTER)
+                   for provider, state in seen.items() if provider in agents)
+
+    def woke(self, tool, busy, due):
+        """An agent at work again after a quiet spell: check soon, not at the idle time."""
+        before, self.busy_before[tool] = self.busy_before[tool], busy
+        if busy and not before:
+            return min(due, max(self.clock() + self.rand(*SOON), self.asked[tool] + SPACING))
+        return due
+
     def step(self):
+        claude_busy, codex_busy = self.busy(CLAUDE_AGENTS), self.busy(CODEX_AGENTS)
+        if self.backoff == CLAUDE_RETRY:  # never cut a rate-limit wait short
+            self.next_login = self.woke("claude", claude_busy, self.next_login)
+        self.next_codex = self.woke("codex", codex_busy, self.next_codex)
         if self.usage.is_watched() and self.clock() >= self.next_login:
+            self.asked["claude"] = self.clock()
             value = self.login.read()
             if value:
                 self.from_login, self.backoff = value, CLAUDE_RETRY
                 self.keep(value)
-                delay = CLAUDE_POLL
+                delay = self.rand(*(CLAUDE_BUSY if claude_busy else IDLE))
             else:
                 # A refusal keeps the last number; its as_of says how old it is.
                 self.from_login = self.from_login if self.login.enabled() else None
                 hint = getattr(self.login, "retry_after", None)
-                delay = max(hint if isinstance(hint, (int, float)) else 0, self.backoff)
+                delay = max(hint if isinstance(hint, (int, float)) else 0, self.backoff) * self.rand(1, 1.25)
                 self.backoff = min(self.backoff * 2, CLAUDE_BACKOFF_MOST)
             self.next_login = self.clock() + delay
         # The login, when it is on and answering; otherwise whatever the status line recorded.
         self.usage.record("claude", self.from_login or self.claude())
         if not self.usage.is_watched() or self.clock() < self.next_codex:
             return
+        self.asked["codex"] = self.clock()
         value = self.codex()
         # A failed read keeps the last number: its as_of says how old it is, and fresh()
         # retires it. Offline for a minute should not blank the circle.
         if value:
             self.usage.record("codex", value)
-        self.next_codex = self.clock() + (CODEX_POLL if value else CODEX_RETRY)
+        self.next_codex = self.clock() + (self.rand(*(CODEX_BUSY if codex_busy else IDLE)) if value else CODEX_RETRY * self.rand(1, 1.25))
 
     def run(self):
         delay = 1  # Not during startup, and never for a server already on its way out.

@@ -240,7 +240,7 @@ def serve(port=4310):
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
         workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3),
-                                         (UsageWorker(server.usage, cache=home / "claude-usage.json"), 3)]
+                                         (UsageWorker(server.usage, cache=home / "claude-usage.json", activity=server.store.agent_activity), 3)]
         threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
         for thread in threads:
             thread.start()

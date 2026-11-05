@@ -308,7 +308,7 @@ class WorkerTests(unittest.TestCase):
         self.now = 1000.0
         self.claude = Mock(return_value=None)
         self.codex = Mock(return_value={"windows": [{"name": "weekly", "left": 40, "resets_at": None}], "as_of": int(time.time())})
-        self.worker = usage.UsageWorker(self.usage, self.claude, self.codex, clock=lambda: self.now)
+        self.worker = usage.UsageWorker(self.usage, self.claude, self.codex, clock=lambda: self.now, rand=lambda low, high: low)
 
     def test_nothing_starts_codex_while_nobody_is_looking(self):
         self.worker.step()
@@ -682,7 +682,8 @@ class ClaudeLoginTests(unittest.TestCase):
         login.enabled.return_value = True
         login.read.return_value = {"windows": [{"name": "weekly", "left": 80, "resets_at": None}], "as_of": int(time.time())}
         line = {"windows": [{"name": "5-hour", "left": 40, "resets_at": None}], "as_of": int(time.time())}
-        worker = usage.UsageWorker(recorded, claude=lambda: line, codex=lambda: None, login=login, clock=lambda: self.clock)
+        worker = usage.UsageWorker(recorded, claude=lambda: line, codex=lambda: None, login=login, clock=lambda: self.clock,
+                                   rand=lambda low, high: low)
         worker.step()
         self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 80)
         login.read.return_value = None
@@ -705,7 +706,7 @@ class ClaudeLoginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             cache = Path(folder) / "claude-usage.json"
             worker = usage.UsageWorker(recorded, claude=lambda: None, codex=lambda: None, login=login,
-                                       clock=lambda: self.clock, cache=cache)
+                                       clock=lambda: self.clock, cache=cache, rand=lambda low, high: low)
             worker.step()
             self.assertEqual(stat.S_IMODE(cache.stat().st_mode), 0o600)
             # Refused: keep the number, and wait longer each time, or as long as the endpoint says.
@@ -732,6 +733,53 @@ class ClaudeLoginTests(unittest.TestCase):
             off = usage.Usage()
             usage.UsageWorker(off, claude=lambda: None, codex=lambda: None, login=login, clock=lambda: self.clock, cache=cache).step()
             self.assertIsNone(off.current()["claude"])
+
+    def test_it_asks_at_random_while_agents_work_and_rarely_when_they_rest(self):
+        recorded = usage.Usage()
+        recorded.watched()
+        login = Mock()
+        login.enabled.return_value = True
+        login.retry_after = None
+        login.read.return_value = {"windows": [{"name": "weekly", "left": 50, "resets_at": None}], "as_of": int(time.time())}
+        codex = Mock(return_value={"windows": [{"name": "weekly", "left": 70, "resets_at": None}], "as_of": int(time.time())})
+        seen = {"claude-code": {"running": True, "last": time.time()}}
+        picks = []
+        def rand(low, high):
+            picks.append((low, high))
+            return (low + high) / 2
+        worker = usage.UsageWorker(recorded, claude=lambda: None, codex=codex, login=login, clock=lambda: self.clock,
+                                   activity=lambda: seen, rand=rand)
+        worker.step()
+        self.assertIn(usage.CLAUDE_BUSY, picks)  # Claude at work: 4 to 8 minutes
+        self.assertIn(usage.IDLE, picks)  # no Codex agent: 30 to 60 minutes
+        self.assertTrue(240 <= worker.next_login - self.clock <= 480)
+        # Everything rests: the next Claude question waits the idle time.
+        seen["claude-code"] = {"running": False, "last": time.time() - 3600}
+        self.clock = worker.next_login
+        worker.step()
+        self.assertTrue(1800 <= worker.next_login - self.clock <= 3600)
+        # An agent starts again: ask soon, though not within 2 minutes of the last question.
+        seen["claude-code"] = {"running": True, "last": time.time()}
+        self.clock += 30
+        worker.step()
+        self.assertEqual(worker.next_login, worker.asked["claude"] + usage.SPACING)
+        self.clock += 200
+        calls = login.read.call_count
+        worker.step()
+        self.assertEqual(login.read.call_count, calls + 1)
+
+    def test_the_store_says_which_kinds_of_agent_are_at_work(self):
+        from hq.store import Store
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / "hq.sqlite3")
+            store.register("claude-code:a", "A", "claude-code")
+            store.register("codex:b", "B", "codex")
+            store.observe_activity("claude-code:a", "active", "claude-live", lease=60)
+            store.observe_activity("codex:b", "idle", "codex-runtime", lease=60)
+            seen = store.agent_activity()
+            self.assertTrue(seen["claude-code"]["running"])
+            self.assertFalse(seen["codex"]["running"])
+            self.assertIsNotNone(seen["claude-code"]["last"])
 
     def test_a_429_says_how_long_to_wait(self):
         error = urllib.error.HTTPError(usage.CLAUDE_USAGE_URL, 429, "Too Many Requests", {"Retry-After": "900"}, io.BytesIO(b"{}"))
