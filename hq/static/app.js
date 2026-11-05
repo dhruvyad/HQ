@@ -175,14 +175,14 @@ function scopeItems(r = route) {
   return model.items;
 }
 const newest = (lane) => sortMode === 'new' && lane !== 'done';
+const leadOf = (i) => (i.pinned ? 0 : dueSoon(i) ? 1 : 2);
 function sortLane(items, lane) {
   if (newest(lane)) return [...items].sort((a, b) => b.created - a.created);
   const by = {
     you: (a, b) => rankOf(a) - rankOf(b) || b.created - a.created,
     later: (a, b) => a.defer_until.localeCompare(b.defer_until),
   }[lane] || ((a, b) => (b.updated || b.created) - (a.updated || a.created));
-  const lead = (i) => (i.pinned ? 0 : dueSoon(i) ? 1 : 2);
-  return [...items].sort((a, b) => lead(a) - lead(b) || (lead(a) === 1 ? a.due.localeCompare(b.due) : 0) || by(a, b));
+  return [...items].sort((a, b) => leadOf(a) - leadOf(b) || (leadOf(a) === 1 ? a.due.localeCompare(b.due) : 0) || by(a, b));
 }
 // Pinned and due-soon items lead every list; the rest group by workstream.
 function groups(items, level, {lead = true} = {}) {
@@ -212,8 +212,10 @@ function agentsOn(items) {
   return model.agents.filter((a) => ids.has(a.id));
 }
 
-// Render
-function render({background = false} = {}) {
+// Render. The floating panel (float.js) paints its own surface over the same state.
+let paint = paintDashboard;
+function render(options) {paint(options);}
+function paintDashboard({background = false} = {}) {
   model = derive();
   // A deep link waits for the first snapshot before giving up on its item.
   if (snapshotSignature && route.item && !model.items.some((i) => i.id === route.item)) route.item = null;
@@ -393,8 +395,11 @@ function whereLabel(i) {
   const lone = i.workstream === OTHER && (projectOf(i.project)?.workstreams.length || 0) <= 1;
   return lone ? i.project_name : `${i.project_name} › ${i.workstream_name}`;
 }
-function metaHTML(i, {withLane = false, where = false, age = false} = {}) {
+function metaHTML(i, {withLane = false, where = false, age = false, kind = false} = {}) {
   const parts = [];
+  if (age && i.delivery === 'failed') parts.push('<span class="overdue">Reply failed</span>');
+  if (kind && i.kind === 'question') parts.push('Decision');
+  if (kind && i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
   if (i.due && i.lane !== 'done') parts.push(`<span class="${daysUntil(i.due) < 0 ? 'overdue' : 'due'}">${dueLabel(i)}</span>`);
   if (withLane) parts.push(LANES.find(([id]) => id === i.lane)[1]);
   if (where) parts.push(esc(whereLabel(i)));
@@ -544,6 +549,10 @@ function askHTML(i, draft) {
     ${open ? `${thread ? `<div class="thread">${thread}</div>` : ''}${i.status !== 'done' ? `<form id="ask-form" class="composer"><textarea id="question" data-draft="question" rows="1" maxlength="20000" placeholder="Ask about this item…" aria-label="Question">${esc(draft.question || '')}</textarea><div class="composer-foot"><small>Kept here until the agent replies</small><button class="send" type="submit" aria-label="Ask">${icon('send', 'sm')}</button></div></form><p class="form-error" aria-live="polite"></p>` : ''}` : ''}</div>`;
 }
 function visibleIds() {return [...document.querySelectorAll('#main [data-item]')].map((el) => el.dataset.item);}
+const nextVisible = (id) => {const ids = visibleIds(); return ids[ids.indexOf(id) + 1] || null;};
+// After you act on an item. The dashboard keeps a reply on screen to show its
+// delivery; the floating panel replaces this to move on to the next one.
+let moveOn = (next, replied) => {if (!replied) go({item: next});};
 function openItem(id) {
   openMove = null;
   if (!seen.has(id)) {
@@ -771,19 +780,24 @@ function bindDetail(detail) {
     e.preventDefault();
     const d = draftOf(id), text = [d.choice, reply.value.trim()].filter(Boolean).join(' — ');
     if (!text) return;
-    if (await act(api(`items/${id}/reply`, {text}), 'Sent to the agent', respond.querySelector('.form-error'))) {
+    const next = nextVisible(id);
+    if (await act(api(`items/${id}/reply`, {text}), 'Reply saved for the agent', respond.querySelector('.form-error'))) {
       setDraft(id, {text: undefined, choice: undefined});
       openMove = null;
+      moveOn(next, true);
     }
   };
   const ok = detail.querySelector('[data-report="ok"]');
-  if (ok) ok.onclick = () => act(api(`items/${id}/reply`, {text: `All ${checksOf(item()).length} looked right`}), 'Sent to the agent');
+  if (ok) ok.onclick = async () => {
+    const next = nextVisible(id);
+    if (await act(api(`items/${id}/reply`, {text: `All ${checksOf(item()).length} looked right`}), 'Reply saved for the agent')) moveOn(next, true);
+  };
   const off = detail.querySelector('[data-report="off"]');
   if (off) off.onclick = () => {openMove = openMove === 'off' ? null : 'off'; rerender(); detail.querySelector('#reply')?.focus();};
   const done = detail.querySelector('[data-done]');
   if (done) done.onclick = async () => {
-    const next = visibleIds()[visibleIds().indexOf(id) + 1] || null;
-    if (await act(api(`items/${id}/resolve`, {}), 'Marked done')) go({item: next});
+    const next = nextVisible(id);
+    if (await act(api(`items/${id}/resolve`, {}), 'Marked done')) moveOn(next, false);
   };
   const pin = detail.querySelector('[data-pin]');
   if (pin) pin.onclick = () => update(id, {pinned: !item().pinned}, item().pinned ? 'Unpinned' : 'Pinned');
@@ -809,11 +823,11 @@ function bindDetail(detail) {
   const skip = detail.querySelector('#skip-form');
   if (skip) skip.onsubmit = async (e) => {
     e.preventDefault();
-    const next = visibleIds()[visibleIds().indexOf(id) + 1] || null;
+    const next = nextVisible(id);
     if (await act(api(`items/${id}/skip`, {reason: new FormData(skip).get('reason') || ''}), 'Skipped. The agent will be told to drop it', $('#move-error'))) {
       openMove = null;
       setDraft(id, {skip: undefined});
-      go({item: next});
+      moveOn(next, false);
     }
   };
   const retry = detail.querySelector('[data-retry]');
@@ -872,4 +886,4 @@ function boot() {
   window.addEventListener('offline', () => {streamController?.abort(); setLive(false);});
   window.addEventListener('online', () => {streamController?.abort(); refresh();});
 }
-boot();
+if (document.body.dataset.surface !== 'float') boot();

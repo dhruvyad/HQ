@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" class="float">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="hq-token" content="__HQ_TOKEN__">
+  <meta name="color-scheme" content="dark">
+  <title>HQ</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/float.css">
+  <script src="/app.js" defer></script>
+  <script src="/float.js" defer></script>
+</head>
+<body data-surface="float" data-mode="pill">
+  <button class="f-pill" id="pill" type="button"></button>
+  <div class="f-box" id="box">
+    <section class="f-list" id="main" aria-label="Needs you"></section>
+    <aside class="detail" id="detail" aria-labelledby="detail-title" hidden></aside>
+  </div>
+  <div class="f-drag" id="drag" hidden><div class="f-ghost" id="ghost"></div></div>
+  <div class="scrim" id="scrim"></div>
+  <dialog id="dialog"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
