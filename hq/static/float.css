@@ -64,15 +64,15 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-num b.from-above, .f-num b.to-above {transform: translateY(-140%); opacity: 0;}
 
 /* The box: one surface for the list and the expanded item. */
-.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transform-origin: var(--f-from, left top); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), transform .56s var(--f-spring, ease), opacity .16s ease, background .2s, border-color .2s, box-shadow .2s;}
+.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transform-origin: var(--f-from, left top); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), transform var(--f-snap-ms, .2s) var(--f-snap, ease-out), opacity .1s ease, background .2s, border-color .2s, box-shadow .2s;}
 .f-box.instant {transition: none;}
 /* Fold's springs, Fly home's direction: the box grows out of the pill's center and shrinks
    back into it, fading as it goes, while the pill itself stays where it is. */
 .f-box.folded {transform: scale(.16); opacity: 0;}
-.f-box.closing {transform: scale(.16); opacity: 0; transition: transform .42s var(--f-soft, ease), opacity .24s ease .1s;}
+.f-box.closing {transform: scale(.16); opacity: 0; transition: transform var(--f-snap-ms, .2s) var(--f-snap, ease-out), opacity .12s ease .07s;}
 .f-box > * {transition: opacity .2s ease, filter .2s ease;}
-.f-box.opening > :not(.f-back) {animation: f-reveal .44s var(--f-soft, ease) .11s backwards;}
-.f-box.closing > * {opacity: 0; filter: blur(6px); transition-duration: .15s;}
+.f-box.opening > :not(.f-back) {animation: f-reveal var(--f-snap-ms, .2s) var(--f-snap, ease-out) backwards;}
+.f-box.closing > * {opacity: 0; filter: blur(6px); transition-duration: .1s;}
 @keyframes f-reveal {from {opacity: 0; filter: blur(5px); transform: translateY(6px);}}
 /* Deck: in an item the box steps back and the cards carry the surface. */
 .f-box.bare {overflow: visible; background: transparent; border-color: transparent; box-shadow: none;}
@@ -88,7 +88,30 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-flight-card > .detail {position: absolute; inset: 0; width: 100%; height: 100%; border: 0; box-shadow: none; transform: none;}
 @keyframes f-open {from {opacity: 0; transform: scale(.975);}}
 html.float body[data-mode="pill"] #toast {display: none;}
-html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast {visibility: hidden;}
+html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
+/* Resize grips on the box's edges away from the pill: 6px outside the border, 3px in. */
+.f-grips {position: absolute; z-index: 20; pointer-events: none;}
+.f-grip {position: absolute; pointer-events: auto;}
+.f-grip[data-edge="left"], .f-grip[data-edge="right"] {top: 22px; bottom: 22px; width: 9px; cursor: ew-resize;}
+.f-grip[data-edge="top"], .f-grip[data-edge="bottom"] {left: 22px; right: 22px; height: 9px; cursor: ns-resize;}
+.f-grip[data-edge="left"] {left: 0;}
+.f-grip[data-edge="right"] {right: 0;}
+.f-grip[data-edge="top"] {top: 0;}
+.f-grip[data-edge="bottom"] {bottom: 0;}
+.f-grip[data-edge*="-"] {width: 22px; height: 22px;}
+.f-grip[data-edge^="top-"] {top: 0;}
+.f-grip[data-edge^="bottom-"] {bottom: 0;}
+.f-grip[data-edge$="-left"] {left: 0;}
+.f-grip[data-edge$="-right"] {right: 0;}
+.f-grip[data-edge="top-left"], .f-grip[data-edge="bottom-right"] {cursor: nwse-resize;}
+.f-grip[data-edge="top-right"], .f-grip[data-edge="bottom-left"] {cursor: nesw-resize;}
+/* While resizing, the cursor stays the grip's and text never selects. */
+body[data-resizing] {-webkit-user-select: none; user-select: none;}
+body[data-resizing="left"], body[data-resizing="right"] {cursor: ew-resize;}
+body[data-resizing="top"], body[data-resizing="bottom"] {cursor: ns-resize;}
+body[data-resizing="top-left"], body[data-resizing="bottom-right"] {cursor: nwse-resize;}
+body[data-resizing="top-right"], body[data-resizing="bottom-left"] {cursor: nesw-resize;}
+body[data-resizing] .f-box {transition: none;}
 
 .f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
 .f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
@@ -107,7 +130,7 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-top {display: flex; align-items: baseline; gap: 8px; padding: 0 6px 6px;}
 .f-top .f-name {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 19px/1.1 var(--display);}
 .f-top .f-run {margin-left: auto; font-size: 12px; color: var(--muted-foreground);}
-.f-agent {display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: 9px; text-align: left; transition: background .12s;}
+.f-agent {position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: 9px; text-align: left; transition: background .12s;}
 .f-agent:hover {background: rgb(250 250 250 / 0.05);}
 .f-quiet {display: flex; align-items: center; width: 100%; margin: 0 0 6px; padding: 8px; border-radius: 9px; font-size: 12.5px; color: var(--muted-foreground);}
 .f-quiet:hover {color: var(--foreground); background: rgb(250 250 250 / 0.04);}
@@ -140,6 +163,10 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-rows .row {gap: 2px; min-height: 0; padding: 9px 8px; border-radius: 10px;}
 .f-rows .row .title {font-size: 14.5px;}
 .f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}
+/* The row the keys are on: the hover look, plus a quiet mark at its left. */
+.f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.05);}
+body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
+.f-rows .row.hl::before, .f-agent.hl::before {content: ""; position: absolute; left: -5px; top: 10px; bottom: 10px; width: 2px; border-radius: 2px; background: rgb(250 250 250 / 0.7);}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
 
 /* Choosing the circles: the real pill beside its options. */
@@ -159,6 +186,8 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-cap.empty {background: none; border: 1px dashed rgb(250 250 250 / 0.2); color: var(--muted-foreground);}
 .f-cap.live {background: var(--primary); color: var(--primary-foreground);}
 .f-hint {margin: 6px 8px 0; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground);}
+.f-reset {color: rgb(250 250 250 / 0.85); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(250 250 250 / 0.3);}
+.f-reset:hover {color: var(--foreground);}
 .f-moves {display: flex; flex: none;}
 .f-moves .icon-btn {width: 26px; height: 26px;}
 .f-moves .icon {width: 15px; height: 15px;}
@@ -189,7 +218,7 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 .f-ghost.gliding {transition: transform var(--f-glide, 300ms) cubic-bezier(.16,1,.3,1);}
 
 @media (prefers-reduced-motion: reduce) {
-  .f-box, body[data-backdrop="dim"] .f-drag {animation: none;}
+  .f-box, .f-box.opening > :not(.f-back), body[data-backdrop="dim"] .f-drag {animation: none;}
 }
 
 /* Lab bench */

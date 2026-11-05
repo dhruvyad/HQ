@@ -445,6 +445,10 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         panel.acceptsKey = wanted
         if wanted {
             panel.makeKey()
+            // Keys go to the first responder, which is the window itself until something is
+            // clicked. Hand them to the page, so Escape and the arrows work straight after a
+            // hotkey opens the panel.
+            panel.makeFirstResponder(web)
         } else if panel.isKeyWindow {
             releaseKey()
         }

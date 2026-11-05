@@ -5,6 +5,7 @@ const vm = require('node:vm');
 
 const elements = {'meta[name="hq-token"]': {content: 'test'}};
 const context = vm.createContext({URL, URLSearchParams, document: {
+  body: {dataset: {}},
   querySelector(selector) {return elements[selector] || null;},
   querySelectorAll() {return [];},
 }});
@@ -413,6 +414,77 @@ assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.inclu
 run("agentOpen = 'c:gone'");
 assert.ok(run('agentsPanelHTML(attention(), true)').includes('data-agent="c:bg"')); // a vanished agent falls back to the list
 run(`state.sessions = savedSessions; listView = 'needs'; agentOpen = null`);
+
+// Opening and closing are quick: a spring that settles in about 200ms, with no long tail.
+assert.ok(run('springMs(SNAP)') >= 180 && run('springMs(SNAP)') <= 220, `snap spring lasts ${run('springMs(SNAP)')}ms`);
+assert.ok(run('FOLD_MS') <= 240);
+assert.ok(run('springMs({stiffness: 190, damping: 17})') > 600); // the springs left for other motion are slower
+
+// Keys inside the open panel: arrows by default, Enter also opens, Escape also goes back.
+const combo = (e) => run(`keyCombo(${JSON.stringify(e)})`);
+assert.equal(combo({key: 'ArrowUp'}), 'ArrowUp');
+assert.equal(combo({key: 'K', shiftKey: true}), 'k'); // a letter is itself, whatever shift does to it
+assert.equal(combo({key: 'ArrowLeft', altKey: true}), 'Alt+ArrowLeft');
+assert.equal(combo({key: 'Tab', shiftKey: true, metaKey: true}), 'Shift+Meta+Tab');
+assert.equal(run("keyLabel('ArrowLeft')"), '←');
+assert.equal(run("keyLabel('Alt+h')"), '⌥H');
+const action = (key, mode) => run(`panelAction(${JSON.stringify(key)}, ${JSON.stringify(mode)})`);
+assert.equal(action('ArrowUp', 'list'), 'previous');
+assert.equal(action('ArrowDown', 'list'), 'next');
+assert.equal(action('ArrowRight', 'list'), 'open');
+assert.equal(action('Enter', 'list'), 'open');
+assert.equal(action('Enter', 'item'), null); // in an item, Enter belongs to whatever has focus
+assert.equal(action('ArrowLeft', 'item'), 'back');
+assert.equal(action('Escape', 'item'), 'back');
+assert.equal(action('Escape', 'list'), null); // the list's Escape collapses the panel, as before
+assert.equal(action('ArrowDown', 'item'), 'next');
+assert.deepEqual(JSON.parse(run("JSON.stringify(cleanPanelKeys({back: 'h', open: null, next: 42}))")), {previous: 'ArrowUp', next: 'ArrowDown', open: null, back: 'h'});
+run("panelKeys = cleanPanelKeys({back: 'h'})");
+assert.equal(action('h', 'item'), 'back');
+assert.equal(action('ArrowLeft', 'item'), null); // rebound, so the old key does nothing
+assert.equal(action('Escape', 'item'), 'back'); // Escape always goes back
+run('panelKeys = cleanPanelKeys()');
+// While typing, the arrows and Enter belong to the text, and Escape first leaves the box.
+run(`floatOpen = true; customizing = false; route.item = 'a1'; stepped = []; went = [];
+  realStep = step; step = (n) => stepped.push(n); realGo = go; go = (next) => went.push(next);
+  keyEvent = (key, typing) => ({key, defaultPrevented: false, prevented: 0, stopped: 0, blurred: 0,
+    preventDefault() {this.prevented += 1;}, stopImmediatePropagation() {this.stopped += 1;},
+    target: {matches: () => typing, blur() {keyEventBlurred += 1;}}}); keyEventBlurred = 0;`);
+run(`e1 = keyEvent('ArrowDown', true); panelKey(e1); e2 = keyEvent('Enter', true); panelKey(e2)`);
+assert.equal(run('e1.prevented + e2.prevented + stepped.length + went.length'), 0); // caret moves, nothing else
+run(`e3 = keyEvent('Escape', true); panelKey(e3)`);
+assert.equal(run('keyEventBlurred'), 1);
+assert.equal(run('went.length'), 0); // the first Escape only leaves the box
+run(`e4 = keyEvent('Escape', false); panelKey(e4)`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(went)')), [{item: null}]); // the second goes back
+assert.equal(run('cursor'), 'a1'); // with the item it came from highlighted
+run(`e5 = keyEvent('ArrowDown', false); panelKey(e5); e6 = keyEvent('ArrowUp', false); panelKey(e6)`);
+assert.deepEqual(Array.from(run('stepped')), [1, -1]); // up and down move between items in item view
+run('step = realStep; go = realGo; floatOpen = false; route.item = null; cursor = null');
+
+// Resizing: only the edges away from the pill, and both edges together where the box is centred.
+const edges = (dock) => JSON.parse(run(`JSON.stringify(freeEdges('${dock}'))`));
+assert.deepEqual(edges('top-left'), {x: ['right'], y: ['bottom'], centeredX: false, centeredY: false});
+assert.deepEqual(edges('top-right'), {x: ['left'], y: ['bottom'], centeredX: false, centeredY: false});
+assert.deepEqual(edges('bottom-left'), {x: ['right'], y: ['top'], centeredX: false, centeredY: false});
+assert.deepEqual(edges('right'), {x: ['left'], y: ['top', 'bottom'], centeredX: false, centeredY: true});
+assert.deepEqual(edges('bottom'), {x: ['left', 'right'], y: ['top'], centeredX: true, centeredY: false});
+assert.deepEqual(edges('top'), {x: ['left', 'right'], y: ['bottom'], centeredX: true, centeredY: false});
+const dhruv = {x: 0, y: 33, width: 1728, height: 994}, pillAtRight = {x: 1680, y: 480, width: 38, height: 102};
+const limits = JSON.parse(run(`JSON.stringify(sizeLimits('right', 'list', ${JSON.stringify(pillAtRight)}, ${JSON.stringify(dhruv)}))`));
+assert.deepEqual(limits, {min: {width: 300, height: 200}, max: {width: 1728 - 20 - 38 - 8, height: 994 - 14}});
+const resize = (edge, dx, dy, dock = 'right', start = {width: 380, height: 520}) => JSON.parse(run(`JSON.stringify(resized(${JSON.stringify(start)}, '${edge}', ${dx}, ${dy}, '${dock}', ${JSON.stringify(limits)}))`));
+assert.deepEqual(resize('left', -120, 0), {width: 500, height: 520}); // pulling the left edge left widens it
+assert.deepEqual(resize('bottom', 0, 50), {width: 380, height: 620}); // centred on the pill, so it grows both ways
+assert.deepEqual(resize('top-left', -20, -10), {width: 400, height: 540});
+assert.deepEqual(resize('left', 500, 0), {width: 300, height: 520}); // never below the minimum
+assert.deepEqual(resize('left', -5000, 0), {width: limits.max.width, height: 520}); // nor off the screen
+assert.deepEqual(resize('right', 40, 30, 'top-left'), {width: 420, height: 520}); // a top-left box has no top edge to drag
+assert.deepEqual(resize('bottom', 0, 30, 'top-left'), {width: 380, height: 550});
+// Sizes are kept per view, and anything odd in settings falls back to the default.
+assert.deepEqual(JSON.parse(run("JSON.stringify(cleanSizes({list: {width: 500.4, height: 700}, item: {width: 'wide'}}))")), {list: {width: 500, height: 700}, item: null});
+assert.deepEqual(JSON.parse(run("JSON.stringify(chosenSize('list', cleanSizes()))")), {width: 380, height: 520});
+assert.deepEqual(JSON.parse(run("JSON.stringify(chosenSize('item', cleanSizes({item: {width: 640, height: 900}})))")), {width: 640, height: 900});
 
 // The pill: a black capsule of circles you choose, with no wordmark.
 run("circles = ['needs', 'agents', 'claude']");

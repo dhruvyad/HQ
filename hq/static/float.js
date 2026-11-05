@@ -16,11 +16,15 @@ const TARGETS = {all: Object.keys(DOCKS), flow: ['top-left', 'left', 'right', 'b
 const DEFAULT_DOCK = 'top-left';
 const EDGE = 10, BOTTOM_EDGE = 4;
 const LIST_WIDTH = 380, LIST_MAX = 520, SETTINGS_MAX = 840, ITEM_MIN = 240, ITEM_MAX = 760;
+// The box can be resized by its edges away from the pill, down to these and up to the screen.
+const MIN_SIZE = {list: {width: 300, height: 200}, item: {width: 380, height: ITEM_MIN}}, GRIP = 6;
 const CONTROLS = 'button, a, input, textarea, select, summary';
 const PILL_CHROME = 10;
 const CARD = {width: 308, height: 62};
 // The open box sits beside the pill, which stays put so answered items can fly home to it.
-const GAP = 8, STACK = 22, BOX_MAX = 840, FOLD_MS = 620, FLY_MS = 560;
+// Opening and closing are quick: a spring with no long tail, about 200ms from input to settled.
+const SNAP = {stiffness: 800, damping: 46, tolerance: 0.01};
+const GAP = 8, STACK = 22, BOX_MAX = 840, FOLD_MS = 220, FLY_MS = 560;
 const BURST_WINDOW = 350, FOLD_FOR = 640, ROLL_AFTER = 260, HOLD_TICK = 100;
 // Agents flip between busy and idle on every turn, so a change has to hold before it is news.
 const AGENT_START_HOLD = 3, AGENT_STOP_HOLD = 8;
@@ -31,6 +35,14 @@ const SHORTCUTS = {
   previous: {name: 'Previous item', key: {keyCode: 40, modifiers: CONTROL_OPTION, label: '⌃⌥K'}},
   dashboard: {name: 'Open the dashboard', key: {keyCode: 2, modifiers: CONTROL_OPTION, label: '⌃⌥D'}},
   customize: {name: 'Customize the pill', key: null},
+};
+// Keys inside the open panel, separate from the hotkeys that work from any app. Enter also
+// opens and Escape also goes back; these four can be changed or cleared.
+const PANEL_KEYS = {
+  previous: {name: 'Previous', key: 'ArrowUp'},
+  next: {name: 'Next', key: 'ArrowDown'},
+  open: {name: 'Open', key: 'ArrowRight'},
+  back: {name: 'Back', key: 'ArrowLeft'},
 };
 const NOTIFY = {items: 'Items added or removed', agents: 'Agents starting or stopping', usage: 'Usage running low'};
 const USAGE_LOW = 10, USAGE_STALE = 3600;
@@ -93,6 +105,7 @@ let floatOpen = false, dock = DEFAULT_DOCK, display = null, drag = null, placed 
 let swallowClick = false, customizing = false, hovering = false, circles = [...DEFAULT_CIRCLES];
 let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
+let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
 let lastItems = null, lastUsage = null, pending = [], notice = null;
 let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null;
 const agentMemory = new Map();
@@ -103,6 +116,67 @@ function cleanShortcuts(saved) {
     const chosen = saved?.[action];
     return [action, chosen === null ? null : valid(chosen) ? chosen : entry.key];
   }));
+}
+// A key as one string: modifiers in a fixed order, then the key, such as Alt+ArrowLeft or k.
+function keyCombo(e) {
+  const key = e.key?.length === 1 ? e.key.toLowerCase() : e.key;
+  return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && key.length > 1 && 'Shift', e.metaKey && 'Meta', key].filter(Boolean).join('+');
+}
+const KEY_LABELS = {ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Enter: '↵', Escape: 'Esc', Tab: '⇥', ' ': 'Space', Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘'};
+const keyLabel = (combo) => combo.split('+').map((part) => KEY_LABELS[part] || part.toUpperCase()).join('');
+function cleanPanelKeys(saved) {
+  const valid = (key) => typeof key === 'string' && key.length > 0 && key.length <= 40;
+  return Object.fromEntries(Object.entries(PANEL_KEYS).map(([action, entry]) => {
+    const chosen = saved?.[action];
+    return [action, chosen === null ? null : valid(chosen) ? chosen : entry.key];
+  }));
+}
+// What a key does in the open panel, wherever focus is not in a text box.
+function panelAction(combo, mode) {
+  const bound = Object.keys(panelKeys).find((action) => panelKeys[action] === combo);
+  if (bound) return bound;
+  if (combo === 'Enter' && mode === 'list') return 'open';
+  if (combo === 'Escape' && mode === 'item') return 'back';
+  return null;
+}
+// Sizes you chose by dragging an edge, one for the list and one for an item. Unset means the
+// default; a height is how tall the box may grow, and it still hugs shorter content.
+function cleanSizes(saved) {
+  const valid = (s) => Number.isFinite(s?.width) && Number.isFinite(s?.height) && s.width > 0 && s.height > 0 && s.width < 20000 && s.height < 20000;
+  return {list: valid(saved?.list) ? {width: Math.round(saved.list.width), height: Math.round(saved.list.height)} : null,
+          item: valid(saved?.item) ? {width: Math.round(saved.item.width), height: Math.round(saved.item.height)} : null};
+}
+const sizeView = (mode) => (mode === 'item' ? 'item' : 'list');
+// The width and the most height a view may have, from your size or the defaults.
+function chosenSize(view, saved = sizes) {
+  const fallback = view === 'item' ? {width: feel.width, height: ITEM_MAX} : {width: LIST_WIDTH, height: LIST_MAX};
+  return saved[view] || fallback;
+}
+// Which edges resize: those away from the pill. On an axis where the box is centred on the
+// pill, both edges move together.
+function freeEdges(name) {
+  const [across, down] = DOCKS[name] || DOCKS[DEFAULT_DOCK];
+  if (across === 'center') return {x: ['left', 'right'], y: [down === 'end' ? 'top' : 'bottom'], centeredX: true, centeredY: false};
+  return {x: [across === 'start' ? 'right' : 'left'], y: down === 'start' ? ['bottom'] : down === 'end' ? ['top'] : ['top', 'bottom'],
+    centeredX: false, centeredY: down === 'center'};
+}
+// The largest box that still fits on the screen beside the pill.
+function sizeLimits(name, view, pill, area) {
+  const [across] = DOCKS[name] || DOCKS[DEFAULT_DOCK], min = MIN_SIZE[view];
+  const width = across === 'center' ? area.width - 2 * EDGE : area.width - 2 * EDGE - pill.width - GAP;
+  const height = (across === 'center' ? area.height - pill.height - GAP : area.height) - EDGE - BOTTOM_EDGE - (view === 'item' ? STACK : 0);
+  return {min, max: {width: Math.max(min.width, width), height: Math.max(min.height, height)}};
+}
+// Dragging an edge by (dx, dy) from where it started. A centred axis grows on both sides,
+// so the edge you hold stays under the cursor.
+function resized(start, edge, dx, dy, name, limits) {
+  const free = freeEdges(name);
+  let {width, height} = start;
+  if (edge.includes('right')) width = start.width + dx * (free.centeredX ? 2 : 1);
+  if (edge.includes('left')) width = start.width - dx * (free.centeredX ? 2 : 1);
+  if (edge.includes('bottom')) height = start.height + dy * (free.centeredY ? 2 : 1);
+  if (edge.includes('top')) height = start.height - dy * (free.centeredY ? 2 : 1);
+  return {width: Math.round(clamp(width, limits.min.width, limits.max.width)), height: Math.round(clamp(height, limits.min.height, limits.max.height))};
 }
 function cleanNotify(saved) {
   return Object.fromEntries(Object.keys(NOTIFY).map((kind) => [kind, saved?.[kind] !== false]));
@@ -178,18 +252,25 @@ function coalesce(events) {
     sub: [...counts].map(([label, n]) => `${n} ${n === 1 ? label.replace(/ies(?= |$)/, 'y').replace(/s(?= |$)/, '') : label}`).join(' · ')};
 }
 // A real spring, sampled into CSS linear() so the compositor runs it.
-function springCurve({stiffness, damping}) {
+// A spring sampled into CSS linear(), so it runs on the compositor. The tolerance says how
+// close counts as there: a looser one ends the curve before a long, invisible tail.
+function springSamples({stiffness, damping, tolerance = 0.002}) {
   const step = 1 / 120, points = [];
   let x = 0, v = 0, still = 0;
   for (let t = 0; t < 3 && still < 12; t += step) {
     v += (-stiffness * (x - 1) - damping * v) * step;
     x += v * step;
     points.push(x);
-    still = Math.abs(x - 1) < 0.002 && Math.abs(v) < 0.02 ? still + 1 : 0;
+    still = Math.abs(x - 1) < tolerance && Math.abs(v) < tolerance * 10 ? still + 1 : 0;
   }
-  const every = Math.max(1, Math.floor(points.length / 44));
+  return points.slice(0, Math.max(1, points.length - (tolerance > 0.002 ? 11 : 0)));
+}
+function springCurve(spring) {
+  const points = springSamples(spring), every = Math.max(1, Math.floor(points.length / 44));
   return `linear(0, ${points.filter((_, n) => n % every === 0).map((p) => p.toFixed(3)).join(', ')}, 1)`;
 }
+// How long a spring's curve lasts, so the transition runs at its real speed.
+const springMs = (spring) => Math.round(springSamples(spring).length / 120 * 1000);
 
 // Geometry, in display-local points with the origin at the display's top-left.
 function dockRect(requested, size, area) {
@@ -204,6 +285,7 @@ function dockRect(requested, size, area) {
 // springs, the box folds and a drop lands all in one page, on the compositor. Clicks still
 // pass through everywhere but the pill and the box.
 const roomOf = (d) => ({x: 0, y: 0, width: d.width, height: d.height});
+const inflateRect = (r, by) => ({x: r.x - by, y: r.y - by, width: r.width + 2 * by, height: r.height + 2 * by});
 const localRect = (r, room) => ({x: r.x - room.x, y: r.y - room.y, width: r.width, height: r.height});
 const clamp = (v, low, high) => Math.max(low, Math.min(high, v));
 // Beside the pill and away from the screen edge; above or below it when it lies along an edge.
@@ -331,7 +413,7 @@ function settingsHTML(items) {
     return `<div class="f-set"><button type="button" class="check" role="checkbox" data-circle="${id}" aria-checked="${on}" ${on && circles.length === 1 ? 'disabled' : ''}><span class="box">${icon('check')}</span><span>${esc(METRICS[id].name)}<small>${esc(now)}</small></span></button>${moves}</div>`;
   }).join('');
   return `<header class="f-head"><h1>Pill</h1><button class="icon-btn f-push" type="button" data-customized aria-label="Done" title="Done">${icon('check')}</button></header>
-    <div class="f-rows scroll"><div class="f-rows-in f-settings"><div class="f-capsule f-preview" aria-hidden="true"><span class="f-rail">${pillHTML(items, true)}</span></div><div class="f-set-list">${rows}${notifyHTML()}${shortcutsHTML()}</div></div></div>`;
+    <div class="f-rows scroll"><div class="f-rows-in f-settings"><div class="f-capsule f-preview" aria-hidden="true"><span class="f-rail">${pillHTML(items, true)}</span></div><div class="f-set-list">${rows}${notifyHTML()}${shortcutsHTML()}${panelKeysHTML()}</div></div></div>`;
 }
 function notifyHTML() {
   const rows = Object.entries(NOTIFY).map(([kind, name]) => `<div class="f-set"><button type="button" class="check" role="checkbox" data-notify="${kind}" aria-checked="${notify[kind]}"><span class="box">${icon('check')}</span><span>${esc(name)}</span></button></div>`).join('');
@@ -344,6 +426,15 @@ function shortcutsHTML() {
     return `<div class="f-key"><span>${esc(entry.name)}${failed ? '<small class="f-key-bad">Another app is using this</small>' : ''}</span><button type="button" class="f-cap ${live ? 'live' : ''} ${key ? '' : 'empty'}" data-record="${action}" aria-label="Change the shortcut for ${esc(entry.name)}">${esc(label)}</button></div>`;
   }).join('');
   return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. While recording, Delete clears a shortcut and Escape cancels.</p>`;
+}
+function panelKeysHTML() {
+  const rows = Object.entries(PANEL_KEYS).map(([action, entry]) => {
+    const key = panelKeys[action], live = recordingPanel === action;
+    const label = live ? 'Press a key…' : key ? keyLabel(key) : 'Add';
+    return `<div class="f-key"><span>${esc(entry.name)}</span><button type="button" class="f-cap ${live ? 'live' : ''} ${key ? '' : 'empty'}" data-record-panel="${action}" aria-label="Change the key for ${esc(entry.name)}">${esc(label)}</button></div>`;
+  }).join('');
+  const changed = Object.entries(PANEL_KEYS).some(([action, entry]) => panelKeys[action] !== entry.key);
+  return `<div class="f-section">Keys inside the panel</div>${rows}<p class="f-hint">While the panel is open. Enter also opens and Escape also goes back. While recording, Delete clears a key and Escape cancels.${changed ? ' <button type="button" class="f-reset" data-reset-panel-keys>Reset to the arrows</button>' : ''}</p>`;
 }
 function floatListHTML(items, live = liveHealthy) {
   const head = `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header>`;
@@ -384,6 +475,81 @@ function agentPageHTML(a, now) {
       ${streams.length ? `<dt>Working on</dt><dd>${esc(streams.join(', '))}</dd>` : ''}</dl>
     ${lane('you', 'Needs you')}${lane('agents', 'With the agent')}${lane('waiting', 'Waiting on someone')}
     <button class="ghost-pill f-wide" type="button" data-agent-dashboard="${esc(a.id)}">Open in the dashboard</button></div>`;
+}
+// The highlighted row in whichever list is open: the first on open, the item you came back from.
+const cursorRows = () => [...document.querySelectorAll('#main [data-item], #main [data-agent]')];
+const rowKey = (row) => row.dataset.item || row.dataset.agent;
+function markCursor(scroll = false) {
+  const rows = cursorRows();
+  if (!rows.length) return;
+  const row = rows.find((r) => rowKey(r) === cursor) || rows[0];
+  cursor = rowKey(row);
+  rows.forEach((r) => r.classList.toggle('hl', r === row));
+  if (scroll) row.scrollIntoView({block: 'nearest'});
+}
+function moveCursor(delta) {
+  const rows = cursorRows(), at = rows.findIndex((r) => rowKey(r) === cursor);
+  if (!rows.length) return;
+  cursor = rowKey(rows[Math.max(0, Math.min(rows.length - 1, (at < 0 ? 0 : at + delta)))]);
+  markCursor(true);
+}
+function openCursor() {
+  const row = cursorRows().find((r) => rowKey(r) === cursor);
+  if (!row) return;
+  if (row.dataset.agent) showList('agents', row.dataset.agent);
+  else openItem(row.dataset.item);
+}
+// Back to the list you came from, with what you were on still highlighted.
+function backToList() {
+  if (route.item) {
+    cursor = route.item;
+    return go({item: null});
+  }
+  if (agentOpen) {
+    cursor = agentOpen;
+    return showList('agents');
+  }
+}
+function panelKey(e) {
+  if (!floatOpen || customizing || drag || recording || recordingPanel || e.defaultPrevented) return;
+  // While typing, the arrows and Enter belong to the text; Escape first leaves the box.
+  if (e.target.matches?.('input, textarea, select, [contenteditable="true"]')) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    e.target.blur();
+    return;
+  }
+  const mode = route.item ? 'item' : 'list', action = panelAction(keyCombo(e), mode);
+  if (!action) return;
+  if (mode === 'item') {
+    if (action === 'previous' || action === 'next') step(action === 'next' ? 1 : -1);
+    else if (action === 'back') backToList();
+    else return;
+  } else if (action === 'previous' || action === 'next') moveCursor(action === 'next' ? 1 : -1);
+  else if (action === 'open') openCursor();
+  else if (action === 'back' && agentOpen) backToList();
+  else return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  // While the keys drive, a row under a resting cursor should not look highlighted too.
+  document.body.dataset.keys = '';
+}
+// Recording a key for the panel: the next key pressed, Delete to clear, Escape to cancel.
+function recordPanelKey(e) {
+  if (!recordingPanel) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+  const action = recordingPanel;
+  recordingPanel = null;
+  if (e.key === 'Escape') return render();
+  const combo = ['Backspace', 'Delete'].includes(e.key) ? null : keyCombo(e);
+  // One key does one thing: taking it from another action leaves that one unset.
+  for (const other of Object.keys(panelKeys)) if (combo && other !== action && panelKeys[other] === combo) panelKeys[other] = null;
+  panelKeys = {...panelKeys, [action]: combo};
+  saveSettings();
+  render();
 }
 // Moving between lists slides the way the header reads: Agents and an agent's page sit to the right.
 function showList(view, agent = null) {
@@ -436,7 +602,7 @@ function paintFloat({background = false} = {}) {
   pill.title = 'Click to open. Drag to move. Right-click for more.';
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
   setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : floatListHTML(items, live));
-  if (mode === 'list') {slideList(listMotion); glideAgents(tops);}
+  if (mode === 'list') {markCursor(); slideList(listMotion); glideAgents(tops);}
   listMotion = null;
   const detail = $('#detail'), active = document.activeElement;
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
@@ -444,7 +610,7 @@ function paintFloat({background = false} = {}) {
   scrolls.forEach(([sel, top]) => top && document.querySelector(sel) && (document.querySelector(sel).scrollTop = top));
   document.body.dataset.mode = mode;
   // Content keeps its final width while the box springs, so it never reflows mid-motion.
-  document.documentElement.style.setProperty('--f-content', `${mode === 'item' ? feel.width : LIST_WIDTH}px`);
+  document.documentElement.style.setProperty('--f-content', `${mode === 'settings' ? LIST_WIDTH : chosenSize(sizeView(mode)).width}px`);
   $('#box').classList.toggle('bare', mode === 'item');
   stackBehind(mode);
   syncPill();
@@ -552,11 +718,16 @@ function setRect(el, r) {
   Object.assign(el.style, {left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px`});
 }
 function boxSize(mode = document.body.dataset.mode) {
-  if (mode === 'list' || mode === 'settings') {
+  if (mode === 'settings') {
     const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
-    return {width: LIST_WIDTH, height: Math.min(mode === 'settings' ? SETTINGS_MAX : LIST_MAX, head + rows + 2)};
+    return {width: LIST_WIDTH, height: Math.min(SETTINGS_MAX, head + rows + 2)};
   }
-  return {width: feel.width, height: Math.max(ITEM_MIN, Math.min(ITEM_MAX, itemHeight() + 2)) + STACK};
+  const chosen = chosenSize(sizeView(mode));
+  if (mode === 'list') {
+    const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
+    return {width: chosen.width, height: Math.min(chosen.height, head + rows + 2)};
+  }
+  return {width: chosen.width, height: Math.max(ITEM_MIN, Math.min(chosen.height, itemHeight() + 2)) + STACK};
 }
 // An item is as tall as its head, tabs and dock plus the open tab's content. Within one item
 // the box only grows, so switching tabs or folding the answer never makes it jump.
@@ -609,13 +780,74 @@ function layout() {
     }
   } else if (!box.hidden && !box.classList.contains('closing')) {
     box.classList.add('closing');
-    layout.closing = setTimeout(() => {box.hidden = true; box.classList.remove('closing');}, FOLD_MS);
+    layout.closing = setTimeout(() => {box.hidden = true; box.classList.remove('closing');}, calm() ? 0 : FOLD_MS);
     // The pill takes the box in.
-    if (!calm()) $('#pill').animate([{transform: 'scale(1)'}, {transform: 'scale(1.07)'}, {transform: 'scale(1)'}], {duration: 380, delay: 230, easing: 'ease-out'});
+    if (!calm()) $('#pill').animate([{transform: 'scale(1)'}, {transform: 'scale(1.07)'}, {transform: 'scale(1)'}], {duration: 240, delay: 110, easing: 'ease-out'});
   }
   if (spot.on) placeSpot();
-  const hits = [pill, g.box && localRect(g.box, g.room)].filter(Boolean);
+  placeGrips(g.box && mode !== 'settings' && !box.classList.contains('closing') ? localRect(g.box, g.room) : null, mode);
+  const hits = [pill, g.box && inflateRect(localRect(g.box, g.room), GRIP)].filter(Boolean);
   placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key: mode !== 'pill', shadow: false});
+}
+// Resize grips: one per free edge and corner, drawn over the box's border.
+function placeGrips(rect, mode) {
+  let grips = $('#grips');
+  if (!grips) {
+    grips = document.createElement('div');
+    grips.id = 'grips';
+    grips.className = 'f-grips';
+    document.body.append(grips);
+  }
+  grips.hidden = !rect;
+  if (!rect) return;
+  const card = mode === 'item' ? {...rect, height: rect.height - STACK} : rect;
+  setRect(grips, inflateRect(card, GRIP));
+  const free = freeEdges(dock), edges = [...free.x, ...free.y, ...free.y.flatMap((v) => free.x.map((h) => `${v}-${h}`))];
+  const signature = edges.join(' ');
+  if (grips.dataset.edges !== signature) {
+    grips.dataset.edges = signature;
+    grips.innerHTML = edges.map((edge) => `<div class="f-grip" data-edge="${edge}" title="Drag to resize, double-click to reset"></div>`).join('');
+  }
+}
+function startResize(e) {
+  const grip = e.target.closest('.f-grip');
+  if (!grip || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const mode = document.body.dataset.mode, view = sizeView(mode), box = $('#box').getBoundingClientRect();
+  const height = mode === 'item' ? box.height - STACK : box.height;
+  const area = display?.visible || {x: 0, y: 0, width: innerWidth, height: innerHeight};
+  resizing = {edge: grip.dataset.edge, view, x: e.clientX, y: e.clientY, start: {width: box.width, height},
+    limits: sizeLimits(dock, view, pillSize(), area)};
+  grip.setPointerCapture?.(e.pointerId);
+  document.body.dataset.resizing = grip.dataset.edge;
+  $('#box').classList.add('instant');
+}
+function moveResize(e) {
+  if (!resizing) return;
+  const next = resized(resizing.start, resizing.edge, e.clientX - resizing.x, e.clientY - resizing.y, dock, resizing.limits);
+  sizes = {...sizes, [resizing.view]: next};
+  // An item's height hugs its content at the new width, so measure it afresh.
+  tallest = {id: null, height: 0};
+  document.documentElement.style.setProperty('--f-content', `${next.width}px`);
+  layoutSoon();
+}
+function endResize() {
+  if (!resizing) return;
+  resizing = null;
+  delete document.body.dataset.resizing;
+  saveSettings();
+  requestAnimationFrame(() => {if (!resizing) $('#box').classList.remove('instant');});
+}
+// Double-clicking an edge puts that view back to its default size.
+function resetSize(e) {
+  if (!e.target.closest('.f-grip')) return;
+  const view = sizeView(document.body.dataset.mode);
+  sizes = {...sizes, [view]: null};
+  tallest = {id: null, height: 0};
+  document.documentElement.style.setProperty('--f-content', `${chosenSize(view).width}px`);
+  saveSettings();
+  layout();
 }
 function layoutSoon() {
   if (layoutSoon.pending) return;
@@ -623,7 +855,7 @@ function layoutSoon() {
   requestAnimationFrame(() => {layoutSoon.pending = false; layout();});
 }
 function setOpen(open) {
-  if (open) dropNotices();
+  if (open) {dropNotices(); cursor = null;}
   floatOpen = open;
   if (!open) customizing = false;
   render();
@@ -788,7 +1020,7 @@ function hideSpot() {
   markSpot();
 }
 function saveSettings() {
-  native({type: 'settings', settings: {circles, notify, shortcuts}});
+  native({type: 'settings', settings: {circles, notify, shortcuts, panelKeys, sizes}});
 }
 function setCircles(next) {
   circles = next;
@@ -957,6 +1189,8 @@ function receive(message) {
     circles = cleanCircles(message.settings?.circles);
     notify = cleanNotify(message.settings?.notify);
     shortcuts = cleanShortcuts(message.settings?.shortcuts);
+    panelKeys = cleanPanelKeys(message.settings?.panelKeys);
+    sizes = cleanSizes(message.settings?.sizes);
     applyShortcuts();
     render();
   } else if (message.type === 'display') {
@@ -1014,6 +1248,8 @@ function bootFloat() {
   document.documentElement.style.setProperty('--f-spring', springCurve({stiffness: 190, damping: 17}));
   document.documentElement.style.setProperty('--f-soft', springCurve({stiffness: 170, damping: 26}));
   document.documentElement.style.setProperty('--f-hug', springCurve({stiffness: 240, damping: 26}));
+  document.documentElement.style.setProperty('--f-snap', springCurve(SNAP));
+  document.documentElement.style.setProperty('--f-snap-ms', `${springMs(SNAP)}ms`);
   applyFeel();
   document.addEventListener('mousedown', (e) => {
     swallowClick = false;
@@ -1059,7 +1295,9 @@ function bootFloat() {
     else if (shift && !shift.disabled) setCircles(moveCircle(circles, shift.dataset.id, Number(shift.dataset.circleMove)));
     else if (e.target.closest('[data-view]')) showList(e.target.closest('[data-view]').dataset.view);
     else if (e.target.closest('[data-agent]')) showList('agents', e.target.closest('[data-agent]').dataset.agent);
-    else if (e.target.closest('[data-back]')) showList('agents');
+    else if (e.target.closest('[data-back]')) backToList();
+    else if (e.target.closest('[data-record-panel]')) {recordingPanel = e.target.closest('[data-record-panel]').dataset.recordPanel; render();}
+    else if (e.target.closest('[data-reset-panel-keys]')) {panelKeys = cleanPanelKeys(); saveSettings(); render();}
     else if (e.target.closest('[data-agents-all]')) {agentsAll = true; render();}
     else if (e.target.closest('[data-agent-dashboard]')) openDashboard(href({page: 'agent', agent: e.target.closest('[data-agent-dashboard]').dataset.agentDashboard, lane: 'you', item: null}));
     else if (row) openItem(row.dataset.item);
@@ -1072,12 +1310,21 @@ function bootFloat() {
     if (e.key !== 'Escape') return;
     if (drag) cancelDrag();
     else if (customizing) {customizing = false; render();}
-    else if (floatOpen && !route.item && agentOpen) showList('agents');
+    else if (floatOpen && !route.item && agentOpen) backToList();
     else if (floatOpen && !route.item) setOpen(false);
     else return;
     e.stopImmediatePropagation();
     e.preventDefault();
   }, true);
+  document.addEventListener('keydown', recordPanelKey, true);
+  document.addEventListener('pointerdown', startResize, true);
+  document.addEventListener('pointermove', moveResize);
+  document.addEventListener('mousemove', () => {delete document.body.dataset.keys;});
+  document.addEventListener('pointerup', endResize);
+  document.addEventListener('pointercancel', endResize);
+  document.addEventListener('dblclick', resetSize);
+  // Before the dashboard's own keys, which boot() adds after this.
+  document.addEventListener('keydown', panelKey);
   document.addEventListener('contextmenu', (e) => {
     if (!e.target.closest('#pill, .f-head, .d-bar')) return;
     e.preventDefault();
