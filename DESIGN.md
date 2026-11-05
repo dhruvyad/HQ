@@ -105,8 +105,10 @@ always hugs its content, so nothing transparent sits over what you are working o
   a title and one line. It holds 4 seconds, hovering pauses it, a burst merges into one card,
   and it never takes focus. An agent's change must hold 3 seconds to start and 8 to stop first,
   since agents flip between busy and idle on every turn.
-- The pill's window is a fixed transparent stage, so every change of shape runs on the
-  compositor instead of resizing a window. Clicks pass through everything but what is showing.
+- The pill's window is a transparent layer over the whole display, so every change of shape,
+  and every drop after a drag, runs on the compositor without moving or resizing a window. A
+  drop swaps the ghost for the pill in one paint. Clicks pass through everything but what is
+  showing.
 - In a fullscreen app the Dock's space is free, so bottom docks move down into it.
 - Sunken surface, 16px radius, a soft shadow, and a 14% hairline, so it reads on any wallpaper.
 

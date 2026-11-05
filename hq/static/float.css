@@ -3,7 +3,8 @@
 html.float, html.float body {height: 100%; background: transparent; overflow: hidden; overscroll-behavior: none;}
 
 /* Pill: a black capsule of circles, each one a live number you choose. The window around it
-   is a fixed transparent stage, so every change of shape here runs on the compositor. */
+   is a transparent layer over the whole display, so every change of shape here, and a drop,
+   runs on the compositor. */
 .f-capsule {display: inline-flex; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
 .f-rail {display: flex; flex: none; flex-direction: column; gap: 4px; transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
 .f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
@@ -13,6 +14,7 @@ body[data-across="center"] .f-pill .f-rail {margin-inline: auto;}
 body[data-down="end"] .f-pill .f-rail {margin-top: auto;}
 body[data-down="center"] .f-pill .f-rail {margin-block: auto;}
 .f-pill:focus-visible {outline-offset: -3px;}
+.f-pill.instant, .f-pill.instant .f-rail {transition: none;}
 .f-row {display: flex; align-items: center; gap: 8px; min-height: var(--f-size, 28px);}
 body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-offline {justify-content: center; min-height: 12px;}

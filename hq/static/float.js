@@ -17,9 +17,7 @@ const DEFAULT_DOCK = 'top-left';
 const EDGE = 10, BOTTOM_EDGE = 4;
 const LIST_WIDTH = 380, LIST_MAX = 520, SETTINGS_MAX = 840, ITEM_MIN = 240, ITEM_MAX = 760;
 const CONTROLS = 'button, a, input, textarea, select, summary';
-// The window around the pill stays this size, with room for its shadow, so the capsule can
-// spring and morph on the compositor. Resizing a window mid-animation can only stutter.
-const STAGE = {width: 420, height: 270}, MARGIN = 32, PILL_CHROME = 10;
+const PILL_CHROME = 10;
 const CARD = {width: 308, height: 62};
 // The open box sits beside the pill, which stays put so answered items can fly home to it.
 const GAP = 8, STACK = 22, BOX_MAX = 840, FOLD_MS = 620, FLY_MS = 560;
@@ -202,11 +200,10 @@ function dockRect(requested, size, area) {
   const y = down === 'start' ? area.y + EDGE : down === 'center' ? area.y + (area.height - height) / 2 : area.y + area.height - height - BOTTOM_EDGE;
   return {x: Math.round(x), y: Math.round(y), width, height};
 }
-function unionRect(a, b) {
-  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-  return {x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y};
-}
-const inflate = (r, m = MARGIN) => ({x: r.x - m, y: r.y - m, width: r.width + 2 * m, height: r.height + 2 * m});
+// The window covers the whole display, always, so nothing ever resizes or moves it: the pill
+// springs, the box folds and a drop lands all in one page, on the compositor. Clicks still
+// pass through everywhere but the pill and the box.
+const roomOf = (d) => ({x: 0, y: 0, width: d.width, height: d.height});
 const localRect = (r, room) => ({x: r.x - room.x, y: r.y - room.y, width: r.width, height: r.height});
 const clamp = (v, low, high) => Math.max(low, Math.min(high, v));
 // Beside the pill and away from the screen edge; above or below it when it lies along an edge.
@@ -226,10 +223,6 @@ function boxRect(requested, pill, size, area) {
   return {x: Math.round(x), y: Math.round(y), width, height};
 }
 // Room for everything the pill can become at this dock, plus margin for shadows.
-function roomFor(name, rest, area, wide = Math.max(LIST_WIDTH, feel.width)) {
-  const stage = dockRect(name, STAGE, area), most = boxRect(name, rest, {width: wide, height: BOX_MAX}, area);
-  return inflate(unionRect(unionRect(stage, rest), most));
-}
 // How the panel should move between two moments.
 function motionKind(fromMode, toMode, fromItem, toItem, order = [], answered = false) {
   if (fromMode === 'pill' && toMode !== 'pill') return 'open';
@@ -580,7 +573,7 @@ function itemHeight() {
 function geometry(mode = document.body.dataset.mode) {
   const area = display.visible, rest = dockRect(dock, pillSize(), area);
   const pill = mode === 'pill' && notice && !notice.folding ? dockRect(dock, CARD, area) : rest;
-  return {room: roomFor(dock, rest, area), rest, pill, box: mode === 'pill' ? null : boxRect(dock, rest, boxSize(mode), area)};
+  return {room: roomOf(display), rest, pill, box: mode === 'pill' ? null : boxRect(dock, rest, boxSize(mode), area)};
 }
 function placeWindow(rect, flags) {
   const message = {type: 'place', ...rect, ...flags}, signature = JSON.stringify(message);
@@ -865,7 +858,7 @@ function beginDrag(e) {
 // Also runs when the cursor reaches another display, so the targets move with it.
 function coverDisplay() {
   if (!display || !drag) return;
-  const whole = {x: 0, y: 0, width: display.width, height: display.height};
+  const whole = roomOf(display);
   placeWindow({...whole, hit: whole, hits: [whole]}, {key: true, shadow: false});
   drag.rects = dockRects(drag.size, display.visible);
   const zones = $('#drag');
@@ -920,18 +913,41 @@ function saved(name, ok) {
   else toast('HQ could not save where you put it');
   endDrag();
 }
+// Escape, or the system taking the drag away: the ghost glides home, then swaps the same way.
+function cancelDrag() {
+  if (!drag) return;
+  const home = drag.rects[dock];
+  if (drag.phase !== 'dragging' || !home || calm()) return endDrag();
+  drag.phase = 'gliding';
+  drag.target = dock;
+  markTarget();
+  $('#ghost').dataset.layout = layoutFor(dock);
+  $('#ghost').classList.add('gliding');
+  requestAnimationFrame(() => moveGhost(home.x, home.y));
+  drag.timer = setTimeout(endDrag, feel.glide);
+}
 function endDrag() {
   if (!drag) return;
   clearTimeout(drag.timer);
   drag = null;
   document.removeEventListener('mousemove', dragMoved);
   document.removeEventListener('mouseup', dragDropped);
+  // The pill takes the ghost's place in the same paint, already in its new dock and shape:
+  // no transition from where it was before the drag, and the window itself never moves.
+  const pill = $('#pill'), box = $('#box');
+  pill.classList.add('instant');
+  box.classList.add('instant');
+  syncPill();
+  layout();
+  pill.getBoundingClientRect();
   delete document.body.dataset.drag;
   $('#drag').hidden = true;
   $('#ghost').classList.remove('gliding');
   native({type: 'drag', on: false});
-  syncPill();
-  layout();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    pill.classList.remove('instant');
+    if (!box.classList.contains('folded')) box.classList.remove('instant');
+  }));
 }
 
 // From the native window
@@ -947,7 +963,7 @@ function receive(message) {
     display = message;
     if (drag?.phase === 'dragging') coverDisplay();
     else layout();
-  } else if (message.type === 'cancelDrag') endDrag();
+  } else if (message.type === 'cancelDrag') cancelDrag();
   else if (message.type === 'saved') saved(message.dock, message.ok);
   else if (message.type === 'resigned') {
     if (floatOpen && !route.item && !drag && !recording && feel.away === 'collapse') setOpen(false);
@@ -980,7 +996,6 @@ function applyFeel() {
   const root = document.documentElement;
   root.style.setProperty('--f-size', `${feel.size}px`);
   root.style.setProperty('--f-glide', `${feel.glide}ms`);
-  root.style.setProperty('--f-margin', `${MARGIN}px`);
   document.body.dataset.backdrop = feel.backdrop;
 }
 // Links in the item pane point at the dashboard's routes, which live in the browser.
@@ -1055,7 +1070,7 @@ function bootFloat() {
   }, true);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (drag) endDrag();
+    if (drag) cancelDrag();
     else if (customizing) {customizing = false; render();}
     else if (floatOpen && !route.item && agentOpen) showList('agents');
     else if (floatOpen && !route.item) setOpen(false);

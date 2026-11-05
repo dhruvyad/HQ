@@ -591,19 +591,23 @@ assert.equal(boxAt('left').y + 260, restAt('left').y + 51); // centered on a sid
 assert.deepEqual(boxAt('bottom'), {x: 530, y: 255, width: 380, height: 520}); // above a pill along the bottom
 assert.deepEqual(boxAt('top'), {x: 530, y: 81, width: 380, height: 520}); // below one along the top
 assert.deepEqual(boxAt('top-left', {width: 480, height: 5000}), {x: 56, y: 35, width: 480, height: 786}); // never off the screen
-// One window holds the pill, its card and its largest box, so nothing resizes mid-motion.
+// The window is the whole display whatever the dock, so a drop never moves or resizes it:
+// the pill, its card and every box are drawn in it at their display positions.
 const inside = (outer, inner) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+const screenAt = {x: 0, y: 0, width: 1440, height: 825}, room = js(`roomOf(${JSON.stringify(screenAt)})`);
+assert.deepEqual(room, {x: 0, y: 0, width: 1440, height: 825});
 for (const dock of ['top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right']) {
   const lying = ['top', 'bottom'].includes(dock), rest = restAt(dock, lying ? {width: 102, height: 38} : capsule);
-  const room = js(`roomFor('${dock}', ${JSON.stringify(rest)}, ${JSON.stringify(area)})`);
   assert.ok(inside(room, rest), `${dock}: the pill`);
+  assert.deepEqual(js(`localRect(${JSON.stringify(rest)}, roomOf(${JSON.stringify(screenAt)}))`), rest, `${dock}: drawn where it is on screen`);
   assert.ok(inside(room, rect(dock, card)), `${dock}: the notification card`);
   for (const size of [listBox, {width: 480, height: 300}, {width: 480, height: 760}, {width: 380, height: 840}]) {
     assert.ok(inside(room, js(`boxRect('${dock}', ${JSON.stringify(rest)}, ${JSON.stringify(size)}, ${JSON.stringify(area)})`)), `${dock}: a ${size.width}x${size.height} box`);
   }
-  assert.ok(room.x <= rest.x - 32 && room.y <= rest.y - 32, `${dock}: margin for shadows`);
+  // Where the ghost lands is where the pill is drawn, in the shape that dock gives it.
+  const ghost = js(`dockRects(${JSON.stringify(capsule)}, ${JSON.stringify(area)})['${dock}']`);
+  assert.deepEqual(ghost, rest, `${dock}: the ghost lands on the pill`);
 }
-assert.deepEqual(js('unionRect({x: 0, y: 0, width: 10, height: 10}, {x: 5, y: -5, width: 10, height: 10})'), {x: 0, y: -5, width: 15, height: 15});
 assert.deepEqual(js('localRect({x: 50, y: 60, width: 5, height: 6}, {x: 40, y: 30})'), {x: 10, y: 30, width: 5, height: 6});
 
 // How the panel moves: Fold springs open and closed, items are a deck, an answer flies home.
