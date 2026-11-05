@@ -129,7 +129,9 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         panel.contentView = web
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.level = .statusBar
+        // Screen-saver level, as OpenFlow's status bar uses and Wispr Flow's does on a
+        // live Mac: status-bar level loses to anything an app raises above it.
+        panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = false
@@ -140,6 +142,14 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelResigned),
             name: NSWindow.didResignKeyNotification, object: panel
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuOpened),
+            name: NSMenu.didBeginTrackingNotification, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuClosed),
+            name: NSMenu.didEndTrackingNotification, object: nil
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
@@ -476,6 +486,16 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     @objc private func screensChanged() {
         cancelDrag()
         tick()
+    }
+
+    // Menus and dropdowns are fixed at popUpMenu level, under the panel, so it steps
+    // just below them for as long as one is open.
+    @objc private func menuOpened() {
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue - 1)
+    }
+
+    @objc private func menuClosed() {
+        panel.level = .screenSaver
     }
 
     @objc private func panelResigned() {

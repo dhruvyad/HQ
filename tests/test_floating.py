@@ -233,7 +233,8 @@ class LifecycleTests(FloatingCase):
         self.assertEqual(floating.read_pid(), os.getpid())  # exec keeps the pid, so stop can find it.
 
     def test_lock_and_pid_really_survive_exec(self):
-        program = ("import sys\nsys.platform = 'darwin'\nfrom pathlib import Path\nfrom hq import floating\n"
+        # Fake the platform after the imports: urllib imports a macOS-only module if it sees darwin.
+        program = ("import sys\nfrom pathlib import Path\nfrom hq import floating\nsys.platform = 'darwin'\n"
                    "floating.require_route = lambda url: None\nfloating.build = lambda: Path(sys.argv[1])\n"
                    "floating.run(4310, lambda port: {'port': port})\n")
         child = self.spawn([sys.executable, "-c", program, str(floating.build.return_value)], cwd=ROOT)
