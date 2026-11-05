@@ -53,16 +53,21 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-dot.on {background: var(--live); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.16);}
 .f-dot.off {border: 1.5px solid rgb(250 250 250 / 0.45);}
 .f-dot.bad {background: var(--error);}
-.f-num {position: relative; display: block; width: 100%; height: 1em; text-align: center;}
-.f-num b {position: absolute; inset: 0; font-weight: inherit; transition: transform .42s var(--f-soft, ease), opacity .26s ease;}
-.f-num b.from-below, .f-num b.to-below {transform: translateY(100%); opacity: 0;}
-.f-num b.from-above, .f-num b.to-above {transform: translateY(-100%); opacity: 0;}
+/* A number is trimmed to its own glyphs, so the circle centers the digit and not its line
+   box, which sits it a little low. Rolling digits share one grid cell, each centered alone. */
+.f-circle > span:last-child, .f-num b {text-box: trim-both cap alphabetic;}
+.f-num {display: grid; place-items: center;}
+.f-num b {grid-area: 1 / 1; font-weight: inherit; transition: transform .42s var(--f-soft, ease), opacity .26s ease;}
+.f-num b.from-below, .f-num b.to-below {transform: translateY(140%); opacity: 0;}
+.f-num b.from-above, .f-num b.to-above {transform: translateY(-140%); opacity: 0;}
 
 /* The box: one surface for the list and the expanded item. */
-.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), border-radius .4s ease, background .2s, border-color .2s, box-shadow .2s;}
+.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transform-origin: var(--f-from, left top); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), transform .56s var(--f-spring, ease), opacity .16s ease, background .2s, border-color .2s, box-shadow .2s;}
 .f-box.instant {transition: none;}
-/* Fold's springs: the box grows out of the pill, its content arrives a beat later and leaves first. */
-.f-box.closing {border-radius: calc(var(--f-size, 28px) / 2 + 5px);}
+/* Fold's springs, Fly home's direction: the box grows out of the pill's center and shrinks
+   back into it, fading as it goes, while the pill itself stays where it is. */
+.f-box.folded {transform: scale(.16); opacity: 0;}
+.f-box.closing {transform: scale(.16); opacity: 0; transition: transform .42s var(--f-soft, ease), opacity .24s ease .1s;}
 .f-box > * {transition: opacity .2s ease, filter .2s ease;}
 .f-box.opening > :not(.f-back) {animation: f-reveal .44s var(--f-soft, ease) .11s backwards;}
 .f-box.closing > * {opacity: 0; filter: blur(6px); transition-duration: .15s;}

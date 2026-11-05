@@ -511,27 +511,29 @@ function layout() {
   if (unfolding) {
     clearTimeout(layout.closing);
     box.classList.remove('closing');
-    box.classList.add('instant');
+    box.classList.add('instant', 'folded');
     box.hidden = false;
   }
-  const g = geometry(mode), pill = localRect(g.pill, g.room), rest = localRect(g.rest, g.room);
+  const g = geometry(mode), pill = localRect(g.pill, g.room);
   setRect($('#pill'), pill);
-  document.documentElement.style.setProperty('--f-origin', growFrom(dock));
   if (g.box) {
-    // Fold's springs: the box grows out of the pill and settles beside it.
+    const target = localRect(g.box, g.room);
+    setRect(box, target);
+    // The pill stays put, so the box grows out of its center and shrinks back into it,
+    // rather than becoming a second, black pill on top of the real one.
+    box.style.setProperty('--f-from', `${Math.round(pill.x + pill.width / 2 - target.x)}px ${Math.round(pill.y + pill.height / 2 - target.y)}px`);
     if (unfolding) {
-      setRect(box, rest);
       box.getBoundingClientRect();
-      box.classList.remove('instant');
+      box.classList.remove('instant', 'folded');
       box.classList.add('opening');
       clearTimeout(layout.opened);
       layout.opened = setTimeout(() => box.classList.remove('opening'), FOLD_MS);
     }
-    setRect(box, localRect(g.box, g.room));
   } else if (!box.hidden && !box.classList.contains('closing')) {
     box.classList.add('closing');
-    setRect(box, rest);
     layout.closing = setTimeout(() => {box.hidden = true; box.classList.remove('closing');}, FOLD_MS);
+    // The pill takes the box in.
+    if (!calm()) $('#pill').animate([{transform: 'scale(1)'}, {transform: 'scale(1.07)'}, {transform: 'scale(1)'}], {duration: 380, delay: 230, easing: 'ease-out'});
   }
   if (spot.on) placeSpot();
   const hits = [pill, g.box && localRect(g.box, g.room)].filter(Boolean);
