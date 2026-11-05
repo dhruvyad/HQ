@@ -690,9 +690,55 @@ class ClaudeLoginTests(unittest.TestCase):
         worker.step()
         self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 80)  # a failed read keeps the last number
         login.enabled.return_value = False
-        self.clock += usage.CLAUDE_RETRY + 1
+        self.clock += 2 * usage.CLAUDE_RETRY + 1  # one refusal so far, so the wait has doubled
         worker.step()
         self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 40)  # off: back to the status line
+
+    def test_a_refusal_backs_off_and_a_restart_keeps_the_last_number(self):
+        recorded, start = usage.Usage(), time.time()
+        recorded.watched()
+        login = Mock()
+        login.enabled.return_value = True
+        login.retry_after = None
+        good = {"windows": [{"name": "weekly", "left": 61, "resets_at": None}], "as_of": int(start)}
+        login.read.return_value = good
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder) / "claude-usage.json"
+            worker = usage.UsageWorker(recorded, claude=lambda: None, codex=lambda: None, login=login,
+                                       clock=lambda: self.clock, cache=cache)
+            worker.step()
+            self.assertEqual(stat.S_IMODE(cache.stat().st_mode), 0o600)
+            # Refused: keep the number, and wait longer each time, or as long as the endpoint says.
+            login.read.return_value = None
+            waits = []
+            for hint in (None, None, 1800, None, None, None):
+                login.retry_after = hint
+                self.clock = worker.next_login
+                worker.step()
+                waits.append(worker.next_login - self.clock)
+                self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 61)
+            self.assertEqual(waits, [600, 1200, 2400, 3600, 3600, 3600])
+            # A restart shows the kept number and, while it is fresh, asks nothing.
+            login.read.reset_mock()
+            again = usage.Usage()
+            again.watched()
+            fresh = usage.UsageWorker(again, claude=lambda: None, codex=lambda: None, login=login,
+                                      clock=lambda: self.clock, cache=cache, now=lambda: start + 60)
+            fresh.step()
+            login.read.assert_not_called()
+            self.assertEqual(again.current()["claude"]["windows"][0]["left"], 61)
+            # Turned off, a kept number is not shown.
+            login.enabled.return_value = False
+            off = usage.Usage()
+            usage.UsageWorker(off, claude=lambda: None, codex=lambda: None, login=login, clock=lambda: self.clock, cache=cache).step()
+            self.assertIsNone(off.current()["claude"])
+
+    def test_a_429_says_how_long_to_wait(self):
+        error = urllib.error.HTTPError(usage.CLAUDE_USAGE_URL, 429, "Too Many Requests", {"Retry-After": "900"}, io.BytesIO(b"{}"))
+        login = usage.ClaudeLogin(enabled=lambda: True, run=lambda *a, **k: Mock(returncode=0, stdout=json.dumps(
+            {"claudeAiOauth": {"accessToken": "t", "expiresAt": (time.time() + 3600) * 1000}})), open_url=Mock(side_effect=error))
+        self.assertIsNone(login.read())
+        self.assertEqual(login.retry_after, 900)
 
 
 if __name__ == "__main__":

@@ -29,8 +29,11 @@ from .adapters import CodexClient
 from .store import data_dir
 
 CODEX_POLL = 60
-CLAUDE_POLL = 120
+# The usage endpoint rate-limits hard, and these windows move slowly: ask every 5 minutes,
+# and after a refusal wait as long as it says, or back off from 10 minutes up to an hour.
+CLAUDE_POLL = 300
 CLAUDE_RETRY = 600
+CLAUDE_BACKOFF_MOST = 3600
 CLAUDE_LOGIN_ITEM = "Claude Code-credentials"
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_RETRY = 600  # A failed read is usually a missing login, which a minute will not fix.
@@ -144,6 +147,7 @@ class ClaudeLogin:
     def __init__(self, enabled=claude_login_enabled, run=subprocess.run, open_url=urllib.request.urlopen, now=time.time):
         self.enabled, self.run, self.open_url, self.now = enabled, run, open_url, now
         self.token, self.expires = None, 0
+        self.retry_after = None
 
     def load(self):
         # macOS asks the user before handing this over, the first time and after changes.
@@ -172,10 +176,17 @@ class ClaudeLogin:
         # An expired login is Claude Code's to renew, next time it runs.
         if not self.token or self.expires <= self.now() + 60:
             return None
+        self.retry_after = None
         try:
             return self.ask()
         except urllib.error.HTTPError as error:
             error.close()
+            if error.code == 429:
+                try:
+                    self.retry_after = max(0, int(error.headers.get("Retry-After", "")))
+                except (TypeError, ValueError, AttributeError):
+                    self.retry_after = None
+                return None
             if error.code != 401:
                 return None
             # Claude Code may have renewed it since: read it again, once.
@@ -374,17 +385,51 @@ class SampleUsage:
 
 
 class UsageWorker:
-    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic, login=None):
+    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic, login=None, cache=None, now=time.time):
         self.usage, self.claude, self.codex, self.clock = usage, claude, codex, clock
         self.login = login or ClaudeLogin()
         self.stop = threading.Event()
         self.next_codex = self.next_login = -math.inf
-        self.from_login = None
+        self.from_login, self.backoff, self.cache = None, CLAUDE_RETRY, cache
+        # The last login reading survives a restart, so a restart neither blanks the circle
+        # nor spends a request the endpoint may refuse.
+        if cache and self.login.enabled():
+            try:
+                kept = valid_reading(json.loads(Path(cache).read_text()))
+            except (OSError, ValueError):
+                kept = None
+            if kept:
+                self.from_login = kept
+                age = max(0, now() - kept["as_of"])
+                if age < CLAUDE_POLL:
+                    self.next_login = clock() + CLAUDE_POLL - age
+
+    def keep(self, value):
+        if not self.cache:
+            return
+        try:
+            path = Path(self.cache)
+            temp = path.with_name(path.name + ".tmp")
+            temp.write_text(json.dumps(value))
+            os.chmod(temp, 0o600)
+            os.replace(temp, path)
+        except OSError:
+            pass
 
     def step(self):
         if self.usage.is_watched() and self.clock() >= self.next_login:
-            self.from_login = self.login.read() or (self.from_login if self.login.enabled() else None)
-            self.next_login = self.clock() + (CLAUDE_POLL if self.from_login else CLAUDE_RETRY)
+            value = self.login.read()
+            if value:
+                self.from_login, self.backoff = value, CLAUDE_RETRY
+                self.keep(value)
+                delay = CLAUDE_POLL
+            else:
+                # A refusal keeps the last number; its as_of says how old it is.
+                self.from_login = self.from_login if self.login.enabled() else None
+                hint = getattr(self.login, "retry_after", None)
+                delay = max(hint if isinstance(hint, (int, float)) else 0, self.backoff)
+                self.backoff = min(self.backoff * 2, CLAUDE_BACKOFF_MOST)
+            self.next_login = self.clock() + delay
         # The login, when it is on and answering; otherwise whatever the status line recorded.
         self.usage.record("claude", self.from_login or self.claude())
         if not self.usage.is_watched() or self.clock() < self.next_codex:
