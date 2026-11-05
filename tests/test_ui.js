@@ -340,6 +340,24 @@ assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
 assert.ok(run('floatListHTML([], true)').includes('Nothing needs you'));
 
+// Agents already running when the panel starts are its baseline, so nothing is announced.
+run("agentMemory.clear(); watchAgents.settled = undefined; heard = []; realEnqueue = enqueue; enqueue = (events) => heard.push(...events)");
+run('watchAgents()');
+assert.equal(run("agentMemory.get('codex:a').running"), true); // known to be running already
+run("watchAgents(); trackAgents(agentMemory, state.sessions.map((s) => ({id: s.id, name: s.name, harness: harness(s.provider), state: agentState(s)})), Date.now() / 1000 + 60).forEach((e) => heard.push(e))");
+assert.equal(run('heard.length'), 0);
+run('enqueue = realEnqueue; agentMemory.clear(); watchAgents.settled = undefined');
+// The spotlight answers the pill alone: a few pixels of slack, never the open box.
+const pillRect = {left: 10, right: 48, top: 35, bottom: 137}, boxRect = {left: 56, right: 436, top: 35, bottom: 400};
+assert.equal(run(`overPill(${JSON.stringify(pillRect)}, null, 20, 60)`), true);
+assert.equal(run(`overPill(${JSON.stringify(pillRect)}, null, 52, 60)`), true); // just past the edge
+assert.equal(run(`overPill(${JSON.stringify(pillRect)}, ${JSON.stringify(boxRect)}, 200, 60)`), false); // in the list
+assert.equal(run(`overPill(${JSON.stringify(pillRect)}, null, 200, 60)`), false); // far away, box or not
+assert.equal(run(`overPill(${JSON.stringify(pillRect)}, ${JSON.stringify({...boxRect, left: 50})}, 52, 60)`), false); // the box wins where they meet
+// With the box open the circle still steps forward, but its label would cover the header.
+assert.equal(run('spotLabelled(false)'), true);
+assert.equal(run('spotLabelled(true)'), false);
+
 // The pill: a black capsule of circles you choose, with no wordmark.
 run("circles = ['needs', 'agents', 'claude']");
 html = run('pillHTML(attention(), true)');

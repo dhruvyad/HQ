@@ -245,6 +245,16 @@ function spotSide(name, layout = layoutFor(name)) {
   if (layout === 'vertical') return labelSide(name, 'vertical') === 'left' ? 'left' : 'right';
   return (DOCKS[name] || DOCKS[DEFAULT_DOCK])[1] === 'end' ? 'above' : 'below';
 }
+// The window reports the pointer over the open box too; only the pill itself, give or take a
+// few pixels, lights a circle.
+const SPOT_SLACK = 6;
+function overPill(pill, box, x, y) {
+  const inside = (r, pad = 0) => Boolean(r) && x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+  return inside(pill, SPOT_SLACK) && !inside(box);
+}
+// While the box is open its header sits beside the pill, so the label would cover it: the
+// circle still steps forward, but says nothing.
+const spotLabelled = (open) => !open;
 // The circle nearest the cursor, measured along the pill.
 function nearestCircle(centers, x, y, vertical) {
   let best = -1, closest = Infinity;
@@ -397,7 +407,8 @@ function noteChanges(items) {
 function watchAgents() {
   if (!liveHealthy || !model) return;
   const agents = state.sessions.map((s) => ({id: s.id, name: s.name, harness: harness(s.provider), state: agentState(s)}));
-  const events = trackAgents(agentMemory, agents, Date.now() / 1000, watchAgents.settled);
+  // The first reading is only the baseline: agents already running at launch were not just started.
+  const events = trackAgents(agentMemory, agents, Date.now() / 1000, Boolean(watchAgents.settled));
   watchAgents.settled = true;
   enqueue(events);
 }
@@ -689,6 +700,8 @@ function placeSpot() {
 }
 function spotlight(x, y) {
   if (feel.labels !== 'spotlight' || notice || drag) return hideSpot();
+  const box = $('#box');
+  if (!overPill($('#pill').getBoundingClientRect(), box.hidden ? null : box.getBoundingClientRect(), x, y)) return hideSpot();
   const rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
   const centers = rows.map((row) => {
     const r = row.querySelector('.f-circle').getBoundingClientRect();
@@ -705,7 +718,7 @@ function spotlight(x, y) {
     if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
   }
   spot.on = true;
-  el.classList.add('on');
+  el.classList.toggle('on', spotLabelled(floatOpen));
   markSpot();
   placeSpot();
   if (first) requestAnimationFrame(() => el.classList.remove('instant'));
