@@ -33,6 +33,17 @@ def write_config(path, data):
     os.replace(temp.name, path)
 
 
+def is_hq_hook(hook, provider):
+    """HQ's hook for this agent wherever HQ was installed from: `.../bin/hq hook <agent>` or `... -m hq hook <agent>`."""
+    command = hook.get("command") if isinstance(hook, dict) else None
+    try:
+        words = shlex.split(command) if isinstance(command, str) else []
+    except ValueError:
+        return False
+    return len(words) >= 3 and words[-2:] == ["hook", provider] and (
+        words[-3].endswith("/bin/hq") or words[-4:-2] == ["-m", "hq"])
+
+
 def install_hooks(provider):
     home = Path.home()
     path = home / (".codex/hooks.json" if provider == "codex" else ".claude/settings.json")
@@ -42,9 +53,14 @@ def install_hooks(provider):
     changed = False
     for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]:
         groups = hooks.setdefault(event, [])
-        if any(h.get("command") == command for group in groups for h in group.get("hooks", [])):
+        mine = [h for group in groups for h in group.get("hooks", []) if is_hq_hook(h, provider)]
+        if any(h.get("command") == command for h in mine):
             continue
-        groups.append({"hooks": [{"type": "command", "command": command, "timeout": 5}]})
+        if mine:
+            # HQ moved, say from a checkout to an installed copy: repoint its hook rather than run both.
+            mine[0]["command"] = command
+        else:
+            groups.append({"hooks": [{"type": "command", "command": command, "timeout": 5}]})
         changed = True
     if changed:
         write_config(path, data)

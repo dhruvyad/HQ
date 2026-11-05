@@ -18,8 +18,8 @@ from .mcp import AGENT_INSTRUCTIONS, run as run_mcp, with_notes
 from .server import serve
 from . import workstreams
 from .store import Store, data_dir
-from .connections import (connect_chatgpt, connect_codex, install_hooks, install_statusline, launch as launch_agent,
-                          statusline_state, uninstall_statusline)
+from .connections import (connect_chatgpt, connect_codex, hq_command, install_hooks, install_statusline,
+                          launch as launch_agent, statusline_state, uninstall_statusline)
 from .hooks import run as run_hook
 from . import usage as subscription_usage
 
@@ -61,6 +61,19 @@ def ensure_server(port):
     raise ValueError(f"HQ did not start in time. See {log_path}")
 
 
+def stop_service():
+    state = running()
+    if state:
+        os.kill(state["pid"], signal.SIGTERM)
+        for _ in range(60):
+            if not running():
+                break
+            time.sleep(0.1)
+        else:
+            raise ValueError("HQ is still shutting down; check hq status before restarting")
+    return {"status": "stopped" if state else "not running"}
+
+
 def launch(port, open_browser=True):
     state = ensure_server(port)
     url = f"http://127.0.0.1:{state['port']}"
@@ -70,11 +83,8 @@ def launch(port, open_browser=True):
 
 
 def install(target):
-    executable = str(Path(__file__).resolve().parents[1] / "bin/hq")
-    if not Path(executable).exists():
-        executable = shutil.which("hq")
-    if not executable:
-        raise ValueError("Install hq on your PATH first")
+    # Absolute interpreter and module, so clients find HQ even before its folder is on PATH.
+    command = hq_command() + ["mcp", "--provider"]
     targets = ["codex", "claude-code", "claude-desktop"] if target == "all" else [target]
     results = []
     for client in targets:
@@ -89,9 +99,9 @@ def install(target):
             args = [binary, "mcp", "add"]
             if client == "claude-code":
                 args += ["--scope", "user"]
-            args += ["hq", "--", sys.executable, executable, "mcp", "--provider", client]
+            args += ["hq", "--", *command, client]
             result = subprocess.run(args, capture_output=True, text=True)
-            if client == "codex" and result.returncode == 0:
+            if client == "codex" and result.returncode == 0 and config.exists():
                 # Only update the server entry the CLI just created for HQ.
                 text = config.read_text()
                 match = re.search(r"(?m)^\[mcp_servers\.hq\]\s*$", text)
@@ -115,7 +125,7 @@ def install(target):
                 continue
             if config.exists():
                 shutil.copy2(config, config.with_name(config.name + ".hq-backup-" + str(int(time.time()))))
-            data.setdefault("mcpServers", {})["hq"] = {"command": sys.executable, "args": [executable, "mcp", "--provider", client]}
+            data.setdefault("mcpServers", {})["hq"] = {"command": command[0], "args": [*command[1:], client]}
             config.write_text(json.dumps(data, indent=2) + "\n")
             results.append({"client": client, "status": "configured; restart Claude Desktop to load"})
     return {"clients": results, "message": "Reload MCP tools or restart sessions to load HQ. Existing conversations are not interrupted."}
@@ -249,6 +259,12 @@ def parser():
     desktop = commands.add_parser("desktop", help="Install, verify, or remove the Codex + HQ launcher")
     desktop.add_argument("action", choices=["install", "status", "uninstall"])
     desktop.add_argument("--app", help="Codex desktop .app installation")
+    onboarding = commands.add_parser("setup", help="Connect the agents you use, put the pill on screen and open the dashboard; "
+                                                   "shows each change first")
+    onboarding.add_argument("--undo", action="store_true", help="Remove what setup added; your inbox is kept")
+    onboarding.add_argument("--yes", action="store_true", help="Do not ask first")
+    onboarding.add_argument("--no-pill", action="store_true", help="Skip the floating pill")
+    onboarding.add_argument("--port", type=int, default=4310)
     plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line, "
                                              "login reads Claude usage with Claude Code's saved login instead")
     plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall", "login", "logout"])
@@ -302,6 +318,11 @@ def main():
             return run_mcp(args.provider, args.channel, args.session_id)
         if args.command == "install":
             return output(install(args.target))
+        if args.command == "setup":
+            from . import onboard
+            if args.undo:
+                return sys.exit(onboard.undo(stop_service))
+            return sys.exit(onboard.setup(args.port, args.yes, not args.no_pill, install, launch))
         if args.command == "hook":
             return run_hook(args.provider)
         if args.command == "launch":
@@ -343,16 +364,7 @@ def main():
             except TypeError as error:
                 raise ValueError(f"Invalid report fields: {error}") from None
         if args.command == "stop":
-            state = running()
-            if state:
-                os.kill(state["pid"], signal.SIGTERM)
-                for _ in range(60):
-                    if not running():
-                        break
-                    time.sleep(0.1)
-                else:
-                    raise ValueError("HQ is still shutting down; check hq status before restarting")
-            return output({"status": "stopped" if state else "not running"})
+            return output(stop_service())
         if args.command == "status":
             return output({"server": running(), "database": str(store.path)})
         if args.command == "session":
