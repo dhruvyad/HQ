@@ -149,8 +149,12 @@ class Handler(BaseHTTPRequestHandler):
                     result = store.ask_agent(parts[2], body.get("text"))
                 elif parts[3] in {"resolve", "done"}:
                     # From the dashboard this is you, not the agent. An open item is marked done
-                    # and the agent told; it closes once the agent has heard.
-                    result = store.mark_done(parts[2], body.get("note", ""))
+                    # and the agent told; it closes once the agent has heard. A decided one you
+                    # close yourself.
+                    if store.item(parts[2])["status"] == "answered":
+                        result = store.close(parts[2], body.get("note", ""))
+                    else:
+                        result = store.mark_done(parts[2], body.get("note", ""))
                 elif parts[3] == "close":
                     # You take a decided item back and close it yourself.
                     result = store.close(parts[2], body.get("note", ""))
