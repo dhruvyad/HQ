@@ -121,8 +121,24 @@ def install(target):
     return {"clients": results, "message": "Reload MCP tools or restart sessions to load HQ. Existing conversations are not interrupted."}
 
 
+class Parser(argparse.ArgumentParser):
+    """Whatever follows `--` on `hq launch` goes to the agent untouched.
+
+    Before Python 3.12, argparse fills an optional positional early and then rejects
+    these as unrecognized, so split them off before it sees them.
+    """
+    def parse_args(self, args=None, namespace=None):
+        args = list(sys.argv[1:] if args is None else args)
+        if args[:1] != ["launch"] or "--" not in args:
+            return super().parse_args(args, namespace)
+        at = args.index("--")
+        parsed = super().parse_args(args[:at], namespace)
+        parsed.arguments = args[at + 1:]
+        return parsed
+
+
 def parser():
-    root = argparse.ArgumentParser(prog="hq", description="Your local inbox for AI agents. Run hq to open the dashboard.")
+    root = Parser(prog="hq", description="Your local inbox for AI agents. Run hq to open the dashboard.")
     root.add_argument("--version", action="version", version="hq 0.1.0")
     commands = root.add_subparsers(dest="command")
     start = commands.add_parser("start", help="Start HQ in the background and open the dashboard")
