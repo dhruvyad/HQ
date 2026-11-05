@@ -1,9 +1,14 @@
-"""Subscription usage left, from the only sources the tools themselves support.
+"""Subscription usage left, from what the tools themselves report.
 
 Codex answers `account/rateLimits/read` over its app-server protocol. Claude Code
-hands its rate limits to a status line command and nowhere else, so `hq statusline`
-records them. HQ never reads a login, a transcript or an account API. When a tool
-has not said, the answer is None, never an estimate.
+documents its rate limits only for a status line command, which `hq statusline`
+records. Because a status line hides most of Claude Code's footer hints, the user
+can instead opt in to `hq usage login`: HQ then reads Claude Code's saved login
+from the Keychain and asks the same unofficial usage endpoint that community tools
+use. That token stays in memory, goes only to Anthropic, and is never refreshed
+here, since rotating it behind Claude Code's back could sign Claude Code out.
+HQ never reads a transcript. When a tool has not said, the answer is None, never
+an estimate.
 """
 import json
 import math
@@ -16,10 +21,18 @@ import tempfile
 import threading
 import time
 
+from datetime import datetime
+import urllib.error
+import urllib.request
+
 from .adapters import CodexClient
 from .store import data_dir
 
 CODEX_POLL = 60
+CLAUDE_POLL = 120
+CLAUDE_RETRY = 600
+CLAUDE_LOGIN_ITEM = "Claude Code-credentials"
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_RETRY = 600  # A failed read is usually a missing login, which a minute will not fix.
 CODEX_TIMEOUT = 20
 TICK = 5
@@ -85,6 +98,96 @@ def parse_claude(payload):
     slots = [("5-hour", limits.get("five_hour")), ("weekly", limits.get("seven_day"))]
     return reading([window(name, slot.get("used_percentage"), slot.get("resets_at"))
                     for name, slot in slots if isinstance(slot, dict)])
+
+
+def iso_epoch(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return epoch(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def parse_claude_login_usage(payload):
+    """The usage endpoint's windows, as utilization percent used and an ISO reset time."""
+    if not isinstance(payload, dict):
+        return None
+    slots = [("5-hour", payload.get("five_hour")), ("weekly", payload.get("seven_day"))]
+    return reading([window(name, slot.get("utilization"), iso_epoch(slot.get("resets_at")))
+                    for name, slot in slots if isinstance(slot, dict)])
+
+
+def login_path():
+    return data_dir() / "usage.json"
+
+
+def claude_login_enabled():
+    try:
+        return json.loads(login_path().read_text()).get("claude_login") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_claude_login(enabled):
+    path = login_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps({"claude_login": bool(enabled)}) + "\n")
+    os.chmod(path, 0o600)
+    return {"claude_login": "on" if enabled else "off",
+            "note": "Restart HQ for this to take effect: hq stop, then hq float" if enabled else "Claude usage now comes only from a status line, if you have one"}
+
+
+class ClaudeLogin:
+    """Reads Claude usage with Claude Code's own login, only when the user turned it on."""
+
+    def __init__(self, enabled=claude_login_enabled, run=subprocess.run, open_url=urllib.request.urlopen, now=time.time):
+        self.enabled, self.run, self.open_url, self.now = enabled, run, open_url, now
+        self.token, self.expires = None, 0
+
+    def load(self):
+        # macOS asks the user before handing this over, the first time and after changes.
+        done = self.run(["security", "find-generic-password", "-s", CLAUDE_LOGIN_ITEM, "-w"],
+                        capture_output=True, text=True, timeout=60)
+        self.token, self.expires = None, 0
+        if done.returncode:
+            return
+        login = (json.loads(done.stdout) or {}).get("claudeAiOauth") or {}
+        if isinstance(login.get("accessToken"), str) and isinstance(login.get("expiresAt"), (int, float)):
+            self.token, self.expires = login["accessToken"], login["expiresAt"] / 1000
+
+    def ask(self):
+        request = urllib.request.Request(CLAUDE_USAGE_URL, headers={
+            "Authorization": f"Bearer {self.token}", "anthropic-beta": "oauth-2025-04-20",
+            "Accept": "application/json", "User-Agent": "hq"})
+        with self.open_url(request, timeout=15) as response:
+            return parse_claude_login_usage(json.load(response))
+
+    def read(self):
+        if not self.enabled():
+            self.token, self.expires = None, 0
+            return None
+        if not self.token or self.expires <= self.now() + 60:
+            self.load()
+        # An expired login is Claude Code's to renew, next time it runs.
+        if not self.token or self.expires <= self.now() + 60:
+            return None
+        try:
+            return self.ask()
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code != 401:
+                return None
+            # Claude Code may have renewed it since: read it again, once.
+            self.load()
+            if not self.token:
+                return None
+            try:
+                return self.ask()
+            except (urllib.error.URLError, OSError, ValueError):
+                return None
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
 
 
 def valid_reading(value):
@@ -271,13 +374,19 @@ class SampleUsage:
 
 
 class UsageWorker:
-    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic):
+    def __init__(self, usage, claude=read_claude, codex=read_codex, clock=time.monotonic, login=None):
         self.usage, self.claude, self.codex, self.clock = usage, claude, codex, clock
+        self.login = login or ClaudeLogin()
         self.stop = threading.Event()
-        self.next_codex = -math.inf
+        self.next_codex = self.next_login = -math.inf
+        self.from_login = None
 
     def step(self):
-        self.usage.record("claude", self.claude())
+        if self.usage.is_watched() and self.clock() >= self.next_login:
+            self.from_login = self.login.read() or (self.from_login if self.login.enabled() else None)
+            self.next_login = self.clock() + (CLAUDE_POLL if self.from_login else CLAUDE_RETRY)
+        # The login, when it is on and answering; otherwise whatever the status line recorded.
+        self.usage.record("claude", self.from_login or self.claude())
         if not self.usage.is_watched() or self.clock() < self.next_codex:
             return
         value = self.codex()

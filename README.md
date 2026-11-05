@@ -84,9 +84,15 @@ again, keeping your place and draft. `⌃⌥J` and `⌃⌥K` move through items,
 dashboard. All of them can be changed or cleared in the panel.
 
 Usage comes only from what each tool itself reports, and a circle with no source stays
-empty rather than guessing. Codex works with nothing to set up. Claude Code reports its
-limits only to a status line, so turn that on with `hq usage install` (`hq usage uninstall`
-undoes it). While any status line is set, Claude Code hides most of its footer hints.
+empty rather than guessing. Codex works with nothing to set up. For Claude there are two
+opt-in routes:
+
+- `hq usage install` adds a status line, the only documented source. While any status line
+  is set, Claude Code hides most of its footer hints. `hq usage uninstall` undoes it.
+- `hq usage login` reads Claude Code's saved login from the Keychain (macOS asks first) and
+  asks the unofficial usage endpoint that community tools use, so the footer stays as it
+  is. The token stays in memory, goes only to Anthropic, and is never refreshed by HQ. It
+  could stop working without notice. `hq usage logout` turns it off.
 
 `hq float stop` quits it, `hq float status` reports on it, and `hq float install` starts it
 at login (`hq float uninstall` undoes that). It needs macOS and Xcode's command line tools

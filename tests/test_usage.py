@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 from hq import cli, connections, usage
@@ -573,12 +574,125 @@ class CommandTests(TempHome):
     def test_status_reports_what_is_known(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(Path, "home", return_value=Path(temp)), \
                 patch("hq.usage.read_codex", return_value=None):
-            self.assertEqual(self.run_usage(), {"claude": None, "codex": None, "claude_status_line": "none"})
+            self.assertEqual(self.run_usage(), {"claude": None, "codex": None, "claude_login": "off", "claude_status_line": "none"})
 
     def test_install_goes_through_the_command(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(Path, "home", return_value=Path(temp)):
             self.assertEqual(self.run_usage("install")["status_line"], "configured")
             self.assertEqual(self.run_usage("uninstall")["status_line"], "removed")
+
+
+class ClaudeLoginTests(unittest.TestCase):
+    """The opt-in route: Claude Code's own login, read only when turned on, never kept or refreshed."""
+    PAYLOAD = {"five_hour": None, "seven_day": {"utilization": 20.0, "resets_at": "2026-11-09T22:00:00.148647+00:00"},
+               "limits": [{"kind": "weekly_all", "percent": 20}], "extra_usage": {"is_enabled": False}}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        patcher = patch.dict(os.environ, {"HQ_HOME": self.temp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.calls, self.requests, self.answers = [], [], []
+        self.clock = 1_000_000.0
+
+    def keychain(self, token="secret-token", expires_in=3600, code=0):
+        def run(command, **kwargs):
+            self.calls.append(command)
+            body = json.dumps({"claudeAiOauth": {"accessToken": token, "refreshToken": "never-used",
+                                                 "expiresAt": (self.clock + expires_in) * 1000}})
+            return subprocess.CompletedProcess(command, code, stdout=body if code == 0 else "", stderr="")
+        return run
+
+    def url(self, request, timeout):
+        self.requests.append(request)
+        answer = self.answers.pop(0) if self.answers else self.PAYLOAD
+        if isinstance(answer, int):
+            raise urllib.error.HTTPError(request.full_url, answer, "no", {}, io.BytesIO(b""))
+        return io.BytesIO(json.dumps(answer).encode())
+
+    def login(self, enabled=True, **keychain):
+        return usage.ClaudeLogin(enabled=lambda: enabled, run=self.keychain(**keychain), open_url=self.url, now=lambda: self.clock)
+
+    def test_parses_the_usage_windows(self):
+        value = usage.parse_claude_login_usage(self.PAYLOAD)
+        self.assertEqual(value["windows"], [{"name": "weekly", "left": 80, "resets_at": 1794261600}])
+        both = usage.parse_claude_login_usage({"five_hour": {"utilization": 37.6, "resets_at": "2026-11-06T04:00:00Z"},
+                                               "seven_day": {"utilization": 20, "resets_at": None}})
+        self.assertEqual([w["left"] for w in both["windows"]], [62, 80])  # rounded down, never overstated
+        self.assertIsNone(usage.parse_claude_login_usage({"five_hour": None, "seven_day": None}))
+        self.assertIsNone(usage.parse_claude_login_usage({"seven_day": {"utilization": "lots"}}))
+        self.assertIsNone(usage.parse_claude_login_usage([]))
+
+    def test_off_reads_nothing(self):
+        login = self.login(enabled=False)
+        self.assertIsNone(login.read())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.requests, [])
+
+    def test_reads_once_and_keeps_the_token_in_memory_only(self):
+        login = self.login()
+        self.assertEqual(login.read()["windows"][0]["left"], 80)
+        self.assertEqual(login.read()["windows"][0]["left"], 80)
+        self.assertEqual(len(self.calls), 1)  # the Keychain is asked once, not every poll
+        self.assertEqual(self.calls[0], ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        request = self.requests[0]
+        self.assertEqual(request.full_url, "https://api.anthropic.com/api/oauth/usage")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret-token")
+        # Nothing on disk ever holds it.
+        for path in Path(self.temp.name).rglob("*"):
+            if path.is_file():
+                self.assertNotIn("secret-token", path.read_text(errors="ignore"))
+
+    def test_an_expired_login_waits_for_claude_code_to_renew_it(self):
+        login = self.login(expires_in=-5)
+        self.assertIsNone(login.read())
+        self.assertEqual(self.requests, [])  # no request with a dead token, and no refresh attempt
+        self.assertTrue(all("refresh" not in " ".join(call) for call in self.calls))
+
+    def test_a_rejected_token_is_read_again_once(self):
+        login = self.login()
+        self.answers = [401, self.PAYLOAD]
+        self.assertEqual(login.read()["windows"][0]["left"], 80)
+        self.assertEqual(len(self.calls), 2)
+        self.answers = [401, 401]
+        self.assertIsNone(login.read())
+
+    def test_failures_say_nothing_rather_than_guess(self):
+        self.assertIsNone(self.login(code=44).read())  # no login in the Keychain, or the user said no
+        login = self.login()
+        self.answers = [500]
+        self.assertIsNone(login.read())
+        self.answers = [{"unexpected": True}]
+        self.assertIsNone(login.read())
+
+    def test_the_setting_is_private_and_off_by_default(self):
+        self.assertFalse(usage.claude_login_enabled())
+        self.assertEqual(usage.set_claude_login(True)["claude_login"], "on")
+        self.assertTrue(usage.claude_login_enabled())
+        self.assertEqual(stat.S_IMODE(usage.login_path().stat().st_mode), 0o600)
+        usage.set_claude_login(False)
+        self.assertFalse(usage.claude_login_enabled())
+
+    def test_the_worker_prefers_the_login_and_keeps_the_status_line_as_fallback(self):
+        recorded = usage.Usage()
+        recorded.watched()
+        login = Mock()
+        login.enabled.return_value = True
+        login.read.return_value = {"windows": [{"name": "weekly", "left": 80, "resets_at": None}], "as_of": int(time.time())}
+        line = {"windows": [{"name": "5-hour", "left": 40, "resets_at": None}], "as_of": int(time.time())}
+        worker = usage.UsageWorker(recorded, claude=lambda: line, codex=lambda: None, login=login, clock=lambda: self.clock)
+        worker.step()
+        self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 80)
+        login.read.return_value = None
+        self.clock += usage.CLAUDE_POLL + 1
+        worker.step()
+        self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 80)  # a failed read keeps the last number
+        login.enabled.return_value = False
+        self.clock += usage.CLAUDE_RETRY + 1
+        worker.step()
+        self.assertEqual(recorded.current()["claude"]["windows"][0]["left"], 40)  # off: back to the status line
 
 
 if __name__ == "__main__":

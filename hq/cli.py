@@ -249,8 +249,9 @@ def parser():
     desktop = commands.add_parser("desktop", help="Install, verify, or remove the Codex + HQ launcher")
     desktop.add_argument("action", choices=["install", "status", "uninstall"])
     desktop.add_argument("--app", help="Codex desktop .app installation")
-    plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line")
-    plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall"])
+    plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line, "
+                                             "login reads Claude usage with Claude Code's saved login instead")
+    plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall", "login", "logout"])
     commands.add_parser("statusline", help="Record Claude Code's rate limits from its status line; Claude Code runs this")
     panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
     panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
@@ -265,8 +266,12 @@ def usage_command(action):
         return install_statusline()
     if action == "uninstall":
         return uninstall_statusline()
-    return {"claude": subscription_usage.fresh(subscription_usage.read_claude()),
-            "codex": subscription_usage.read_codex(), "claude_status_line": statusline_state()}
+    if action in {"login", "logout"}:
+        return subscription_usage.set_claude_login(action == "login")
+    login = subscription_usage.claude_login_enabled()
+    claude = (subscription_usage.ClaudeLogin().read() if login else None) or subscription_usage.fresh(subscription_usage.read_claude())
+    return {"claude": claude, "codex": subscription_usage.read_codex(),
+            "claude_login": "on" if login else "off", "claude_status_line": statusline_state()}
 
 
 def float_panel(args):
