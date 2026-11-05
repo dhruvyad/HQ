@@ -2,21 +2,21 @@
 
 **One inbox for everything your AI agents need from you, with a pill that floats over every app.**
 
-<p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. One click opens it, one more answers it, and the item flies back into the count."></p>
-
-Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
-in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
-The agent picks up your reply.
-
-## Install
-
-macOS, with Claude Code or Codex.
+## Install in one line
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dhruvyad/HQ/main/install.sh | sh
 ```
 
-It installs the `hq` command, then `hq setup` connects the agents you use, puts the pill on screen and opens the dashboard. It shows each change before making it. `hq setup --undo` reverses it.
+macOS, with Claude Code or Codex. It installs the `hq` command, then `hq setup` connects the agents you
+use, puts the pill on screen and opens the dashboard. It shows each change before making it, and
+`hq setup --undo` reverses it.
+
+<p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. One click opens it, one more answers it, and the item flies back into the count."></p>
+
+Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
+in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
+The agent picks up your reply.
 
 ## What it does
 
