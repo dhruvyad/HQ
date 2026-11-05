@@ -855,4 +855,49 @@ assert.ok(run("describeRemoved({title: 'x', project_name: 'P'}, model.items.find
 // Skip and Mark done say they still have to reach the agent.
 assert.ok(source.includes("'Skipped · tells the agent'") && source.includes("'Marked done · tells the agent'") && source.includes('items/${id}/done'));
 
+// Files in a reply: what is taken, when Send is ready, and what the composer shows.
+assert.equal(run("fileKind({type: '', name: 'notes.md'})"), 'text/markdown'); // the clipboard often gives no type
+assert.equal(run("fileKind({type: 'image/png; charset=binary', name: 'x'})"), 'image/png');
+assert.equal(run("fileKind({type: 'application/zip', name: 'a.zip'})"), 'application/zip');
+assert.equal(run("fileProblem({type: 'application/zip', name: 'a.zip', size: 10}, 0)"), 'Not a type HQ takes');
+assert.equal(run("fileProblem({type: 'image/png', name: 'a.png', size: 26 * 1024 * 1024}, 0)"), 'Too big: 25 MB at most');
+assert.equal(run("fileProblem({type: 'image/png', name: 'a.png', size: 0}, 0)"), 'The file is empty');
+assert.equal(run("fileProblem({type: 'image/png', name: 'a.png', size: 9}, 10)"), '10 files at most');
+assert.equal(run("fileProblem({type: 'text/csv', name: 'a.csv', size: 9}, 2)"), '');
+const ready = (text, files) => run(`readyToSend(${JSON.stringify(text)}, ${JSON.stringify(files)})`);
+assert.equal(ready('', []), false);
+assert.equal(ready('', [{status: 'ready', id: 'a'}]), true); // files alone are a reply
+assert.equal(ready('hello', [{status: 'uploading'}]), false); // never while anything uploads
+assert.equal(ready('hello', [{status: 'error'}]), true); // a refused file is just left out
+const chips = [{key: 'f1', name: 'shot.png', type: 'image/png', size: 2048, status: 'ready', id: 'a1', url: 'blob:x'},
+  {key: 'f2', name: 'log.txt', type: 'text/plain', size: 300, status: 'uploading'},
+  {key: 'f3', name: 'big.mov', type: 'video/quicktime', size: 9, status: 'error', error: 'Not a type HQ takes'}];
+html = run(`composeHTML({id: 'reply', draft: 'text', value: '', placeholder: 'x', label: 'Reply', send: 'Send', ready: readyToSend('', ${JSON.stringify(chips)}), files: ${JSON.stringify(chips)}})`);
+assert.ok(html.includes('data-attach="text"') && html.includes('class="composer has-files"') && html.includes('data-attach-pick') && html.includes('type="file" multiple hidden'));
+assert.ok(html.includes('<img src="blob:x" alt="shot.png">') && html.includes('data-remove-file="f1"') && html.includes('aria-label="Uploading"'));
+assert.ok(html.includes('<span class="c-size">Not a type HQ takes</span>') && html.includes('aria-label="Send" disabled'));
+assert.ok(html.indexOf('c-files') < html.indexOf('<textarea') && html.indexOf('c-attach') < html.indexOf('class="send"')); // files above, the clip beside send
+assert.ok(!run(`composeHTML({id: 'close-note', draft: 'closeNote', value: '', placeholder: 'x', label: 'Note', send: 'Close', ready: true})`).includes('data-attach'));
+// A draft keeps its files across a re-render, in the reply box and in the question box.
+context.withFiles = item({id: 'af', kind: 'question', title: 'Pick', options: ['A', 'B'], matters: {lead: 'x', points: []}, needs_you: {lead: 'y', points: []}});
+context.queue = {...context.queue, revision: 2, items: [...context.queue.items, context.withFiles]};
+run('applyState(queue); model = derive()');
+run(`setDraft('af', {files: {text: ${JSON.stringify(chips.slice(0, 2))}, question: [${JSON.stringify(chips[0])}]}, choice: 'A'})`);
+html = run("detailHTML(model.items.find((i) => i.id === 'af'))");
+assert.ok(html.includes('data-file="f1"') && html.includes('data-file="f2"') && html.includes('data-wide disabled')); // picked, but still uploading
+run("setDraft('af', {tab: 'ask'})");
+assert.ok(run("detailHTML(model.items.find((i) => i.id === 'af'))").includes('data-attach="question"'));
+run("setDraft('af', {files: undefined, choice: undefined, tab: undefined})");
+// What you sent shows your words and thumbnails, not the paths the agent reads.
+const listing = '\n\nAttached by the user. Open each file to see it:\n- /data/attachments/ab.png (shot.png, image/png, 2 KB)';
+assert.equal(run(`withoutFileList(${JSON.stringify('Use this one' + listing)}, [{id: 'ab'}])`), 'Use this one');
+assert.equal(run(`withoutFileList('No files here', [])`), 'No files here');
+context.sentWith = {...decided({id: 'sw', answer: 'Use this one' + listing, answer_files: [{id: 'ab', name: 'shot.png', type: 'image/png', size: 2048, path: '/data/attachments/ab.png'}], followup: follow('delivering')}), lane: 'agents'};
+html = run('sentHTML(sentWith)');
+assert.ok(html.includes('<strong>Use this one</strong>') && !html.includes('/data/attachments') && html.includes('<img data-attachment="ab" alt="shot.png">') && html.includes('data-open-file="ab"'));
+context.onlyFiles = {...context.sentWith, answer: listing.trim()};
+assert.ok(run('sentHTML(onlyFiles)').includes('<strong>Sent a file</strong>'));
+const thread = run(`askHTML({status: 'open', comments: [{id: 'q9', author: 'human', state: 'received', text: 'See this' + ${JSON.stringify(listing)}, attachments: [{id: 'ab', name: 'shot.png', type: 'image/png', size: 2048}]}]}, {})`);
+assert.ok(thread.includes('<p>See this</p>') && thread.includes('data-attachment="ab"') && !thread.includes('/data/attachments'));
+
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

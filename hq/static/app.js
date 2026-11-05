@@ -9,6 +9,7 @@ const ICONS = {
   plug: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
+  clip: '<path d="m21.4 11-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6a4 4 0 1 1 5.7 5.7l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
   stuck: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
@@ -548,6 +549,7 @@ function renderDetail() {
   const again = pane.querySelector('.d-body');
   if (again) again.scrollTop = top;
   pane.querySelectorAll('.composer textarea').forEach(grow);
+  hydrateFiles(pane);
   const target = focus && pane.querySelector(focus.selector);
   if (target) {
     target.focus({preventScroll: true});
@@ -696,8 +698,154 @@ function contextHTML(i) {
     ${i.status !== 'done' && i.owner !== 'agent' && !i.asking ? '<button class="hard-to-read" data-hard>Hard to read? Send it back to the agent</button>' : ''}`;
 }
 // One composer everywhere: the reply, a note on an option, and a question.
-function composeHTML({id, draft, value, placeholder, label, send, ready, optional = false}) {
-  return `<div class="compose"><div class="composer" ${optional ? 'data-optional' : ''}><textarea id="${id}" data-draft="${draft}" rows="1" maxlength="20000" placeholder="${esc(placeholder)}" aria-label="${label}" enterkeyhint="send">${esc(value)}</textarea><button class="send" type="submit" aria-label="${send}" ${ready ? '' : 'disabled'}>${icon('send')}</button></div></div>`;
+// Files in a reply or a question: pasted, dropped or picked, uploaded at once, and kept with
+// the draft. The agent gets each file's path; the page shows thumbnails.
+const ATTACH = {
+  types: {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+    pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json'},
+  limit: 25 * 1024 * 1024, most: 10,
+  shown: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+  marker: 'Attached by the user. Open each file to see it:',
+};
+// What a file is, by its type or else by its name, since the clipboard often gives no type.
+function fileKind(file) {
+  const type = String(file.type || '').split(';')[0].trim().toLowerCase();
+  if (Object.values(ATTACH.types).includes(type)) return type;
+  return ATTACH.types[String(file.name || '').split('.').pop().toLowerCase()] || type || 'unknown';
+}
+const fileSize = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+// Why a file cannot go, before it is uploaded, or nothing.
+function fileProblem(file, count) {
+  const kind = fileKind(file);
+  if (!Object.values(ATTACH.types).includes(kind)) return 'Not a type HQ takes';
+  if (!file.size) return 'The file is empty';
+  if (file.size > ATTACH.limit) return 'Too big: 25 MB at most';
+  if (count >= ATTACH.most) return '10 files at most';
+  return '';
+}
+const filesOf = (draft, key) => draft.files?.[key] || [];
+const uploading = (files) => files.some((f) => f.status === 'uploading');
+const readyFiles = (files) => files.filter((f) => f.status === 'ready');
+// Send waits for every upload, and a reply of files alone is fine.
+const readyToSend = (text, files = []) => !uploading(files) && Boolean(String(text || '').trim() || readyFiles(files).length);
+let fileSeq = 0;
+function setFiles(id, key, list) {
+  const draft = draftOf(id);
+  setDraft(id, {files: {...(draft.files || {}), [key]: list}});
+}
+function addFiles(id, key, picked) {
+  const list = [...filesOf(draftOf(id), key)];
+  for (const file of picked) {
+    const problem = fileProblem(file, list.filter((f) => f.status !== 'error').length);
+    const kind = fileKind(file);
+    const entry = {key: `f${fileSeq += 1}`, name: file.name || `pasted${kind === 'image/png' ? '.png' : ''}`, type: kind, size: file.size,
+      status: problem ? 'error' : 'uploading', error: problem, url: !problem && ATTACH.shown.has(kind) ? URL.createObjectURL(file) : ''};
+    list.push(entry);
+    if (!problem) uploadFile(file, kind, entry.name).then((meta) => updateFile(id, key, entry.key, {status: 'ready', id: meta.id}))
+      .catch((error) => updateFile(id, key, entry.key, {status: 'error', error: error.message}));
+  }
+  setFiles(id, key, list);
+  showFiles(id, key);
+}
+function updateFile(id, key, fileKey, patch) {
+  setFiles(id, key, filesOf(draftOf(id), key).map((f) => (f.key === fileKey ? {...f, ...patch} : f)));
+  showFiles(id, key);
+}
+function removeFile(id, key, fileKey) {
+  const list = filesOf(draftOf(id), key), gone = list.find((f) => f.key === fileKey);
+  if (gone?.url) URL.revokeObjectURL(gone.url);
+  setFiles(id, key, list.filter((f) => f.key !== fileKey));
+  showFiles(id, key);
+}
+function clearFiles(id, key) {
+  for (const f of filesOf(draftOf(id), key)) if (f.url) URL.revokeObjectURL(f.url);
+  setFiles(id, key, []);
+}
+async function uploadFile(file, type, name) {
+  const response = await fetch('/api/attachments', {method: 'POST', body: file,
+    headers: {'X-HQ-Token': token, 'Content-Type': type, 'X-HQ-Filename': encodeURIComponent(name)}});
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Upload failed');
+  return data;
+}
+// The strip of files above the text, inside the box.
+function fileChipHTML(f) {
+  const image = f.status !== 'error' && f.url;
+  const body = image ? `<img src="${esc(f.url)}" alt="${esc(f.name)}">`
+    : `<span class="c-doc"><span class="c-name">${esc(f.name)}</span><span class="c-size">${esc(f.status === 'error' ? f.error : fileSize(f.size))}</span></span>`;
+  return `<div class="c-file ${image ? 'image' : 'doc'} ${f.status}" data-file="${esc(f.key)}">${body}${f.status === 'uploading' ? '<span class="c-spin" role="status" aria-label="Uploading"></span>' : ''}<button type="button" class="c-remove" data-remove-file="${esc(f.key)}" aria-label="Remove ${esc(f.name)}">${icon('x', 'sm')}</button></div>`;
+}
+const filesStripHTML = (files) => (files.length ? `<div class="c-files">${files.map(fileChipHTML).join('')}</div>` : '');
+// After a file is added, finishes uploading or goes, redraw only its box.
+function showFiles(id, key) {
+  if (route.item !== id) return;
+  const compose = document.querySelector(`#detail .compose[data-attach="${key}"]`);
+  if (!compose) return;
+  const files = filesOf(draftOf(id), key), box = compose.querySelector('.composer');
+  box.querySelector('.c-files')?.remove();
+  if (files.length) box.insertAdjacentHTML('afterbegin', filesStripHTML(files));
+  box.classList.toggle('has-files', files.length > 0);
+  const text = compose.querySelector('textarea').value;
+  setSendable(box.querySelector('.send'), readyToSend(text, files));
+  const wide = compose.closest('form')?.querySelector('[data-wide]');
+  if (wide) wide.disabled = uploading(files);
+}
+// What you sent: your words without the file list the agent reads, then the files.
+function withoutFileList(text, files) {
+  if (!files?.length) return text || '';
+  const at = String(text || '').lastIndexOf(ATTACH.marker);
+  return at < 0 ? text : text.slice(0, at).trim();
+}
+function sentFilesHTML(files) {
+  if (!files?.length) return '';
+  return `<div class="sent-files">${files.map((f) => ATTACH.shown.has(f.type)
+    ? `<button type="button" class="sent-file" data-open-file="${esc(f.id)}" data-type="${esc(f.type)}" aria-label="Open ${esc(f.name)}"><img data-attachment="${esc(f.id)}" alt="${esc(f.name)}"></button>`
+    : `<button type="button" class="sent-file doc" data-open-file="${esc(f.id)}" data-type="${esc(f.type)}"><span class="c-name">${esc(f.name)}</span><span class="c-size">${esc(fileSize(f.size))}</span></button>`).join('')}</div>`;
+}
+// Sent files are served only with the token, so fetch each once and show it from a blob.
+const fileURLs = new Map();
+function fileURL(id) {
+  if (!fileURLs.has(id)) fileURLs.set(id, fetch(`/api/attachments/${encodeURIComponent(id)}`, {headers: {'X-HQ-Token': token}})
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('Not found')))).then((blob) => URL.createObjectURL(blob)));
+  return fileURLs.get(id);
+}
+function hydrateFiles(root) {
+  root.querySelectorAll('img[data-attachment]').forEach((img) => fileURL(img.dataset.attachment).then((url) => {img.src = url;}).catch(() => img.classList.add('gone')));
+}
+// Full size, over the dashboard; the panel hands it to the dashboard instead.
+async function openFile(id, type) {
+  const url = await fileURL(id).catch(() => null);
+  if (!url) return toast('That file is no longer here');
+  if (!ATTACH.shown.has(type)) return window.open(url, '_blank', 'noreferrer');
+  let box = $('#lightbox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'lightbox';
+    box.className = 'lightbox';
+    box.onclick = () => box.remove();
+    document.body.append(box);
+  }
+  box.innerHTML = `<img src="${esc(url)}" alt="">`;
+}
+// The composer a dropped file belongs to: the box under it, or the item's own answer box.
+function dropTarget(el) {
+  const compose = el.closest?.('.compose[data-attach]');
+  if (compose) return compose.dataset.attach;
+  return el.closest?.('.d-dock') && document.querySelector('#detail .d-dock .compose[data-attach="text"], #detail .d-dock #respond') ? 'text' : null;
+}
+const carriesFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+function pastedFiles(e) {
+  const direct = [...(e.clipboardData?.files || [])];
+  if (direct.length) return direct;
+  return [...(e.clipboardData?.items || [])].filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
+}
+// One composer everywhere. With files it takes pastes, drops and the paperclip, and shows
+// what is attached above the text; the paperclip sits beside send, so one line still
+// centres on the button.
+const ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.heic,.pdf,.txt,.md,.csv,.json,image/png,image/jpeg,image/gif,image/webp,image/heic,application/pdf,text/plain,text/markdown,text/csv,application/json';
+function composeHTML({id, draft, value, placeholder, label, send, ready, optional = false, files = null}) {
+  const attach = files !== null;
+  return `<div class="compose" ${attach ? `data-attach="${draft}"` : ''}><div class="composer ${files?.length ? 'has-files' : ''}" ${optional ? 'data-optional' : ''}>${attach ? filesStripHTML(files) : ''}<textarea id="${id}" data-draft="${draft}" rows="1" maxlength="20000" placeholder="${esc(placeholder)}" aria-label="${label}" enterkeyhint="send">${esc(value)}</textarea>${attach ? `<button class="c-attach" type="button" data-attach-pick aria-label="Attach files" title="Attach files, or paste or drop them here">${icon('clip')}</button>` : ''}<button class="send" type="submit" aria-label="${send}" ${ready ? '' : 'disabled'}>${icon('send')}</button></div>${attach ? `<input type="file" multiple hidden data-attach-input accept="${ACCEPT}" tabindex="-1">` : ''}</div>`;
 }
 const foldHTML = (name, open, inner) => `<div class="d-fold ${open ? 'open' : ''}" data-fold="${name}" ${open ? '' : 'inert'}><div class="d-fold-in">${inner}</div></div>`;
 function dockHTML(i, draft) {
@@ -708,26 +856,27 @@ function dockHTML(i, draft) {
 // is on its way, the handshake below says where it stands.
 function sentHTML(i) {
   const failed = i.delivery === 'failed', skipped = i.skipped || i.settle === 'skip';
-  const what = skipped ? 'You skipped this' : i.settle === 'done' ? 'You marked it done' : i.answer;
+  const said = withoutFileList(i.answer, i.answer_files), sent = i.answer_files?.length || 0;
+  const what = skipped ? 'You skipped this' : i.settle === 'done' ? 'You marked it done' : said || (sent ? `Sent ${sent === 1 ? 'a file' : `${sent} files`}` : '');
   if (!what) return '';
   const retry = failed ? '<div class="go-row"><button class="go-wide" type="button" data-retry><span>Retry delivery</span></button></div>' : '';
   const status = failed ? `${skipped ? "couldn't tell the agent" : deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}`
     : i.closed_by === 'you' ? (i.delivery === 'withdrawn' ? 'Withdrawn: you closed it' : 'You closed it')
     : i.status !== 'done' ? ''
     : skipped ? 'the agent knows to drop it' : i.settle === 'done' ? 'the agent knows' : deliveryText(i);
-  return `<div class="win ${skipped ? 'skipped' : ''} ${failed ? 'failed' : ''}">${icon(failed || skipped ? 'x' : 'check', 'sm')}<span><strong>${esc(what)}</strong>${status ? ` · ${esc(status)}` : ''}</span></div>${retry}`;
+  return `<div class="win ${skipped ? 'skipped' : ''} ${failed ? 'failed' : ''}">${icon(failed || skipped ? 'x' : 'check', 'sm')}<span><strong>${esc(what)}</strong>${status ? ` · ${esc(status)}` : ''}</span></div>${skipped ? '' : sentFilesHTML(i.answer_files)}${retry}`;
 }
 function answerHTML(i, draft) {
   if (i.status !== 'open' || i.owner === 'agent') return '';
   return isReadable(i) && checksOf(i).length ? reportHTML(i, draft) : respondHTML(i, draft);
 }
 function respondHTML(i, draft) {
-  const options = optionsOf(i), state = answerState(i, draft), text = draft.text ?? '';
+  const options = optionsOf(i), state = answerState(i, draft), text = draft.text ?? '', files = filesOf(draft, 'text');
   const rows = options.map((o, n) => `<button type="button" class="choice" role="radio" data-choice="${esc(o.label)}" aria-checked="${draft.choice === o.label}"><span class="key">${n + 1}</span><span><span class="c-label">${esc(o.label)}</span>${o.recommended ? '<span class="c-rec">Recommended</span>' : ''}${o.note ? `<span class="c-note">${esc(o.note)}</span>` : ''}</span></button>`).join('');
-  const go = `<div class="go-row"><button type="button" class="ghost-pill" data-note aria-pressed="${state === 'note'}">${state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`}</button><button type="submit" class="go-wide" data-wide><span>${esc(wideLabel(draft.choice, state === 'note' && text.trim()))}</span></button></div>`;
+  const go = `<div class="go-row"><button type="button" class="ghost-pill" data-note aria-pressed="${state === 'note'}">${state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`}</button><button type="submit" class="go-wide" data-wide ${uploading(files) ? 'disabled' : ''}><span>${esc(wideLabel(draft.choice, state === 'note' && text.trim()))}</span></button></div>`;
   return `<form class="respond" id="respond" data-state="${state}">
     ${options.length ? `<div class="choices" role="radiogroup" aria-label="Options">${rows}</div>` : ''}
-    ${foldHTML('note', state !== 'picked', composeHTML({id: 'reply', draft: 'text', value: text, placeholder: replyPlaceholder(i, draft, state), label: state === 'note' ? 'Note' : 'Reply', send: 'Send', ready: Boolean(text.trim())}))}
+    ${foldHTML('note', state !== 'picked', composeHTML({id: 'reply', draft: 'text', value: text, placeholder: replyPlaceholder(i, draft, state), label: state === 'note' ? 'Note' : 'Reply', send: 'Send', ready: readyToSend(text, files), files}))}
     ${options.length ? foldHTML('go', state !== 'free', go) : ''}
     <p class="form-error" aria-live="polite"></p></form>`;
 }
@@ -744,7 +893,7 @@ function reportHTML(i, draft) {
   if (openMove !== 'off') return `<div class="respond" data-state="report"><div class="go-row"><button type="button" class="ghost-pill" data-report="off">Something was off</button><button type="button" class="go-wide" data-report="ok"><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div></div>`;
   const text = draft.text ?? missedText(i, draft);
   return `<form class="respond" id="respond" data-state="off">
-    ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'What was off?', label: 'What was off', send: 'Send', ready: Boolean(text.trim())})}
+    ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'What was off?', label: 'What was off', send: 'Send', ready: readyToSend(text, filesOf(draft, 'text')), files: filesOf(draft, 'text')})}
     <p class="form-error" aria-live="polite"></p></form>`;
 }
 // Escape leaves Something was off while the box still holds only what was filled in for you.
@@ -781,9 +930,9 @@ function askHTML(i, draft) {
     const answer = comments.find((c) => c.parent_id === q.id);
     const status = q.answered || answer ? '' : ({pending: 'queued for the agent', sending: 'sending…', sent: 'sent, not yet confirmed', received: 'waiting for a reply', failed: 'delivery failed', cancelled: 'cancelled'})[q.state] || '';
     const actions = !q.answered && !answer && q.state !== 'cancelled' ? `<div class="moves">${q.state === 'failed' ? `<button class="pill outline sm" data-comment-action="retry" data-comment-id="${esc(q.id)}">Retry delivery</button>` : ''}<button class="pill ghost sm" data-comment-action="cancel" data-comment-id="${esc(q.id)}">Cancel question</button></div>` : '';
-    return `<div class="msg"><div class="who">You${status ? ` · ${esc(status)}` : ''}</div><p>${esc(q.text)}</p>${q.error ? `<p class="form-error">${esc(q.error)}</p>` : ''}${actions}</div>${answer ? `<div class="msg"><div class="who">Agent</div><p>${inline(answer.text)}</p></div>` : ''}`;
+    return `<div class="msg"><div class="who">You${status ? ` · ${esc(status)}` : ''}</div><p>${esc(withoutFileList(q.text, q.attachments))}</p>${sentFilesHTML(q.attachments)}${q.error ? `<p class="form-error">${esc(q.error)}</p>` : ''}${actions}</div>${answer ? `<div class="msg"><div class="who">Agent</div><p>${inline(answer.text)}</p></div>` : ''}`;
   }).join('');
-  const box = i.status !== 'done' ? `<form id="ask-form" class="ask-form">${composeHTML({id: 'question', draft: 'question', value: draft.question || '', placeholder: 'Ask about this item…', label: 'Question', send: 'Ask', ready: Boolean((draft.question || '').trim())})}<p class="form-error" aria-live="polite"></p></form>` : '';
+  const box = i.status !== 'done' ? `<form id="ask-form" class="ask-form">${composeHTML({id: 'question', draft: 'question', value: draft.question || '', placeholder: 'Ask about this item…', label: 'Question', send: 'Ask', ready: readyToSend(draft.question, filesOf(draft, 'question')), files: filesOf(draft, 'question')})}<p class="form-error" aria-live="polite"></p></form>` : '';
   return `<div class="ask"><p class="d-quiet">Questions wait here until the agent replies. Your answer below stays as it is.</p>${thread ? `<div class="thread">${thread}</div>` : ''}${box}</div>`;
 }
 function visibleIds() {return [...document.querySelectorAll('#main [data-item]')].map((el) => el.dataset.item);}
@@ -1004,7 +1153,7 @@ function syncRespond(form, i) {
   const reply = form.querySelector('#reply');
   reply.placeholder = replyPlaceholder(i, draft, state);
   reply.setAttribute('aria-label', state === 'note' ? 'Note' : 'Reply');
-  setSendable(form.querySelector('.composer .send'), Boolean(text));
+  setSendable(form.querySelector('.composer .send'), readyToSend(text, filesOf(draft, 'text')));
   const pill = form.querySelector('[data-note]');
   if (pill) {
     pill.innerHTML = state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`;
@@ -1036,7 +1185,7 @@ function bindDetail(detail) {
     setDraft(id, {[key]: e.target.value});
     if (e.target.matches('.composer textarea')) {
       grow(e.target);
-      if (!('optional' in e.target.closest('.composer').dataset)) setSendable(e.target.closest('.composer').querySelector('.send'), Boolean(e.target.value.trim()));
+      if (!('optional' in e.target.closest('.composer').dataset)) setSendable(e.target.closest('.composer').querySelector('.send'), readyToSend(e.target.value, filesOf(draftOf(id), key)));
     }
     if (key === 'text') syncRespond(respond, item());
     if (key === 'owner') {
@@ -1110,10 +1259,13 @@ function bindDetail(detail) {
   };
   if (respond) respond.onsubmit = async (e) => {
     e.preventDefault();
-    const text = replyText(item(), draftOf(id), reply.value);
-    if (!text) return;
+    const files = filesOf(draftOf(id), 'text');
+    if (uploading(files)) return;
+    const text = replyText(item(), draftOf(id), reply?.value || ''), attachments = readyFiles(files).map((f) => f.id);
+    if (!text && !attachments.length) return;
     const next = nextVisible(id);
-    if (await act(api(`items/${id}/reply`, {text}), 'Reply saved for the agent', respond.querySelector('.form-error'))) {
+    if (await act(api(`items/${id}/reply`, attachments.length ? {text, attachments} : {text}), 'Reply saved for the agent', respond.querySelector('.form-error'))) {
+      clearFiles(id, 'text');
       setDraft(id, {text: undefined, choice: undefined, note: undefined});
       openMove = null;
       // Sending from the box leaves focus in it, which holds off live refreshes; show the result now.
@@ -1174,6 +1326,48 @@ function bindDetail(detail) {
       moveOn(next, false);
     }
   };
+  detail.querySelectorAll('.compose[data-attach] textarea').forEach((box) => (box.onpaste = (e) => {
+    const files = pastedFiles(e);
+    if (!files.length) return;  // pasted text stays text
+    e.preventDefault();
+    addFiles(id, box.dataset.draft, files);
+  }));
+  detail.querySelectorAll('[data-attach-input]').forEach((input) => (input.onchange = () => {
+    addFiles(id, input.closest('.compose').dataset.attach, [...input.files]);
+    input.value = '';
+  }));
+  detail.onclick = (e) => {
+    const pick = e.target.closest('[data-attach-pick]'), remove = e.target.closest('[data-remove-file]'), sent = e.target.closest('[data-open-file]');
+    if (pick) pick.closest('.compose').querySelector('[data-attach-input]').click();
+    else if (remove) removeFile(id, remove.closest('.compose').dataset.attach, remove.dataset.removeFile);
+    else if (sent && document.body.dataset.surface === 'float') window.open(`/${href({...route, item: id})}`, '_blank', 'noreferrer');
+    else if (sent) openFile(sent.dataset.openFile, sent.dataset.type);
+  };
+  const dropOn = (key) => {
+    detail.querySelectorAll('.drop-on').forEach((el) => el.classList.remove('drop-on'));
+    if (key) (detail.querySelector(`.compose[data-attach="${key}"]`) || detail.querySelector('.d-dock'))?.classList.add('drop-on');
+  };
+  detail.ondragover = (e) => {
+    const key = carriesFiles(e) && dropTarget(e.target);
+    if (!key) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    dropOn(key);
+  };
+  detail.ondragleave = (e) => {if (!detail.contains(e.relatedTarget)) dropOn(null);};
+  detail.ondrop = (e) => {
+    const key = carriesFiles(e) && dropTarget(e.target);
+    dropOn(null);
+    if (!key) return;
+    e.preventDefault();
+    const files = [...e.dataTransfer.files];
+    // A drop on the dock opens its box first, if picking an option or the checks folded it away.
+    if (key === 'text' && !detail.querySelector('.compose[data-attach="text"]')) {
+      if (respond?.dataset.state === 'picked') {setDraft(id, {note: true}); syncRespond(respond, item());}
+      else {openMove = 'off'; rerender();}
+    }
+    addFiles(id, key, files);
+  };
   const closeSelf = detail.querySelector('[data-close-self]');
   if (closeSelf) closeSelf.onclick = () => {openMove = 'close'; rerender(); detail.querySelector('#close-note')?.focus();};
   const closing = detail.querySelector('#close-form');
@@ -1201,8 +1395,11 @@ function bindDetail(detail) {
   const ask = detail.querySelector('#ask-form');
   if (ask) ask.onsubmit = async (e) => {
     e.preventDefault();
-    const text = ask.querySelector('textarea').value.trim();
-    if (text && await act(api(`items/${id}/ask`, {text}), 'Question saved', ask.querySelector('.form-error'))) {
+    const text = ask.querySelector('textarea').value.trim(), files = filesOf(draftOf(id), 'question');
+    const attachments = readyFiles(files).map((f) => f.id);
+    if (uploading(files) || (!text && !attachments.length)) return;
+    if (await act(api(`items/${id}/ask`, attachments.length ? {text, attachments} : {text}), 'Question saved', ask.querySelector('.form-error'))) {
+      clearFiles(id, 'question');
       setDraft(id, {question: ''});
       if (route.item === id) rerender();
     }
@@ -1231,6 +1428,7 @@ function boot() {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {e.preventDefault(); $('#search')?.focus(); return;}
     if (e.key === 'Escape') {
       if ($('#dialog').open) return;
+      if ($('#lightbox')) return $('#lightbox').remove();
       if (typing && e.target.id === 'search' && search) {search = ''; render(); return;}
       if (sheetOpen) {sheetOpen = false; return render();}
       if (route.item) go({item: null});
@@ -1247,6 +1445,8 @@ function boot() {
     go({item: null});
   };
   $('#dialog').addEventListener('click', (e) => {if (e.target.closest('[data-dclose]') || e.target === $('#dialog')) $('#dialog').close();});
+  document.addEventListener('dragover', (e) => {if (carriesFiles(e) && !e.defaultPrevented) {e.preventDefault(); e.dataTransfer.dropEffect = 'none';}});
+  document.addEventListener('drop', (e) => {if (carriesFiles(e)) e.preventDefault();});
   render();
   refresh();
   watchState();

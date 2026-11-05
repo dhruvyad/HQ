@@ -410,11 +410,17 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             panel.ignoresMouseEvents = false
             return
         }
-        // A press that started inside stays ours, such as selecting text past the edge.
-        guard NSEvent.pressedMouseButtons == 0 else { return }
         let mouse = NSEvent.mouseLocation, frame = panel.frame
         let local = NSPoint(x: mouse.x - frame.minX, y: frame.maxY - mouse.y)
         let inside = hitRects.contains { $0.contains(local) }
+        // While a button is held, a press that started inside stays ours, such as selecting
+        // text past the edge. A drag from another app, such as a file from Finder, has to be
+        // able to land on the box, so a window that was letting the mouse through starts
+        // taking it as soon as the drag is over the box.
+        if NSEvent.pressedMouseButtons != 0 {
+            if inside { panel.ignoresMouseEvents = false }
+            return
+        }
         panel.ignoresMouseEvents = !inside
         if inside != pointerInside {
             pointerInside = inside
