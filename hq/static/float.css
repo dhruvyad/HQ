@@ -4,7 +4,7 @@ html.float, html.float body {height: 100%; background: transparent; overflow: hi
 
 /* Pill: a black capsule of circles, each one a live number you choose. */
 .f-capsule {display: inline-flex; flex-direction: column; gap: 4px; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
-body[data-layout="horizontal"] .f-capsule {flex-direction: row;}
+.f-capsule[data-layout="horizontal"] {flex-direction: row;}
 .f-pill {position: absolute; top: 0; left: 0; transition: background .15s;}
 .f-pill:focus-visible {outline-offset: -3px;}
 .f-row {display: flex; align-items: center; gap: 8px; min-height: var(--f-size, 28px);}

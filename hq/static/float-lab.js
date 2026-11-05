@@ -4,8 +4,9 @@
 // goes back as one batch. To run a new round, edit AXES and the matching `feel` in float.js.
 const AXES = [
   {id: 'layout', ask: 'Which way does the pill run?', options: [
-    {value: 'vertical', label: 'Up and down', why: 'Your sketch. Narrow, and sits well at a screen edge.', default: true},
-    {value: 'horizontal', label: 'Side to side', why: 'Fits along a title bar, but has no room for labels.'},
+    {value: 'auto', label: 'Depends where it sits', why: 'Up and down at the sides and corners, side to side when centered on an edge.', default: true},
+    {value: 'vertical', label: 'Always up and down', why: 'Your sketch, everywhere.'},
+    {value: 'horizontal', label: 'Always side to side', why: 'Fits along a title bar, but has no room for labels.'},
   ]},
   {id: 'size', ask: 'How big are the circles?', options: [
     {value: 24, label: '24', why: 'Quietest. Three digits get tight.'},

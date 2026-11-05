@@ -97,8 +97,9 @@ always hugs its content, so nothing transparent sits over what you are working o
 - **Drag** follows OpenFlow's flow bar: a 5px threshold separates a click from a drag, then
   the window covers the display, the screen dims, dashed targets appear, the nearest fills in,
   a ghost capsule follows the cursor and glides 300ms into the drop. The list and item headers
-  drag the same way. Escape cancels. Eight targets; the top-left one stays 74px clear of a
-  maximized window's traffic lights. The box always grows away from its dock.
+  drag the same way. Escape cancels. Eight targets, 10px from the free screen's edges and
+  4px from its bottom, just above the Dock. Centered on the top or bottom edge the capsule
+  lies side to side, and the ghost turns as you approach. The box always grows away from its dock.
 - Sunken surface, 16px radius, a native shadow, and a 14% hairline, so it reads on any wallpaper.
 
 These are the starting points of `hq float lab`, which flips each one live on the real

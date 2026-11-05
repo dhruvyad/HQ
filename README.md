@@ -59,8 +59,8 @@ hq float
 ```
 
 A small black pill floats over every app, Space and fullscreen window without taking
-focus away from what you are doing. It starts at the top left, clear of a maximized
-window's close, minimize and zoom buttons. It is a capsule of circles, each one a live
+focus away from what you are doing. It starts at the top left, and runs side to side
+when centered on the top or bottom edge. It is a capsule of circles, each one a live
 number: what needs you, decisions waiting, due soon, agents running, or the Claude and
 Codex usage you have left.
 

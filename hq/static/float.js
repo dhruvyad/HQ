@@ -4,7 +4,7 @@
 const native = (message) => window.webkit?.messageHandlers?.hq?.postMessage(message);
 
 // Every open design decision, so `hq float lab` can flip each one live (float-lab.js).
-const feel = {layout: 'vertical', size: 28, style: 'attention', labels: 'hover', targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', arrival: 'pulse', width: 480, show: 100000};
+const feel = {layout: 'auto', size: 28, style: 'attention', labels: 'hover', targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', arrival: 'pulse', width: 480, show: 100000};
 
 // Where the pill can live: [across, down], each the start, center or end of the free screen.
 const DOCKS = {
@@ -14,9 +14,7 @@ const DOCKS = {
 };
 const TARGETS = {all: Object.keys(DOCKS), flow: ['top-left', 'left', 'right', 'bottom'], corners: ['top-left', 'top-right', 'bottom-left', 'bottom-right']};
 const DEFAULT_DOCK = 'top-left';
-const EDGE = 10;
-// A maximized window keeps its close, minimize and zoom buttons in this corner.
-const TRAFFIC_LIGHTS = 74;
+const EDGE = 10, BOTTOM_EDGE = 4;
 const LIST_WIDTH = 380, LIST_MAX = 520, ITEM_MIN = 240, ITEM_MAX = 760;
 const PEEK_FOR = 5000, BUMP_FOR = 700, LABEL_AFTER = 180, CONTROLS = 'button, a, input, textarea, select, summary';
 const USAGE_LOW = 10, USAGE_STALE = 3600;
@@ -79,11 +77,9 @@ let known = null, peek = null, swallowClick = false, customizing = false, hoveri
 function dockRect(requested, size, area) {
   const name = DOCKS[requested] ? requested : DEFAULT_DOCK;
   const [across, down] = DOCKS[name];
-  const width = Math.min(size.width, area.width - 2 * EDGE), height = Math.min(size.height, area.height - 2 * EDGE);
-  const start = area.x + EDGE + (name === 'top-left' ? TRAFFIC_LIGHTS : 0);
-  const end = area.x + area.width - width - EDGE;
-  const x = across === 'start' ? Math.min(start, end) : across === 'center' ? area.x + (area.width - width) / 2 : end;
-  const y = down === 'start' ? area.y + EDGE : down === 'center' ? area.y + (area.height - height) / 2 : area.y + area.height - height - EDGE;
+  const width = Math.min(size.width, area.width - 2 * EDGE), height = Math.min(size.height, area.height - EDGE - BOTTOM_EDGE);
+  const x = across === 'start' ? area.x + EDGE : across === 'center' ? area.x + (area.width - width) / 2 : area.x + area.width - width - EDGE;
+  const y = down === 'start' ? area.y + EDGE : down === 'center' ? area.y + (area.height - height) / 2 : area.y + area.height - height - BOTTOM_EDGE;
   return {x: Math.round(x), y: Math.round(y), width, height};
 }
 function nearestDock(x, y, rects) {
@@ -94,7 +90,17 @@ function nearestDock(x, y, rects) {
   }
   return best;
 }
-const dockRects = (size, area, names = TARGETS[feel.targets] || TARGETS.all) => Object.fromEntries(names.map((name) => [name, dockRect(name, size, area)]));
+// Centered on an edge the capsule lies along that edge; everywhere else it stands up.
+const layoutFor = (name, layout = feel.layout) => {
+  if (layout !== 'auto') return layout;
+  return (DOCKS[name] || DOCKS[DEFAULT_DOCK])[0] === 'center' ? 'horizontal' : 'vertical';
+};
+// The capsule is the same shape either way round, so one measurement sizes both.
+function capsuleSize(size, layout) {
+  const long = Math.max(size.width, size.height), short = Math.min(size.width, size.height);
+  return layout === 'horizontal' ? {width: long, height: short} : {width: short, height: long};
+}
+const dockRects = (size, area, names = TARGETS[feel.targets] || TARGETS.all) => Object.fromEntries(names.map((name) => [name, dockRect(name, capsuleSize(size, layoutFor(name)), area)]));
 const growFrom = (name) => {
   const [across, down] = DOCKS[name] || DOCKS[DEFAULT_DOCK];
   return `${{start: 'left', center: 'center', end: 'right'}[across]} ${{start: 'top', center: 'center', end: 'bottom'}[down]}`;
@@ -114,7 +120,7 @@ function arrivals(items, seenIds) {return seenIds ? items.filter((i) => !seenIds
 const surfaceMode = (open, item, customize = false) => (!open ? 'pill' : customize ? 'settings' : item ? 'item' : 'list');
 // Labels open away from the screen edge, so the circles under your cursor never move.
 // A centered pill would shift as it grew, and a sideways one has no room for them.
-const labelSide = (name, layout = feel.layout) => {
+const labelSide = (name, layout = layoutFor(name)) => {
   if (layout !== 'vertical') return 'none';
   return {start: 'right', center: 'none', end: 'left'}[(DOCKS[name] || DOCKS[DEFAULT_DOCK])[0]];
 };
@@ -243,6 +249,7 @@ function syncLabels() {
   const show = wanted && !drag && document.body.dataset.mode === 'pill' && labelSide(dock) !== 'none';
   document.body.toggleAttribute('data-labels', show);
   document.body.dataset.side = labelSide(dock);
+  $('#pill').dataset.layout = layoutFor(dock);
 }
 function setCircles(next) {
   circles = next;
@@ -312,12 +319,15 @@ function moveGhost(x, y) {
 function dragMoved(e) {
   if (drag?.phase !== 'dragging') return;
   const at = pointer(e);
-  moveGhost(at.x - drag.size.width / 2, at.y - drag.size.height / 2);
   const target = nearestDock(at.x, at.y, drag.rects);
   if (target && target !== drag.target) {
     drag.target = target;
     markTarget();
   }
+  // The ghost lies the way the pill would if you dropped it here.
+  const layout = layoutFor(drag.target), size = capsuleSize(drag.size, layout);
+  $('#ghost').dataset.layout = layout;
+  moveGhost(at.x - size.width / 2, at.y - size.height / 2);
 }
 function dragDropped() {
   if (drag?.phase !== 'dragging') return;
@@ -390,7 +400,6 @@ function applyFeel() {
   root.style.setProperty('--f-size', `${feel.size}px`);
   root.style.setProperty('--f-glide', `${feel.glide}ms`);
   document.body.dataset.backdrop = feel.backdrop;
-  document.body.dataset.layout = feel.layout;
 }
 // Links in the item pane point at the dashboard's routes, which live in the browser.
 function openDashboard(hash) {window.open(`/${hash}`, '_blank', 'noreferrer');}

@@ -170,24 +170,36 @@ vm.runInContext(floatSource.slice(0, floatSource.indexOf('function bootFloat()')
 const area = {x: 0, y: 25, width: 1440, height: 800}; // a menu bar on top, no Dock
 const rect = (dock, size = {width: 72, height: 32}, free = area) => JSON.parse(run(`JSON.stringify(dockRect(${JSON.stringify(dock)}, ${JSON.stringify(size)}, ${JSON.stringify(free)}))`));
 
-// Top left sits under the menu bar and clear of a maximized window's close, minimize and zoom buttons.
-assert.deepEqual(rect('top-left'), {x: 84, y: 35, width: 72, height: 32});
+// Corners sit right against the free screen, and the bottom edge sits closest of all.
+assert.deepEqual(rect('top-left'), {x: 10, y: 35, width: 72, height: 32});
 assert.deepEqual(rect('top-right'), {x: 1358, y: 35, width: 72, height: 32});
 assert.deepEqual(rect('top'), {x: 684, y: 35, width: 72, height: 32});
 assert.deepEqual(rect('left'), {x: 10, y: 409, width: 72, height: 32});
 assert.deepEqual(rect('right'), {x: 1358, y: 409, width: 72, height: 32});
-assert.deepEqual(rect('bottom-left'), {x: 10, y: 783, width: 72, height: 32});
-assert.deepEqual(rect('bottom-right'), {x: 1358, y: 783, width: 72, height: 32});
-assert.deepEqual(rect('bottom'), {x: 684, y: 783, width: 72, height: 32});
+assert.deepEqual(rect('bottom-left'), {x: 10, y: 789, width: 72, height: 32});
+assert.deepEqual(rect('bottom-right'), {x: 1358, y: 789, width: 72, height: 32});
+assert.deepEqual(rect('bottom'), {x: 684, y: 789, width: 72, height: 32});
 // The box grows away from its dock and always stays on the free screen.
 assert.deepEqual(rect('top-right', {width: 480, height: 600}), {x: 950, y: 35, width: 480, height: 600});
-assert.deepEqual(rect('bottom-right', {width: 480, height: 600}), {x: 950, y: 215, width: 480, height: 600});
-assert.deepEqual(rect('top-left', {width: 480, height: 5000}), {x: 84, y: 35, width: 480, height: 780});
+assert.deepEqual(rect('bottom-right', {width: 480, height: 600}), {x: 950, y: 221, width: 480, height: 600});
+assert.deepEqual(rect('top-left', {width: 480, height: 5000}), {x: 10, y: 35, width: 480, height: 786});
 assert.deepEqual(rect('top-left', {width: 500, height: 100}, {x: 0, y: 0, width: 520, height: 400}), {x: 10, y: 10, width: 500, height: 100});
 // Docking follows the free area of a display, wherever that is.
 assert.deepEqual(rect('left', {width: 72, height: 32}, {x: 80, y: 0, width: 1000, height: 700}), {x: 90, y: 334, width: 72, height: 32});
 assert.deepEqual(rect('no such dock'), rect('top-left')); // an old saved name falls back
 assert.equal(run("growFrom('top-left')"), 'left top');
+// The capsule stands up at the sides and lies along an edge when centered on it.
+for (const dock of ['top-left', 'top-right', 'left', 'right', 'bottom-left', 'bottom-right']) assert.equal(run(`layoutFor('${dock}')`), 'vertical', dock);
+for (const dock of ['top', 'bottom']) assert.equal(run(`layoutFor('${dock}')`), 'horizontal', dock);
+assert.equal(run("layoutFor('bottom', 'vertical')"), 'vertical'); // the lab can force either
+assert.equal(run("layoutFor('left', 'horizontal')"), 'horizontal');
+const measured = {width: 38, height: 102};
+assert.deepEqual(JSON.parse(run(`JSON.stringify(capsuleSize(${JSON.stringify(measured)}, 'horizontal'))`)), {width: 102, height: 38});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(capsuleSize({width: 102, height: 38}, 'vertical'))`)), measured);
+const zones = JSON.parse(run(`JSON.stringify(dockRects(${JSON.stringify(measured)}, ${JSON.stringify(area)}))`));
+assert.deepEqual(zones.bottom, {x: 669, y: 783, width: 102, height: 38}); // lying down, 4 above the free edge
+assert.deepEqual(zones['top-left'], {x: 10, y: 35, width: 38, height: 102}); // standing up, in the corner
+assert.deepEqual(zones.top, {x: 669, y: 35, width: 102, height: 38});
 assert.equal(run("growFrom('bottom')"), 'center bottom');
 
 // A drop goes to the nearest target, measured to its center, as in OpenFlow.
@@ -367,7 +379,7 @@ for (const preset of JSON.parse(lab('JSON.stringify(PRESETS)'))) {
 }
 const picks = lab(`picksText({...defaults(), glide: 180, show: 3}, {glide: 'feels right', layout: '  '}, ' more contrast ')`);
 assert.ok(picks.includes('How long does it glide into place? 180 ms (changed). Note: feels right'));
-assert.ok(picks.includes('Which way does the pill run? Up and down\n'));
+assert.ok(picks.includes('Which way does the pill run? Depends where it sits\n'));
 assert.ok(picks.endsWith('Overall: more contrast'));
 assert.ok(!picks.includes('how many items')); // sample size is not a decision
 
