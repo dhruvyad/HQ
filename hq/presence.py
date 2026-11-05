@@ -40,7 +40,7 @@ class ClaudePresence:
         for row in records:
             if (not isinstance(row, dict) or not isinstance(row.get("sessionId"), str)
                     or not 0 < len(row["sessionId"]) <= 150
-                    or any(row.get(key) is not None and not isinstance(row[key], str) for key in ("name", "status", "cwd"))):
+                    or any(row.get(key) is not None and not isinstance(row[key], str) for key in ("name", "status", "state", "cwd"))):
                 raise ValueError("Invalid Claude session metadata")
         for row in records:
             sid = "claude-code:" + row["sessionId"]
@@ -61,7 +61,8 @@ class ClaudePresence:
             except ValueError:
                 name = (row.get("name") or "Claude Code conversation")[:500]
                 self.store.register(sid, name, "claude-code", row["sessionId"], row.get("cwd"))
-            status = row.get("status")
+            # Dispatched background sessions report "state" where interactive ones say "status".
+            status = row.get("status") or row.get("state")
             state = {"busy": "active", "running": "active", "idle": "idle", "blocked": "waiting"}.get(status, "unknown")
             self.store.observe_activity(sid, state, "claude-live", lease=4)
             present.add(sid)

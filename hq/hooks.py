@@ -6,7 +6,19 @@ import sys
 
 from .store import Store, required
 
-EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"}
+EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"}
+# Background work that is an agent at work. A dev server or a watch can run for days,
+# so a background shell or monitor alone does not make a conversation active.
+AGENT_WORK = {"subagent", "workflow", "teammate", "cloud session"}
+# Subagents report each tool call, which renews this; a final Stop or SubagentStop ends it.
+# Background observations rank below everything else: they only ever add "still working"
+# to a conversation that is otherwise idle (see Store.attach_activity).
+BACKGROUND_LEASE = 900
+
+
+def agents_working(payload):
+    tasks = payload.get("background_tasks")
+    return isinstance(tasks, list) and any(isinstance(task, dict) and task.get("type") in AGENT_WORK for task in tasks)
 
 
 def handle(provider, payload, store, emit):
@@ -16,10 +28,18 @@ def handle(provider, payload, store, emit):
     if event not in EVENTS:
         raise ValueError("Unsupported HQ hook event")
     external_id = required(payload.get("session_id"), "session id", 150)
-    # Parent-context callbacks must never consume a child's messages (or vice versa).
-    if payload.get("agent_id"):
-        return
     sid = f"{provider}:{external_id}"
+    # A subagent's events carry the parent's session id. They must never consume the
+    # parent's messages, but they do show the conversation is still at work.
+    if payload.get("agent_id") or event == "SubagentStop":
+        try:
+            store.session(sid)
+        except ValueError:
+            return
+        working = event != "SubagentStop" or agents_working(payload)
+        store.observe_activity(sid, "active" if working else "idle", "background",
+                               lease=BACKGROUND_LEASE if working else 6, priority=0)
+        return
     cwd = payload.get("cwd")
     if cwd is not None and not isinstance(cwd, str):
         raise ValueError("cwd must be text")
@@ -31,7 +51,13 @@ def handle(provider, payload, store, emit):
     if event == "SessionEnd":
         store.disconnect(sid, "hooks")
         store.observe_activity(sid, "offline", "hooks", lease=30, priority=50)
+        store.observe_activity(sid, "idle", "background", lease=6, priority=0)
         return
+    if event == "Stop":
+        # A turn can end with subagents still running: the conversation is still at work.
+        working = agents_working(payload)
+        store.observe_activity(sid, "active" if working else "idle", "background",
+                               lease=BACKGROUND_LEASE if working else 6, priority=0)
     store.heartbeat(sid, "hooks")
     replies, questions = store.claim_hook_messages(sid)
     activity = "active" if event in {"UserPromptSubmit", "PostToolUse"} or (event == "Stop" and (replies or questions)) else "idle"

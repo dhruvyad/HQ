@@ -201,13 +201,20 @@ class Store:
         now, observations = time.time(), {}
         with self.db() as db:
             rows = db.execute("SELECT * FROM activity WHERE expires>? ORDER BY priority DESC,observed DESC", (now,))
+            background = {}
             for row in rows:
                 observations.setdefault(row["session_id"], dict(row))
+                if row["source"] == "background" and row["state"] == "active":
+                    background[row["session_id"]] = dict(row)
             # Expired observations still say when an agent last ran, from any source.
             last_active = {r["session_id"]: r["last"] for r in db.execute(
                 "SELECT session_id,MAX(last_active) AS last FROM activity GROUP BY session_id")}
         for session in sessions:
             observation = observations.get(session["id"])
+            # A conversation whose subagents are still running is at work, even when its own
+            # turn has ended. Offline or waiting on you still says more than that.
+            if session["id"] in background and (not observation or observation["state"] in {"idle", "unknown"}):
+                observation = background[session["id"]]
             session["activity"] = ({k: observation[k] for k in ("state", "source", "observed", "expires", "since")}
                                    if observation else {"state": "unknown", "source": None, "since": None})
             session["last_active"] = last_active.get(session["id"])

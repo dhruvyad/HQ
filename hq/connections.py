@@ -40,7 +40,7 @@ def install_hooks(provider):
     data = json.loads(path.read_text()) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
     changed = False
-    for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"]:
+    for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]:
         groups = hooks.setdefault(event, [])
         if any(h.get("command") == command for group in groups for h in group.get("hooks", [])):
             continue

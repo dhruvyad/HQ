@@ -31,6 +31,61 @@ class HookTests(unittest.TestCase):
     def event(self, event="PostToolUse", **extra):
         return {"session_id": "one", "cwd": self.temp.name, "hook_event_name": event, **extra}
 
+    def activity(self, sid=None):
+        return next(s for s in self.store.snapshot()["sessions"] if s["id"] == (sid or self.sid))["activity"]["state"]
+
+    def test_running_subagents_keep_a_finished_turn_active(self):
+        # The live inventory says the turn is idle; the turn's own Stop says subagents are working.
+        self.store.observe_activity(self.sid, "idle", "claude-live")
+        tasks = [{"id": "a1", "type": "subagent", "status": "running", "agent_type": "general-purpose"},
+                 {"id": "s1", "type": "shell", "status": "running", "command": "npm run dev"}]
+        handle("claude-code", self.event("Stop", background_tasks=tasks), self.store, [].append)
+        self.assertEqual(self.activity(), "active")
+        # Two subagents still count as one conversation at work.
+        self.assertEqual(sum(s["activity"]["state"] == "active" for s in self.store.snapshot()["sessions"]), 1)
+        handle("claude-code", self.event("Stop", background_tasks=[]), self.store, [].append)
+        self.assertEqual(self.activity(), "idle")
+
+    def test_a_background_shell_alone_does_not(self):
+        self.store.observe_activity(self.sid, "idle", "claude-live")
+        handle("claude-code", self.event("Stop", background_tasks=[{"id": "s1", "type": "shell", "status": "running"},
+                                                                    {"id": "m1", "type": "monitor", "status": "running"}]),
+               self.store, [].append)
+        self.assertEqual(self.activity(), "idle")
+
+    def test_a_subagent_at_work_keeps_its_conversation_active_and_takes_no_messages(self):
+        self.store.observe_activity(self.sid, "idle", "claude-live")
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        values = []
+        handle("claude-code", self.event("PostToolUse", agent_id="agent-1", agent_type="Explore"), self.store, values.append)
+        self.assertEqual(self.activity(), "active")
+        self.assertEqual(values, [])  # the parent's reply waits for the parent
+        self.assertEqual(self.store.item(item["id"])["delivery"], "pending")
+        handle("claude-code", self.event("SubagentStop", agent_id="agent-1", background_tasks=[]), self.store, [].append)
+        self.assertEqual(self.activity(), "idle")
+
+    def test_a_subagent_finishing_while_others_run_keeps_it_active(self):
+        self.store.observe_activity(self.sid, "idle", "claude-live")
+        others = [{"id": "a2", "type": "subagent", "status": "running"}]
+        handle("claude-code", self.event("SubagentStop", agent_id="agent-1", background_tasks=others), self.store, [].append)
+        self.assertEqual(self.activity(), "active")
+
+    def test_offline_and_waiting_still_win_over_background_work(self):
+        tasks = [{"id": "a1", "type": "workflow", "status": "running"}]
+        handle("claude-code", self.event("Stop", background_tasks=tasks), self.store, [].append)
+        self.store.observe_activity(self.sid, "waiting", "claude-live")
+        self.assertEqual(self.activity(), "waiting")
+        self.store.observe_activity(self.sid, "offline", "claude-live")
+        self.assertEqual(self.activity(), "offline")
+        handle("claude-code", self.event("SessionEnd"), self.store, [].append)
+        self.store.observe_activity(self.sid, "idle", "claude-live")
+        self.assertEqual(self.activity(), "idle")
+
+    def test_an_unknown_conversation_is_not_invented_from_a_subagent(self):
+        handle("claude-code", {"session_id": "never-seen", "hook_event_name": "PostToolUse", "agent_id": "x"}, self.store, [].append)
+        self.assertNotIn("claude-code:never-seen", [s["id"] for s in self.store.snapshot()["sessions"]])
+
     def question(self, sid=None):
         return self.store.add(sid or self.sid, "Choose a plan", kind="question")
 

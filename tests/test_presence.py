@@ -1,3 +1,5 @@
+from unittest.mock import patch
+import os
 import json
 import subprocess
 import tempfile
@@ -200,4 +202,17 @@ class ActivityTimesTests(unittest.TestCase):
         store.register("codex:x", "X", "codex")
         store.observe_activity("codex:x", "active", "codex-runtime:default", observed=7)
         self.assertEqual(next(s for s in store.snapshot()["sessions"] if s["id"] == "codex:x")["last_active"], 7)
+
+class BackgroundSessionTests(unittest.TestCase):
+    def test_dispatched_background_sessions_report_state_not_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "hq.sqlite3")
+            presence = ClaudePresence(store)
+            rows = [{"sessionId": "bg", "pid": os.getpid(), "kind": "background", "name": "Convert videos", "state": "blocked", "cwd": "/tmp"},
+                    {"sessionId": "bg2", "pid": os.getpid(), "kind": "background", "name": "Write docs", "state": "running", "cwd": "/tmp"}]
+            with patch("hq.presence.subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(rows))):
+                presence.sample()
+            states = {s["id"]: s["activity"]["state"] for s in store.snapshot()["sessions"]}
+            self.assertEqual(states["claude-code:bg"], "waiting")
+            self.assertEqual(states["claude-code:bg2"], "active")
 
