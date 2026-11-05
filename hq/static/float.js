@@ -400,22 +400,29 @@ function afterAct(after, next, replied) {
 }
 
 function shortCount(n) {return n > 999 ? '1k+' : String(n);}
-function circleHTML(r, style = feel.style) {
+// A change mark's dot sits inside the circle, before the number, so the number still rolls and
+// the dot follows the circle when the spotlight scales it.
+function circleHTML(r, style = feel.style, mark = null) {
   const empty = r.value === null, text = empty ? '–' : shortCount(r.value);
   const classes = ['f-circle', r.gauge && !empty ? 'gauge' : '', empty ? 'none' : '', r.loud && style === 'attention' ? 'loud' : '',
     r.live ? 'live' : '', r.low ? 'low' : '', r.stale ? 'stale' : '', text.length > 2 ? 'wide' : ''].filter(Boolean).join(' ');
   const ring = r.gauge && !empty ? `<svg viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="16" pathLength="100"/><circle class="fill" cx="18" cy="18" r="16" pathLength="100" stroke-dasharray="${Number(r.value)} 100"/></svg>` : '';
-  return `<span class="${classes}">${ring}<span>${esc(text)}</span></span>`;
+  const dot = mark?.kind === 'dot' ? `<span class="f-mark-dot ${esc(mark.tone)}"></span>` : '';
+  return `<span class="${classes}">${ring}${dot}<span>${esc(text)}</span></span>`;
 }
-function pillHTML(items, live = liveHealthy) {
+function pillHTML(items, live = liveHealthy, marked = {}) {
   const rows = circles.map((id) => {
     const r = METRICS[id].read(items);
-    return `<span class="f-row" data-metric="${id}">${circleHTML(r)}<span class="f-tag">${esc(r.tag)}</span></span>`;
+    return `<span class="f-row" data-metric="${id}">${circleHTML(r, feel.style, marked[id])}<span class="f-tag">${esc(r.tag)}</span></span>`;
   }).join('');
   return `${live ? '' : '<span class="f-row f-offline"><span class="dot err"></span><span class="f-tag">Reconnecting…</span></span>'}${rows}`;
 }
 function pillLabel(items, live = liveHealthy) {
-  return `HQ. ${circles.map((id) => METRICS[id].read(items).tag).join('. ')}.${live ? '' : ' Reconnecting.'}`;
+  const now = Date.now() / 1000;
+  return `HQ. ${circles.map((id) => {
+    const changed = markHistory(marks.log, id, now);
+    return `${METRICS[id].read(items).tag}${changed ? `, ${changed.summary}` : ''}`;
+  }).join('. ')}.${live ? '' : ' Reconnecting.'}`;
 }
 function settingsHTML(items) {
   const rows = [...circles, ...Object.keys(METRICS).filter((id) => !circles.includes(id))].map((id) => {
@@ -718,13 +725,15 @@ function paintFloat({background = false} = {}) {
   const items = attention(), live = liveHealthy || !snapshotSignature;
   holdAnswered(items);
   noteChanges(items);
+  // Open, or just closing, you have seen everything up to now.
+  if (floatOpen || (lastMode && lastMode !== 'pill')) marks.seen = Date.now() / 1000;
   const mode = surfaceMode(floatOpen, route.item, customizing);
   const kind = motionKind(lastMode, mode, lastItem, route.item, visibleIds(), flown);
   flown = false;
   const outgoing = (kind === 'next' || kind === 'prev') && !$('#detail').hidden ? keepCard() : null;
   const scrolls = ['.f-rows', '.d-body'].map((sel) => [sel, document.querySelector(sel)?.scrollTop]);
   const pill = $('#pill');
-  setHTML($('#rail'), pillHTML(items, live));
+  setHTML($('#rail'), pillHTML(items, live, markMap()));
   rollChanged(items);
   pill.setAttribute('aria-label', pillLabel(items, live));
   pill.title = 'Click to open. Drag to move. Right-click for more.';
@@ -778,6 +787,7 @@ function watchAgents() {
 // Island: the capsule morphs into a card and folds back. The numbers on the pill are already
 // true by then; this only says what changed.
 function enqueue(events) {
+  recordMarks(events);
   const wanted = events.filter((e) => notify[e.group]);
   if (!wanted.length || floatOpen) return;
   pending.push(...wanted);
@@ -847,6 +857,108 @@ function dropNotices() {
   $('#note').innerHTML = '';
 }
 
+// Change marks: what the Island said, left behind once it folds. A signed badge stays beside
+// the circle for two minutes, a burst netted into one number; then a dot stays on the circle
+// until you open the panel. Hovering a circle lists its last few changes. Amber is more needing
+// you, green fewer. Badges live in their own layer, so the capsule never moves or grows.
+const MARK_BADGE = 120, MARK_FADE = 30, MARK_HISTORY = 600, MARK_KEEP = 40;
+// The tone when it went up, and when it went down: for usage, down is the worse way.
+const MARK_TONES = {needs: ['more', 'fewer'], stuck: ['more', 'fewer'], agents: ['same', 'same'], claude: ['fewer', 'more'], codex: ['fewer', 'more']};
+const MARK_WORDS = {needs: ['added', 'done'], stuck: ['not acted on', 'acted on'], agents: ['started', 'stopped'], claude: ['back', 'used'], codex: ['back', 'used']};
+const markUnit = (metric) => (metric === 'claude' || metric === 'codex' ? '%' : '');
+const markTone = (metric, n) => (n === 0 ? 'same' : (MARK_TONES[metric] || ['same', 'same'])[n > 0 ? 0 : 1]);
+const signedDelta = (n, unit = '') => `${n > 0 ? '+' : n < 0 ? '−' : '±'}${Math.abs(n)}${unit}`;
+const marks = {log: [], seen: 0};
+function recordMarks(events, now = Date.now() / 1000) {
+  for (const e of events) {
+    if (MARK_TONES[e.metric] && e.delta) marks.log.push({metric: e.metric, delta: e.delta, label: e.title, group: e.group, t: now});
+  }
+  marks.log = marks.log.filter((e) => now - e.t <= MARK_HISTORY).slice(-MARK_KEEP);
+}
+// One circle at rest: a badge while its last run of changes (each within two minutes of the
+// one before) is under two minutes old, fading over the last thirty seconds; then a dot.
+// Nothing from before you last looked counts.
+function markOf(log, metric, seen, now, wanted = () => true) {
+  const events = log.filter((e) => e.metric === metric && e.t > seen && e.t <= now && wanted(e));
+  if (!events.length) return null;
+  const age = now - events.at(-1).t;
+  if (age < MARK_BADGE) {
+    let start = events.length - 1;
+    while (start > 0 && events[start].t - events[start - 1].t <= MARK_BADGE) start -= 1;
+    const n = events.slice(start).reduce((sum, e) => sum + e.delta, 0);
+    const opacity = age < MARK_BADGE - MARK_FADE ? 1 : Math.max(0, (MARK_BADGE - age) / MARK_FADE);
+    return {kind: 'badge', n, tone: markTone(metric, n), text: signedDelta(n, markUnit(metric)), opacity};
+  }
+  const n = events.reduce((sum, e) => sum + e.delta, 0);
+  return {kind: 'dot', n, tone: markTone(metric, n)};
+}
+const clockOf = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+// "2 added, 1 done since 3:42", then the last three with their times.
+function markHistory(log, metric, now) {
+  const recent = log.filter((e) => e.metric === metric && e.t <= now && now - e.t <= MARK_HISTORY);
+  if (!recent.length || !MARK_WORDS[metric]) return null;
+  const up = recent.filter((e) => e.delta > 0).reduce((n, e) => n + e.delta, 0);
+  const down = recent.filter((e) => e.delta < 0).reduce((n, e) => n - e.delta, 0);
+  const [rise, fall] = MARK_WORDS[metric], unit = markUnit(metric);
+  const words = [up && `${up}${unit} ${rise}`, down && `${down}${unit} ${fall}`].filter(Boolean);
+  return {summary: `${words.join(', ')} since ${clockOf(recent[0].t)}`,
+    list: recent.slice(-3).reverse().map((e) => ({text: signedDelta(e.delta, unit), tone: markTone(metric, e.delta), label: e.label, at: clockOf(e.t)}))};
+}
+// Marks follow Notify me about: a kind of change you turned off leaves nothing behind either.
+function markMap(now = Date.now() / 1000) {
+  if (floatOpen) return {};
+  const wanted = (e) => Boolean(notify[e.group]);
+  return Object.fromEntries(circles.map((id) => [id, markOf(marks.log, id, marks.seen, now, wanted)]).filter(([, m]) => m));
+}
+// Badges sit beside their circle, away from the screen edge, in a layer that moves with the
+// pill. They wait out the Island card, a drag and the spotlight, which would cover them.
+function placeMarks(map = markMap()) {
+  const layer = $('#marks');
+  if (!layer) return;
+  const rail = $('#rail'), quiet = floatOpen || notice || pending.length || drag || spot.on || document.body.dataset.mode !== 'pill';
+  if (layer.dataset.side !== spotSide(dock)) layer.dataset.side = spotSide(dock);
+  // Where each circle rests: its place in the rail, plus the pill's border and padding. The
+  // rail is centred in the pill, so while the pill springs, its own offset says nothing yet.
+  // Nothing here is measured unless a badge shows, so opening the panel pays nothing for it.
+  const pad = pillPad(feel.size), border = 1;
+  const shown = new Set();
+  if (!quiet) for (const row of document.querySelectorAll('#rail .f-row[data-metric]')) {
+    const id = row.dataset.metric, m = map[id];
+    if (m?.kind !== 'badge') continue;
+    shown.add(id);
+    const c = row.querySelector('.f-circle');
+    let badge = layer.querySelector(`.f-mark[data-metric="${id}"]`);
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.dataset.metric = id;
+      layer.append(badge);
+      if (!calm()) badge.animate([{opacity: 0, transform: 'scale(.6)'}, {opacity: 1, transform: 'none'}], {duration: 320, easing: spring('--f-soft')});
+    }
+    badge.className = `f-mark ${m.tone}`;
+    badge.textContent = m.text;
+    badge.style.setProperty('--x', `${c.offsetLeft - rail.offsetLeft + border + pad + c.offsetWidth / 2}px`);
+    badge.style.setProperty('--y', `${c.offsetTop - rail.offsetTop + border + pad + c.offsetHeight / 2}px`);
+    badge.style.opacity = calm() ? (m.opacity > 0 ? 1 : 0) : m.opacity.toFixed(3);
+  }
+  layer.querySelectorAll('.f-mark').forEach((badge) => {if (!shown.has(badge.dataset.metric)) badge.remove();});
+  // A badge fades and then becomes a dot, so keep ticking while one is up.
+  clearTimeout(placeMarks.timer);
+  if (Object.values(map).some((m) => m.kind === 'badge')) placeMarks.timer = setTimeout(tickMarks, 1000);
+}
+function tickMarks() {
+  const map = markMap();
+  setHTML($('#rail'), pillHTML(attention(), liveHealthy || !snapshotSignature, map));
+  if (spot.on) markSpot();
+  placeMarks(map);
+}
+// What hovering a circle says: its label, and what changed lately.
+function spotHTML(id) {
+  const tag = esc(METRICS[id].read(attention()).tag), changed = markHistory(marks.log, id, Date.now() / 1000);
+  if (!changed) return tag;
+  const rows = changed.list.map((e) => `<span class="f-spot-row"><em class="${e.tone}">${esc(e.text)}</em><span>${esc(e.label)}</span><small>${esc(e.at)}</small></span>`).join('');
+  return `<b>${tag}</b><span class="f-spot-sum">${esc(changed.summary)}</span>${rows}`;
+}
+
 // Window
 function pillSize() {
   const rail = $('#rail');
@@ -906,6 +1018,7 @@ function layout() {
   }
   const g = geometry(mode), pill = localRect(g.pill, g.room);
   setRect($('#pill'), pill);
+  if ($('#marks')) setRect($('#marks'), pill);
   if (g.box) {
     const target = localRect(g.box, g.room);
     setRect(box, target);
@@ -926,6 +1039,7 @@ function layout() {
     if (!calm()) $('#pill').animate([{transform: 'scale(1)'}, {transform: 'scale(1.07)'}, {transform: 'scale(1)'}], {duration: 240, delay: 110, easing: 'ease-out'});
   }
   if (spot.on) placeSpot();
+  placeMarks();
   placeGrips(g.box && mode !== 'settings' && !box.classList.contains('closing') ? localRect(g.box, g.room) : null, mode);
   const hits = [pill, g.box && inflateRect(localRect(g.box, g.room), GRIP)].filter(Boolean);
   placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key: mode !== 'pill', shadow: false});
@@ -1168,7 +1282,8 @@ function spotlight(x, y) {
   if (index !== spot.index || first) {
     spot.index = index;
     const label = el.firstElementChild;
-    label.textContent = METRICS[rows[index].dataset.metric].read(attention()).tag;
+    label.innerHTML = spotHTML(rows[index].dataset.metric);
+    el.classList.toggle('log', Boolean(label.querySelector('.f-spot-sum')));
     el.classList.toggle('instant', first);
     if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
   }
@@ -1176,7 +1291,10 @@ function spotlight(x, y) {
   el.classList.toggle('on', spotLabelled(floatOpen));
   markSpot();
   placeSpot();
-  if (first) requestAnimationFrame(() => el.classList.remove('instant'));
+  if (first) {
+    requestAnimationFrame(() => el.classList.remove('instant'));
+    placeMarks();
+  }
 }
 function hideSpot() {
   if (!spot.on) return;
@@ -1184,6 +1302,7 @@ function hideSpot() {
   spot.index = -1;
   $('#spot').classList.remove('on');
   markSpot();
+  placeMarks();
 }
 function saveSettings() {
   native({type: 'settings', settings: {circles, notify, shortcuts, panelKeys, sizes, pillSize: feel.size}});

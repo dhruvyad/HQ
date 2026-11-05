@@ -26,6 +26,31 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot {position: absolute; left: 0; top: 0; z-index: 30; display: flex; align-items: center; height: var(--f-size, 28px); padding: 0 12px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: 14px; box-shadow: 0 6px 22px rgb(0 0 0 / 0.35); font-size: 12.5px; white-space: nowrap; color: rgb(250 250 250 / 0.92); opacity: 0; pointer-events: none; transition: transform .5s var(--f-spring, ease), opacity .2s ease;}
 .f-spot.on {opacity: 1;}
 .f-spot.instant {transition: opacity .2s ease;}
+/* Hovering a circle that changed lately: its label, what happened since when, the last three. */
+.f-spot.log {height: auto; padding: 8px 12px; border-radius: 12px;}
+.f-spot.log > span {display: flex; flex-direction: column; gap: 2px; min-width: 190px; max-width: 280px;}
+.f-spot.log b {font-weight: 500;}
+.f-spot-sum {margin-bottom: 3px; font-size: 12px; color: var(--muted-foreground);}
+.f-spot-row {display: flex; align-items: baseline; gap: 8px; font-size: 12px;}
+.f-spot-row em {min-width: 26px; font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums;}
+.f-spot-row em.more {color: var(--more);}
+.f-spot-row em.fewer {color: var(--live);}
+.f-spot-row span {flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;}
+.f-spot-row small {font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted-foreground);}
+/* Change marks: a signed badge beside a circle, in a layer that keeps the pill's box (and its
+   spring), then a dot on the circle. Amber is more needing you, green fewer, white either way. */
+.f-marks {position: absolute; pointer-events: none; transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease);}
+.f-pill.instant + .f-marks {transition: none;}
+.f-mark {position: absolute; display: inline-flex; align-items: center; height: calc(var(--f-size, 28px) * 0.57); padding: 0 calc(var(--f-size, 28px) * 0.18); border-radius: 999px; font: 600 calc(var(--f-size, 28px) * 0.357)/1 var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--primary-foreground); box-shadow: 0 0 0 2px var(--background); transition: opacity 1s linear;}
+.f-marks[data-side="right"] .f-mark {left: calc(100% + var(--f-size, 28px) * 0.18); top: var(--y); translate: 0 -50%;}
+.f-marks[data-side="left"] .f-mark {right: calc(100% + var(--f-size, 28px) * 0.18); top: var(--y); translate: 0 -50%;}
+.f-marks[data-side="above"] .f-mark {bottom: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
+.f-marks[data-side="below"] .f-mark {top: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
+.f-mark-dot {position: absolute; right: -2px; top: -2px; width: calc(var(--f-size, 28px) * 0.32); height: calc(var(--f-size, 28px) * 0.32); border-radius: 50%; box-shadow: 0 0 0 2px var(--background); pointer-events: none;}
+.f-mark.more, .f-mark-dot.more {background: var(--more);}
+.f-mark.fewer, .f-mark-dot.fewer {background: var(--live);}
+.f-mark.same, .f-mark-dot.same {background: rgb(250 250 250 / 0.85);}
+@media (prefers-reduced-motion: reduce) {.f-mark {transition: none;}}
 .f-ripple {position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--foreground); pointer-events: none;}
 body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
 .f-circle.wide {font-size: calc(var(--f-size, 28px) * 0.357); letter-spacing: -0.03em;}
@@ -88,7 +113,7 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-flight-card > .detail {position: absolute; inset: 0; width: 100%; height: 100%; border: 0; box-shadow: none; transform: none;}
 @keyframes f-open {from {opacity: 0; transform: scale(.975);}}
 html.float body[data-mode="pill"] #toast {display: none;}
-html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
+html.float body[data-drag] .f-pill, html.float body[data-drag] .f-marks, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
 /* Resize grips on the box's edges away from the pill: 6px outside the border, 3px in. */
 .f-grips {position: absolute; z-index: 20; pointer-events: none;}
 .f-grip {position: absolute; pointer-events: auto;}

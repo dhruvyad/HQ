@@ -1072,4 +1072,60 @@ assert.deepEqual([cleaned.view, cleaned.order, cleaned.group, cleaned.folds, cle
 assert.equal(run("cleanNeeds({view: 'project:harbor'}).view"), 'project:harbor');
 assert.equal(run("cleanTabs({tabs: {needs: {filter: {group: 'agent', view: 'due'}}}}).tabs.needs.filter.group"), 'agent');
 
+// Change marks: a signed badge for two minutes after a run of changes (a burst nets into one),
+// then a dot until the list is opened; hover lists the last few. Amber is more, green fewer.
+assert.equal(run("signedDelta(3)"), '+3');
+assert.equal(run("signedDelta(-1)"), '−1');
+assert.equal(run("signedDelta(0)"), '±0');
+assert.equal(run("signedDelta(-8, '%')"), '−8%');
+assert.deepEqual(['needs', 'stuck', 'agents', 'claude'].map((m) => [run(`markTone('${m}', 2)`), run(`markTone('${m}', -2)`)]),
+  [['more', 'fewer'], ['more', 'fewer'], ['same', 'same'], ['fewer', 'more']]); // usage going down is the worse way
+run(`markLog = []; marks.log = markLog; recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Choose the launch date'},
+  {group: 'items', metric: 'needs', delta: 1, title: 'Pick a subject line'}, {group: 'items', metric: 'decisions', delta: 1, title: 'not a marked circle'},
+  {group: 'usage', metric: 'claude', delta: 0, title: 'no change'}], 1000);
+  recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Review the release notes'}], 1030);
+  recordMarks([{group: 'items', metric: 'needs', delta: -1, title: 'Approve the certificate'}], 1100)`);
+assert.equal(run('marks.log.length'), 4); // only circles that mark, and only real changes
+const markAt = (now, seen = 0, wanted = '') => JSON.parse(run(`JSON.stringify(markOf(marks.log, 'needs', ${seen}, ${now}${wanted}))`));
+let m = markAt(1110);
+assert.deepEqual([m.kind, m.text, m.tone, m.opacity], ['badge', '+2', 'more', 1]); // +1 +1 +1 −1 nets to +2, amber
+m = markAt(1100 + 105);
+assert.ok(m.kind === 'badge' && m.opacity > 0.4 && m.opacity < 0.6); // fades over its last 30 seconds
+m = markAt(1100 + 121);
+assert.deepEqual([m.kind, m.tone], ['dot', 'more']); // then a dot, coloured by the net since you looked
+assert.equal(markAt(1100 + 3600).kind, 'dot'); // the dot waits for you, however long
+assert.equal(markAt(1110, 1110), null); // opening the list clears both
+m = markAt(1110, 1000 + 1);
+assert.deepEqual([m.text, m.tone], ['±0', 'same']); // only what came after you looked: +1 then −1
+assert.equal(markAt(1110, 0, ", (e) => e.group !== 'items'"), null); // off in Notify me about, nothing marks
+run(`recordMarks([{group: 'items', metric: 'needs', delta: -1, title: 'Upload the signed file'}], 1400)`);
+m = markAt(1410);
+assert.deepEqual([m.kind, m.text, m.tone], ['badge', '−1', 'fewer']); // a new run starts after two quiet minutes
+// Hover: what happened, since when, and the last three with their times.
+const hist = JSON.parse(run('JSON.stringify(markHistory(marks.log, "needs", 1410))'));
+assert.ok(/^3 added, 2 done since \d{1,2}:\d{2}/.test(hist.summary), hist.summary);
+assert.deepEqual(hist.list.map((e) => [e.text, e.tone, e.label]), [['−1', 'fewer', 'Upload the signed file'], ['−1', 'fewer', 'Approve the certificate'], ['+1', 'more', 'Review the release notes']]);
+assert.equal(run('markHistory(marks.log, "agents", 1410)'), null);
+assert.equal(run('JSON.stringify(markHistory(marks.log, "needs", 1000 + 601 + 400))'), JSON.stringify(null)); // ten minutes of history
+run(`recordMarks([{group: 'usage', metric: 'claude', delta: -3, title: 'Claude is nearly out'}], 1500)`);
+assert.equal(JSON.parse(run('JSON.stringify(markOf(marks.log, "claude", 0, 1510))')).text, '−3%');
+assert.ok(run('markHistory(marks.log, "claude", 1510).summary').startsWith('3% used since'));
+// The dot sits inside the circle, before the number, so the number still rolls and the capsule keeps its size.
+html = run("circleHTML({value: 164}, 'attention', {kind: 'dot', tone: 'more'})");
+assert.ok(html.includes('<span class="f-mark-dot more"></span><span>164</span></span>') && html.includes('wide'));
+assert.ok(!run("circleHTML({value: 164}, 'attention', {kind: 'badge', tone: 'more', text: '+3'})").includes('f-mark'));
+// Through the pill: five minutes on, the rail carries the dot; a kind turned off in Notify me
+// about leaves nothing; open, nothing marks at all.
+run(`marks.log = []; marks.seen = 0; recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Choose the launch date'}], Date.now() / 1000 - 300)`);
+assert.ok(run('pillHTML(attention(), true, markMap())').includes('<span class="f-mark-dot more"></span>'));
+assert.ok(run('pillLabel(attention(), true)').includes('1 added since')); // and says so to VoiceOver
+run('notify.items = false');
+assert.ok(!run('pillHTML(attention(), true, markMap())').includes('f-mark-dot'));
+run('notify.items = true; floatOpen = true');
+assert.equal(run('Object.keys(markMap()).length'), 0);
+run('floatOpen = false; marks.seen = Date.now() / 1000');
+assert.ok(!run('pillHTML(attention(), true, markMap())').includes('f-mark-dot')); // seen once opened
+assert.ok(run('spotHTML("needs")').includes('<span class="f-spot-sum">1 added since') && run('spotHTML("needs")').includes('Choose the launch date')); // hover still tells
+run('marks.log = []; marks.seen = 0');
+
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');
