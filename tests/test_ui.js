@@ -273,9 +273,6 @@ assert.equal(run('shortCount(144)'), '144');
 assert.equal(run('shortCount(1000)'), '1k+');
 assert.ok(run("circleHTML({value: 144})").includes('wide'));
 assert.ok(!run("circleHTML({value: 14})").includes('wide'));
-run("peek = 'Fresh <i>item</i>'");
-assert.ok(run('pillHTML(attention(), true)').includes('Fresh &lt;i&gt;item&lt;/i&gt;'));
-run('peek = null');
 
 // Agents running counts only what is verifiably active.
 assert.equal(run("METRICS.agents.read([]).value"), run("model.agents.filter(a => agentState(a) === 'active').length"));
@@ -343,11 +340,120 @@ assert.equal(run("labelSide('top-left', 'horizontal')"), 'none');
 assert.equal(run("surfaceMode(true, null, true)"), 'settings');
 assert.equal(run("surfaceMode(false, null, true)"), 'pill');
 
-// Only something new counts as an arrival, never the first snapshot.
-const arrived = (ids, seenIds) => Array.from(run(`arrivals(${JSON.stringify(ids.map((id) => ({id})))}, ${seenIds ? `new Set(${JSON.stringify(seenIds)})` : 'null'}).map(i => i.id)`));
-assert.deepEqual(arrived(['a', 'b'], null), []);
-assert.deepEqual(arrived(['a', 'b'], ['a']), ['b']);
-assert.deepEqual(arrived(['a'], ['a', 'b']), []);
+// Notifications say what changed, whoever did it.
+const changes = (before, after, all = []) => JSON.parse(run(`JSON.stringify(itemChanges(${JSON.stringify(before)}, ${JSON.stringify(after)}, ${JSON.stringify(all)}))`));
+const plainItem = (fields) => ({id: 'x', title: 'Title <b>', project_name: 'Harbor', kind: 'todo', lane: 'you', status: 'open', ...fields});
+let event = changes([], [plainItem({id: 'n', kind: 'question'})])[0];
+assert.deepEqual([event.title, event.sub, event.delta, event.item, event.group], ['Title <b>', 'New decision · Harbor', 1, 'n', 'items']);
+assert.equal(changes([], [plainItem({kind: 'blocker'})])[0].sub, 'New blocker · Harbor');
+assert.equal(changes([], [plainItem({})])[0].sub, 'New action · Harbor');
+event = changes([], [plainItem({delivery: 'failed', status: 'answered'})])[0];
+assert.equal(event.sub, 'Reply failed · Harbor');
+assert.equal(event.dot, 'bad');
+const gone = (latest) => changes([plainItem({})], [], latest ? [plainItem(latest)] : [])[0].sub;
+assert.equal(gone(null), 'Done · Harbor');
+assert.equal(gone({status: 'done'}), 'Done · Harbor');
+assert.equal(gone({status: 'done', skipped: true}), 'Skipped · Harbor');
+assert.equal(gone({status: 'answered'}), 'Reply saved · Harbor'); // saved, never received
+assert.equal(gone({lane: 'later'}), 'Snoozed · Harbor');
+assert.equal(gone({asking: true}), 'Asked the agent · Harbor');
+assert.equal(gone({owner: 'agent'}), 'With the agent · Harbor');
+assert.equal(gone({owner: 'external'}), 'Waiting on someone · Harbor');
+assert.deepEqual(changes([plainItem({})], [plainItem({})]), []); // nothing changed, nothing to say
+
+// An agent only counts once its new state has held, and unknown never reads as stopped.
+const agent = (state) => [{id: 'a', name: 'Triage', harness: 'Codex', state}];
+run('tracked = new Map()');
+const track = (state, t, settled = true) => JSON.parse(run(`JSON.stringify(trackAgents(tracked, ${JSON.stringify(agent(state))}, ${t}, ${settled}))`));
+assert.deepEqual(track('idle', 100, false), []); // the baseline is not news
+assert.deepEqual(track('active', 101), []); // it just started; wait
+assert.deepEqual(track('idle', 102), []); // a flicker between turns
+assert.deepEqual(track('active', 103), []);
+assert.deepEqual(track('active', 105), []); // 2 seconds is not enough
+event = track('active', 106)[0];
+assert.deepEqual([event.title, event.sub, event.dot, event.delta], ['Triage started', 'Codex', 'on', 1]);
+assert.deepEqual(track('active', 107), []); // said once
+assert.deepEqual(track('unknown', 500), []); // a lost connection says nothing
+assert.deepEqual(track('idle', 501), []);
+assert.deepEqual(track('unknown', 900), []);
+assert.deepEqual(track('idle', 505), []);
+event = track('idle', 510)[0];
+assert.deepEqual([event.title, event.dot, event.delta], ['Triage stopped', 'off', -1]);
+run('tracked = new Map()');
+assert.deepEqual(track('active', 1, false), []); // already running at startup: baseline
+run('tracked = new Map()');
+assert.deepEqual(track('active', 1), []); // appears running after startup: it just started, and holds first
+assert.equal(track('active', 5)[0].title, 'Triage started');
+
+// Usage speaks only at the moment it crosses the line.
+const usageAt = (left) => ({codex: {as_of: 1, windows: [{name: 'weekly', left, resets_at: null}]}});
+const crossed = (a, b) => JSON.parse(run(`JSON.stringify(usageChanges(${JSON.stringify(a)}, ${JSON.stringify(b)}))`));
+event = crossed(usageAt(11), usageAt(10))[0];
+assert.deepEqual([event.title, event.sub, event.dot], ['Codex is nearly out', '10% of the weekly limit left', 'bad']);
+assert.deepEqual(crossed(usageAt(10), usageAt(9)), []); // already said
+assert.deepEqual(crossed(usageAt(50), usageAt(40)), []);
+assert.deepEqual(crossed(null, usageAt(5)), []); // first sight is not a change
+assert.deepEqual(crossed(usageAt(50), {codex: null}), []);
+
+// A burst becomes one card.
+const merged = (events) => JSON.parse(run(`JSON.stringify(coalesce(${JSON.stringify(events)}))`));
+const one = {group: 'items', metric: 'needs', delta: 1, plural: 'new items', title: 'Only one', sub: 'New action · Harbor', item: 'i'};
+assert.equal(merged([one]).title, 'Only one');
+assert.equal(merged([one]).item, 'i'); // a single card opens its item
+let burst = merged([one, one, {group: 'agents', metric: 'agents', delta: 1, plural: 'agents started'}]);
+assert.equal(burst.title, '3 updates');
+assert.equal(burst.sub, '2 new items · 1 agent started');
+assert.equal(burst.delta, 2);
+assert.equal(burst.item, undefined); // several things: it opens the list
+assert.equal(merged([one, {...one, delta: -1, plural: 'items cleared'}]).sub, '1 new item · 1 item cleared');
+assert.equal(merged([{...one, plural: 'failed replies'}, one]).sub, '1 failed reply · 1 new item');
+
+// The curve is a real spring: it starts at rest, overshoots and settles.
+const curve = run("springCurve({stiffness: 190, damping: 17})");
+const points = curve.slice(7, -1).split(', ').map(Number);
+assert.equal(points[0], 0);
+assert.equal(points.at(-1), 1);
+assert.ok(Math.max(...points) > 1.05 && Math.max(...points) < 1.3);
+
+// Clicks pass through the window except where something is showing.
+const placedFor = (dock, surface, room) => JSON.parse(run(`JSON.stringify(windowFor('${dock}', ${JSON.stringify(surface)}, ${JSON.stringify(area)}, ${JSON.stringify(room)}))`));
+const stage = {width: 420, height: 270}, capsule = {width: 38, height: 102}, card = {width: 308, height: 62};
+let at = placedFor('top-left', capsule, stage);
+assert.deepEqual(at, {x: -22, y: 3, width: 484, height: 334, hit: {x: 32, y: 32, width: 38, height: 102}});
+assert.equal(at.x + at.hit.x, rect('top-left', capsule).x); // the capsule lands exactly on its dock
+assert.equal(at.y + at.hit.y, rect('top-left', capsule).y);
+// Anywhere it docks, the window is the same whatever the pill is doing, so nothing resizes mid-animation.
+for (const dock of ['top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right']) {
+  const resting = placedFor(dock, capsule, stage), noting = placedFor(dock, card, stage);
+  assert.deepEqual([resting.x, resting.y, resting.width, resting.height], [noting.x, noting.y, noting.width, noting.height], dock);
+  assert.equal(resting.x + resting.hit.x, rect(dock, capsule).x, dock);
+  assert.equal(resting.y + resting.hit.y, rect(dock, capsule).y, dock);
+  assert.equal(noting.x + noting.hit.x, rect(dock, card).x, dock);
+  assert.equal(noting.y + noting.hit.y, rect(dock, card).y, dock);
+}
+assert.deepEqual(placedFor('right', {width: 380, height: 300}, {width: 380, height: 300}).hit, {x: 32, y: 32, width: 380, height: 300}); // an open box hugs
+
+// Shortcuts: the same key opens and closes, and what you set survives.
+const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved ?? null)}))`));
+assert.equal(shortcut().toggle.label, '⌃⌥H');
+assert.equal(shortcut().customize, null); // nothing bound unless you ask
+const mine = {keyCode: 49, modifiers: 2048, label: '⌥Space'};
+assert.deepEqual(shortcut({toggle: mine}).toggle, mine);
+assert.equal(shortcut({toggle: null}).toggle, null); // cleared stays cleared
+assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle.label, '⌃⌥H'); // a broken value falls back
+assert.ok(!('gone' in shortcut({gone: mine})));
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: ${JSON.stringify(mine)}, next: null}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
+assert.equal(new Set(Object.values(shortcut()).filter(Boolean).map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {items: true, agents: false, usage: true});
+html = run('shortcutsHTML()');
+assert.ok(html.includes('Open or minimize Needs you') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
+run("recording = 'toggle'; refused = ['next']");
+html = run('shortcutsHTML()');
+assert.ok(html.includes('Press keys…') && html.includes('Another app is using this'));
+run("recording = null; refused = []");
+html = run('notifyHTML()');
+assert.ok(html.includes('data-notify="agents"') && html.includes('aria-checked="true"'));
+assert.ok(run('settingsHTML(attention())').includes('Keyboard shortcuts'));
 
 // Which surface shows, and where you go after acting.
 assert.equal(run('surfaceMode(false, null)'), 'pill');

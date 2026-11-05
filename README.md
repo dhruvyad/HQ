@@ -71,7 +71,17 @@ Codex usage you have left.
 - **Click a row**: the box expands into the full item, the same pane as the dashboard
   (steps, options, checks, replies, snooze, skip). Your draft survives if you look away.
 - **Right-click** it, or use `…` in the list: choose which circles show and in what order,
-  open the dashboard, hide it for an hour, or quit.
+  what it notifies you about, your keyboard shortcuts, open the dashboard, hide it for an
+  hour, or quit.
+
+When something changes, the capsule morphs into a card saying what happened, then folds
+back: items added or removed, an agent starting or stopping, usage running low, or a reply
+that failed to deliver. A burst becomes one card, hovering holds it open, and clicking it
+opens that item.
+
+Shortcuts work from any app and need no permissions. `⌃⌥H` opens Needs you and minimizes it
+again, keeping your place and draft. `⌃⌥J` and `⌃⌥K` move through items, and `⌃⌥D` opens the
+dashboard. All of them can be changed or cleared in the panel.
 
 Usage comes only from what each tool itself reports, and a circle with no source stays
 empty rather than guessing. Codex works with nothing to set up. Claude Code reports its

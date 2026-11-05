@@ -2,10 +2,22 @@
    item pane; this file adds only what a small floating window needs. See DESIGN.md. */
 html.float, html.float body {height: 100%; background: transparent; overflow: hidden; overscroll-behavior: none;}
 
-/* Pill: a black capsule of circles, each one a live number you choose. */
-.f-capsule {display: inline-flex; flex-direction: column; gap: 4px; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
-.f-capsule[data-layout="horizontal"] {flex-direction: row;}
-.f-pill {position: absolute; top: 0; left: 0; transition: background .15s;}
+/* Pill: a black capsule of circles, each one a live number you choose. The window around it
+   is a fixed transparent stage, so every change of shape here runs on the compositor. */
+.f-capsule {display: inline-flex; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
+.f-rail {display: flex; flex: none; flex-direction: column; gap: 4px; transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
+.f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
+.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); translate: var(--tx, 0) var(--ty, 0); transition: width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
+body[data-across="start"] .f-pill, body[data-across="start"] .f-box {left: var(--f-margin);}
+body[data-across="end"] .f-pill, body[data-across="end"] .f-box {right: var(--f-margin);}
+body[data-across="center"] .f-pill, body[data-across="center"] .f-box {left: 50%; --tx: -50%;}
+body[data-down="start"] .f-pill, body[data-down="start"] .f-box {top: var(--f-margin);}
+body[data-down="end"] .f-pill, body[data-down="end"] .f-box {bottom: var(--f-margin);}
+body[data-down="center"] .f-pill, body[data-down="center"] .f-box {top: 50%; --ty: -50%;}
+body[data-across="end"] .f-pill .f-rail {margin-left: auto;}
+body[data-across="center"] .f-pill .f-rail {margin-inline: auto;}
+body[data-down="end"] .f-pill .f-rail {margin-top: auto;}
+body[data-down="center"] .f-pill .f-rail {margin-block: auto;}
 .f-pill:focus-visible {outline-offset: -3px;}
 .f-row {display: flex; align-items: center; gap: 8px; min-height: var(--f-size, 28px);}
 body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
@@ -29,11 +41,27 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-circle .fill {stroke: var(--foreground);}
 .f-circle.low .fill {stroke: var(--error);}
 .f-circle.low {color: var(--error);}
-.f-pill.bump .f-row:first-of-type .f-circle {animation: f-bump .7s cubic-bezier(.16,1,.3,1);}
-@keyframes f-bump {30% {transform: scale(1.14);}}
+
+/* Island: the capsule becomes a card, then folds back. */
+.f-pill.noting {border-radius: 31px;}
+.f-pill.noting .f-rail {opacity: 0; transform: scale(.7); filter: blur(3px); transition-delay: 0s;}
+.f-hero {position: absolute; left: 12px; top: 50%; opacity: 0; transform: translateY(-50%) scale(.55); transition: opacity .2s ease, transform .55s var(--f-spring, ease);}
+.f-pill.noting .f-hero {opacity: 1; transform: translateY(-50%) scale(1.25); transition-delay: .1s;}
+.f-note {position: absolute; left: 58px; right: 18px; top: 50%; display: flex; flex-direction: column; text-align: left; opacity: 0; transform: translateY(calc(-50% + 8px)); transition: opacity .16s ease, transform .3s ease;}
+.f-pill.noting .f-note {opacity: 1; transform: translateY(-50%); transition: opacity .3s ease .16s, transform .55s var(--f-soft, ease) .12s;}
+.f-note-title {overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 500; line-height: 1.3;}
+.f-note-sub {margin-top: 1px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 1.3; color: var(--muted-foreground);}
+.f-dot {display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; vertical-align: 1px;}
+.f-dot.on {background: var(--live); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.16);}
+.f-dot.off {border: 1.5px solid rgb(250 250 250 / 0.45);}
+.f-dot.bad {background: var(--error);}
+.f-num {position: relative; display: block; width: 100%; height: 1em; text-align: center;}
+.f-num b {position: absolute; inset: 0; font-weight: inherit; transition: transform .42s var(--f-soft, ease), opacity .26s ease;}
+.f-num b.from-below, .f-num b.to-below {transform: translateY(100%); opacity: 0;}
+.f-num b.from-above, .f-num b.to-above {transform: translateY(-100%); opacity: 0;}
 
 /* The box: one surface for the list and the expanded item. */
-.f-box {position: absolute; top: 0; left: 0; width: var(--f-width, 380px); height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; transform-origin: var(--f-origin, left top); animation: f-open .18s cubic-bezier(.16,1,.3,1);}
+.f-box {position: absolute; width: var(--f-width, 380px); height: calc(100% - 2 * var(--f-margin, 32px)); display: flex; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); translate: var(--tx, 0) var(--ty, 0); flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; transform-origin: var(--f-origin, left top); animation: f-open .18s cubic-bezier(.16,1,.3,1);}
 @keyframes f-open {from {opacity: 0; transform: scale(.975);}}
 html.float body[data-mode="pill"] .f-box {display: none;}
 html.float body:not([data-mode="pill"]) .f-pill {visibility: hidden;}
@@ -62,6 +90,15 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-set .check {flex: 1; min-width: 0; padding: 7px 8px; font-size: 14px; line-height: 1.3;}
 .f-set .check[aria-checked="true"] {color: var(--foreground);}
 .f-set .check small {display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-section {margin: 14px 8px 4px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-key {display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 2px 8px; font-size: 14px; line-height: 1.3;}
+.f-key > span {flex: 1; min-width: 0;}
+.f-key-bad {display: block; font-size: 12.5px; color: var(--error);}
+.f-cap {flex: none; min-width: 58px; height: 28px; padding: 0 9px; border-radius: 8px; background: rgb(250 250 250 / 0.08); font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--foreground); transition: background .12s;}
+.f-cap:hover {background: rgb(250 250 250 / 0.14);}
+.f-cap.empty {background: none; border: 1px dashed rgb(250 250 250 / 0.2); color: var(--muted-foreground);}
+.f-cap.live {background: var(--primary); color: var(--primary-foreground);}
+.f-hint {margin: 6px 8px 0; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground);}
 .f-moves {display: flex; flex: none;}
 .f-moves .icon-btn {width: 26px; height: 26px;}
 .f-moves .icon {width: 15px; height: 15px;}
@@ -89,7 +126,7 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 .f-ghost.gliding {transition: transform var(--f-glide, 300ms) cubic-bezier(.16,1,.3,1);}
 
 @media (prefers-reduced-motion: reduce) {
-  .f-box, .f-pill.bump .f-circle, body[data-backdrop="dim"] .f-drag {animation: none;}
+  .f-box, body[data-backdrop="dim"] .f-drag {animation: none;}
 }
 
 /* Lab bench */

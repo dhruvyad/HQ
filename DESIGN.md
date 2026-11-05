@@ -100,7 +100,15 @@ always hugs its content, so nothing transparent sits over what you are working o
   drag the same way. Escape cancels. Eight targets, 10px from the free screen's edges and
   4px from its bottom, just above the Dock. Centered on the top or bottom edge the capsule
   lies side to side, and the ghost turns as you approach. The box always grows away from its dock.
-- Sunken surface, 16px radius, a native shadow, and a 14% hairline, so it reads on any wallpaper.
+- **Notification** (Island, chosen in the gallery): the capsule springs into a 308 by 62 card
+  while its circles blur away; the changed circle returns larger with its number rolling, beside
+  a title and one line. It holds 4 seconds, hovering pauses it, a burst merges into one card,
+  and it never takes focus. An agent's change must hold 3 seconds to start and 8 to stop first,
+  since agents flip between busy and idle on every turn.
+- The pill's window is a fixed transparent stage, so every change of shape runs on the
+  compositor instead of resizing a window. Clicks pass through everything but what is showing.
+- In a fullscreen app the Dock's space is free, so bottom docks move down into it.
+- Sunken surface, 16px radius, a soft shadow, and a 14% hairline, so it reads on any wallpaper.
 
 These are the starting points of `hq float lab`, which flips each one live on the real
 window. Settle a round there, then update this section with the picks.

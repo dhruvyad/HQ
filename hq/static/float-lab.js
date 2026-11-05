@@ -58,10 +58,10 @@ const AXES = [
     {value: 'list', label: 'Back to the list', why: 'You choose what to do next.'},
     {value: 'stay', label: 'Stay on it', why: 'Shows the delivery state, as the dashboard does.'},
   ]},
-  {id: 'arrival', ask: 'When something new arrives?', options: [
-    {value: 'pulse', label: 'The count pulses', why: 'Noticeable without words.', default: true},
-    {value: 'title', label: 'Show its title briefly', why: 'Tells you what it is, for five seconds.'},
-    {value: 'count', label: 'Count only', why: 'Quietest, and easiest to miss.'},
+  {id: 'hold', ask: 'How long does a notification stay?', options: [
+    {value: 3000, label: '3 seconds', why: 'Out of your way fast. Hovering holds it open either way.'},
+    {value: 4000, label: '4 seconds', why: 'Time to read a title and a line.', default: true},
+    {value: 6000, label: '6 seconds', why: 'Hard to miss, and more in the way.'},
   ]},
   {id: 'width', ask: 'How wide is the expanded item?', options: [
     {value: 420, label: '420', why: 'Covers less of your screen.'},
@@ -75,12 +75,20 @@ const AXES = [
     {value: 0, label: 'None', why: 'The empty state.'},
   ]},
 ];
+// Samples of each kind of notification, so each can be tried on the real window.
+const NOTICES = {
+  'Item added': {group: 'items', metric: 'needs', delta: 1, plural: 'new items', title: 'Choose the launch date', sub: 'New decision · Harbor'},
+  'Item removed': {group: 'items', metric: 'needs', delta: -1, plural: 'items cleared', title: 'Sign the vendor renewal', sub: 'Done · Lantern'},
+  'Agent started': {group: 'agents', metric: 'agents', delta: 1, plural: 'agents started', title: 'Support triage started', sub: 'Claude Code', dot: 'on'},
+  'Agent stopped': {group: 'agents', metric: 'agents', delta: -1, plural: 'agents stopped', title: 'Support triage stopped', sub: 'Claude Code', dot: 'off'},
+  'Usage low': {group: 'usage', metric: 'codex', delta: -9, plural: 'limits running low', title: 'Codex is nearly out', sub: '9% of the weekly limit left', dot: 'bad'},
+};
 const LAB_SESSION = 'lab:fixtures'; // floating.py seeds it; the lab has no other conversation.
 const PRESETS = [
   {name: 'Recommended', why: 'Each axis at its starting point.', set: {}},
   {name: 'OpenFlow feel', why: 'Same drag as the flow bar, with the top left added.', set: {targets: 'flow', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5}},
-  {name: 'Quiet', why: 'Least on your screen, least motion.', set: {size: 24, style: 'outline', labels: 'none', targets: 'corners', backdrop: 'none', glide: 180, arrival: 'count'}},
-  {name: 'Fast triage', why: 'Tells you what is new and keeps you moving.', set: {order: 'newest', after: 'next', arrival: 'title', width: 420}},
+  {name: 'Quiet', why: 'Least on your screen, least motion.', set: {size: 24, style: 'outline', labels: 'none', targets: 'corners', backdrop: 'none', glide: 180, hold: 3000}},
+  {name: 'Fast triage', why: 'Tells you what is new and keeps you moving.', set: {order: 'newest', after: 'next', width: 420}},
 ];
 
 const defaults = () => Object.fromEntries(AXES.map((a) => [a.id, a.options.find((o) => o.default).value]));
@@ -117,8 +125,9 @@ function bootLab() {
         <div class="lab-seg" role="radiogroup" aria-label="${esc(a.ask)}">${a.options.map((o) => `<button role="radio" data-axis="${a.id}" data-value="${esc(JSON.stringify(o.value))}" aria-checked="${o.value === picked[a.id]}">${esc(o.label)}</button>`).join('')}</div>
         <p class="lab-why">${esc(optionOf(a, picked[a.id]).why)}</p>
         ${a.fixture ? '' : `<input class="field lab-note" data-note="${a.id}" placeholder="Note (optional)" aria-label="Note on: ${esc(a.ask)}" value="${esc(notes[a.id] || '')}">`}</section>`).join('')}
-      <div class="lab-group">Try an arrival</div>
-      <button class="pill outline sm lab-arrive" id="lab-arrive" type="button">Add a new item</button>
+      <div class="lab-group">Try a notification</div>
+      <div class="lab-seg">${Object.keys(NOTICES).map((name) => `<button type="button" data-notice="${name}">${esc(name)}</button>`).join('')}</div>
+      <button class="pill outline sm lab-arrive" id="lab-arrive" type="button">Add a real item</button>
       <div class="lab-group">Anything else</div>
       <textarea class="field lab-all" id="lab-all" placeholder="Overall notes for this round">${esc(overall)}</textarea>`;
     document.getElementById('lab-count').textContent = changed() ? `${changed()} changed from the starting point` : 'All at the starting point';
@@ -129,7 +138,8 @@ function bootLab() {
     }
   }
   document.addEventListener('click', async (e) => {
-    const option = e.target.closest('[data-axis]'), preset = e.target.closest('[data-preset]');
+    const option = e.target.closest('[data-axis]'), preset = e.target.closest('[data-preset]'), sample = e.target.closest('[data-notice]');
+    if (sample) return native({type: 'notice', event: NOTICES[sample.dataset.notice]});
     if (option) {
       picked[option.dataset.axis] = JSON.parse(option.dataset.value);
       send(option.dataset.axis);

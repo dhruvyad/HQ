@@ -7,6 +7,7 @@
 // stdout carries only the bench's picks line; logs go to stderr.
 
 import AppKit
+import Carbon.HIToolbox
 import WebKit
 
 func log(_ message: String) {
@@ -32,36 +33,33 @@ final class PanelWebView: WKWebView {
     // eat the first click on a panel that is not key.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    // WebKit only hit-tests a buttonless move while the page is active, so a pill
-    // that is never key gets no :hover however its moves are forwarded. Report
-    // enter and exit from an always-on tracking area; the page styles from those.
-    var onHover: ((Bool) -> Void)?
-    private var tracking: NSTrackingArea?
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-    override func mouseEntered(with event: NSEvent) {
-        super.mouseEntered(with: event)
-        onHover?(true)
-    }
-    override func mouseExited(with event: NSEvent) {
-        super.mouseExited(with: event)
-        onHover?(false)
-    }
-
     // Reloading would throw away unsent replies, which live in the page.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         menu.items.removeAll { $0.identifier?.rawValue == "WKMenuItemIdentifierReload" }
         super.willOpenMenu(menu, with: event)
+    }
+}
+
+/// Whether a display is showing a fullscreen app's Space. macOS keeps reporting the Dock's
+/// space as reserved there, and no public API says otherwise, so ask for the Space's type.
+/// This read has been stable for years, and if it ever goes away the pill just stays
+/// above where the Dock would be.
+enum Spaces {
+    private typealias Connection = @convention(c) () -> Int32
+    private typealias Displays = @convention(c) (Int32) -> Unmanaged<CFArray>?
+    private static let graphics = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY)
+    private static let connection = dlsym(graphics, "CGSMainConnectionID").map { unsafeBitCast($0, to: Connection.self) }
+    private static let displays = dlsym(graphics, "CGSCopyManagedDisplaySpaces").map { unsafeBitCast($0, to: Displays.self) }
+    private static let fullscreen = 4
+
+    static func isFullscreen(on id: CGDirectDisplayID) -> Bool {
+        guard let connection, let displays,
+              let list = displays(connection())?.takeRetainedValue() as? [[String: Any]]
+        else { return false }
+        // With one set of Spaces across displays, there is a single entry named Main.
+        let uuid = CGDisplayCreateUUIDFromDisplayID(id).map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        let entry = list.first { ($0["Display Identifier"] as? String) == uuid } ?? list.first
+        return ((entry?["Current Space"] as? [String: Any])?["type"] as? Int) == fullscreen
     }
 }
 
@@ -101,6 +99,16 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     private var activity: NSObjectProtocol?
     private var signals: [DispatchSourceSignal] = []
 
+    // The window is larger than what it shows, so the page says which part catches the mouse.
+    private var hitRect: NSRect?
+    private var hitTimer: Timer?
+    private var pointerInside = false
+
+    private var hotKeyRefs: [EventHotKeyRef] = []
+    private var hotKeyActions: [UInt32: String] = [:]
+    private var hotKeyHandler: EventHandlerRef?
+    private var keyMonitor: Any?
+
     init(url: URL, stateURL: URL, benchURL: URL?) {
         self.url = url
         self.stateURL = stateURL
@@ -111,6 +119,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         installEditMenu()
         readState()
         installSignals()
+        installHotKeyHandler()
         // The panel is always on screen, so a nap would freeze its count.
         activity = ProcessInfo.processInfo.beginActivity(
             options: .userInitiatedAllowingIdleSystemSleep,
@@ -118,7 +127,6 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         )
 
         web = makeWebView()
-        web.onHover = { [weak self] on in self?.send(["type": "hover", "on": on]) }
         panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 120, height: 36),
             // .nonactivatingPanel is the important one: clicking the pill must
@@ -143,6 +151,11 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelResigned),
             name: NSWindow.didResignKeyNotification, object: panel
+        )
+        // Switching Spaces changes the free area at once, so do not wait for the next tick.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(spaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(menuOpened),
@@ -294,6 +307,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             guard let next = body["settings"] as? [String: Any], JSONSerialization.isValidJSONObject(next) else { return }
             settings = next
             _ = writeState(dock: dock, snoozedUntil: snoozedUntil)
+        case "hotkeys":
+            registerHotKeys(body["hotkeys"] as? [[String: Any]] ?? [])
+        case "recordKey":
+            if let action = body["action"] as? String { recordKey(for: action) }
+        case "openDashboard":
+            openDashboard()
         case "menu":
             showMenu()
         default:
@@ -307,6 +326,8 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             guard let key = body["key"] as? String, let value = body["value"] else { return }
             feel[key] = value
             send(["type": "feel", "key": key, "value": value])
+        case "notice":
+            if let event = body["event"] as? [String: Any] { send(["type": "notice", "event": event]) }
         case "picks":
             guard let text = body["text"] as? String,
                   let line = try? JSONSerialization.data(withJSONObject: ["picks": text])
@@ -351,12 +372,47 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         }
         panel.hasShadow = body["shadow"] as? Bool ?? false
         panel.setFrame(NSRect(x: f.minX + x, y: f.maxY - y - height, width: width, height: height), display: true)
+        setHitRect(body["hit"] as? [String: Any])
         refreshShadow()
         if !placed {
             placed = true
             if snoozedUntil == nil { panel.orderFrontRegardless() }
         }
         setKey(body["key"] as? Bool ?? false)
+    }
+
+    private func setHitRect(_ hit: [String: Any]?) {
+        guard let hit, let x = number(hit["x"]), let y = number(hit["y"]),
+              let width = number(hit["width"]), let height = number(hit["height"])
+        else {
+            hitRect = nil
+            panel.ignoresMouseEvents = false
+            return
+        }
+        hitRect = NSRect(x: x, y: y, width: width, height: height)
+        checkPointer()
+        guard hitTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.checkPointer() }
+        RunLoop.main.add(timer, forMode: .common)
+        hitTimer = timer
+    }
+
+    // macOS has no shaped hit area for a transparent window, so ask where the cursor is
+    // and let clicks through everywhere else, as OpenFlow's status window does. This also
+    // reports hover: WebKit gives a panel that is not key neither :hover nor mouse moves.
+    private func checkPointer() {
+        guard let hitRect, !dragging else {
+            panel.ignoresMouseEvents = false
+            return
+        }
+        // A press that started inside stays ours, such as selecting text past the edge.
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        let mouse = NSEvent.mouseLocation, frame = panel.frame
+        let inside = hitRect.contains(NSPoint(x: mouse.x - frame.minX, y: frame.maxY - mouse.y))
+        panel.ignoresMouseEvents = !inside
+        guard inside != pointerInside else { return }
+        pointerInside = inside
+        send(["type": "hover", "on": inside])
     }
 
     private func number(_ value: Any?) -> CGFloat? {
@@ -409,11 +465,15 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         guard let primary = NSScreen.screens.first else { return nil }
         let f = screen.frame, v = screen.visibleFrame
         let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+        let top = f.maxY - v.maxY
+        // A fullscreen app has no Dock, so its space is free. The top stays: the camera
+        // housing is still there, and the menu bar still drops down over it.
+        let dockless = Spaces.isFullscreen(on: id)
         return DisplayInfo(
             id: id,
             x: f.minX, y: primary.frame.maxY - f.maxY, width: f.width, height: f.height,
-            visibleX: v.minX - f.minX, visibleY: f.maxY - v.maxY,
-            visibleWidth: v.width, visibleHeight: v.height
+            visibleX: dockless ? 0 : v.minX - f.minX, visibleY: top,
+            visibleWidth: dockless ? f.width : v.width, visibleHeight: dockless ? f.height - top : v.height
         )
     }
 
@@ -490,6 +550,10 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         send(["type": "cancelDrag"])
     }
 
+    @objc private func spaceChanged() {
+        tick()
+    }
+
     @objc private func screensChanged() {
         cancelDrag()
         tick()
@@ -507,6 +571,93 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
 
     @objc private func panelResigned() {
         send(["type": "resigned"])
+    }
+
+    // MARK: Shortcuts
+
+    // Carbon hot keys need no Accessibility permission and work from any app, which an
+    // NSEvent global monitor cannot promise: it watches keys but cannot consume them.
+    private func installHotKeyHandler() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            var id = EventHotKeyID()
+            let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                           nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            if status == noErr, let context {
+                Unmanaged<Shell>.fromOpaque(context).takeUnretainedValue().hotKeyPressed(id.id)
+            }
+            return noErr
+        }, 1, &spec, me, &hotKeyHandler)
+    }
+
+    private func hotKeyPressed(_ id: UInt32) {
+        if let action = hotKeyActions[id] { send(["type": "hotkey", "action": action]) }
+    }
+
+    private func unregisterHotKeys() {
+        hotKeyRefs.forEach { UnregisterEventHotKey($0) }
+        hotKeyRefs = []
+        hotKeyActions = [:]
+    }
+
+    private func registerHotKeys(_ entries: [[String: Any]]) {
+        unregisterHotKeys()
+        var failed: [String] = []
+        for (index, entry) in entries.enumerated() {
+            guard let action = entry["action"] as? String,
+                  let keyCode = (entry["keyCode"] as? NSNumber)?.uint32Value,
+                  let modifiers = (entry["modifiers"] as? NSNumber)?.uint32Value
+            else { continue }
+            let id = EventHotKeyID(signature: OSType(0x4851464C), id: UInt32(index + 1)) // "HQFL"
+            var ref: EventHotKeyRef?
+            let status = RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref)
+            if status == noErr, let ref {
+                hotKeyRefs.append(ref)
+                hotKeyActions[id.id] = action
+            } else {
+                failed.append(action)
+            }
+        }
+        send(["type": "hotkeysApplied", "failed": failed])
+    }
+
+    // While recording, the existing shortcuts stand down so pressing one can record it.
+    private func recordKey(for action: String) {
+        unregisterHotKeys()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if Int(event.keyCode) == kVK_Escape {
+                self.finishRecording(["type": "keyRecorded", "action": action])
+            } else if [kVK_Delete, kVK_ForwardDelete].contains(Int(event.keyCode)) {
+                self.finishRecording(["type": "keyRecorded", "action": action, "cleared": true])
+            } else if let key = self.describeKey(event) {
+                self.finishRecording(["type": "keyRecorded", "action": action, "key": key])
+            }
+            return nil
+        }
+    }
+
+    private func finishRecording(_ message: [String: Any]) {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        send(message)
+    }
+
+    /// A global shortcut needs Command, Control or Option, or it would swallow plain typing.
+    private func describeKey(_ event: NSEvent) -> [String: Any]? {
+        let flags = event.modifierFlags
+        guard !flags.intersection([.command, .control, .option]).isEmpty else { return nil }
+        var carbon = 0, label = ""
+        if flags.contains(.control) { carbon |= controlKey; label += "⌃" }
+        if flags.contains(.option) { carbon |= optionKey; label += "⌥" }
+        if flags.contains(.shift) { carbon |= shiftKey; label += "⇧" }
+        if flags.contains(.command) { carbon |= cmdKey; label += "⌘" }
+        let named = [kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥", kVK_LeftArrow: "←", kVK_RightArrow: "→",
+                     kVK_UpArrow: "↑", kVK_DownArrow: "↓"]
+        label += named[Int(event.keyCode)] ?? (event.charactersIgnoringModifiers ?? "").uppercased()
+        return ["keyCode": Int(event.keyCode), "modifiers": carbon, "label": label]
     }
 
     // MARK: Menu and snooze
