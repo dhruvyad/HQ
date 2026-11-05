@@ -274,6 +274,11 @@ def parser():
                                              "login reads Claude usage with Claude Code's saved login instead")
     plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall", "login", "logout"])
     commands.add_parser("statusline", help="Record Claude Code's rate limits from its status line; Claude Code runs this")
+    people = commands.add_parser("accounts", help="Your Claude and Codex accounts: list them, add one with a browser sign-in, "
+                                                  "switch the real login to one, or remove one")
+    people.add_argument("action", nargs="?", default="list", choices=["list", "add", "use", "remove"])
+    people.add_argument("tool", nargs="?", choices=["claude", "codex"])
+    people.add_argument("who", nargs="?", help="use/remove: the account's email or key")
     panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
     panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
                        help="install starts it at login; lab tries designs on throwaway data; run is for launchd")
@@ -293,6 +298,38 @@ def usage_command(action):
     claude = (subscription_usage.ClaudeLogin().read() if login else None) or subscription_usage.fresh(subscription_usage.read_claude())
     return {"claude": claude, "codex": subscription_usage.read_codex(),
             "claude_login": "on" if login else "off", "claude_status_line": statusline_state()}
+
+
+def accounts_command(args):
+    from .accounts import AccountError, Accounts
+    accounts = Accounts(Store())
+    if args.action == "list":
+        return accounts.list()
+    if not args.tool:
+        raise ValueError(f"Say which tool: hq accounts {args.action} claude|codex")
+    if args.action == "add":
+        job = accounts.add(args.tool)
+        print(job["message"], file=sys.stderr, flush=True)
+        try:
+            while job["state"] in {"starting", "waiting"}:
+                time.sleep(1)
+                job = accounts.job(job["id"])
+        except KeyboardInterrupt:
+            accounts.cancel(job["id"])
+            while accounts.job(job["id"])["state"] in {"starting", "waiting"}:
+                time.sleep(0.2)
+            raise ValueError("Cancelled") from None
+        if job["state"] != "added":
+            raise ValueError(job["message"])
+        return job
+    if not args.who:
+        raise ValueError(f"Say which account: hq accounts {args.action} {args.tool} <email or key>")
+    wanted = args.who.lower()
+    matches = [a for a in accounts.list()[args.tool]["accounts"] if a["saved"] and wanted in {a["key"], a["email"].lower()}]
+    if len(matches) != 1:
+        raise AccountError(f"No single saved {args.tool} account matches {args.who}")
+    key = matches[0]["key"]
+    return accounts.use(args.tool, key) if args.action == "use" else accounts.remove(args.tool, key)
 
 
 def float_panel(args):
@@ -353,6 +390,8 @@ def main():
             return subscription_usage.statusline()
         if args.command == "usage":
             return output(usage_command(args.action))
+        if args.command == "accounts":
+            return output(accounts_command(args))
         store = Store()
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)

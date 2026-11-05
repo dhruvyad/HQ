@@ -40,6 +40,43 @@ opt-in routes:
   is. The token stays in memory, goes only to Anthropic, and is never refreshed by HQ. It
   could stop working without notice. `hq usage logout` turns it off.
 
+### Several accounts
+
+```sh
+hq accounts                       # each tool's accounts, which one is signed in, and usage left
+hq accounts add claude            # sign in to another account in your browser; nothing switches
+hq accounts use claude bob@example.com
+hq accounts remove codex side@example.com
+```
+
+Clicking a usage circle shows the same. Adding an account runs the tool's own sign-in in a
+throwaway folder, never against your real one, so your current login is untouched. HQ keeps
+each account's login in your Keychain, under its own items named `HQ account <tool> <key>`,
+and only there.
+
+Switching works the way `/login` does, and it always goes through:
+
+- **Claude:** HQ replaces the account's own part of Claude Code's Keychain login
+  (`claudeAiOauth` and the keys `/login` itself replaces) and `oauthAccount` in
+  `~/.claude.json`, and clears the caches `/login` clears. MCP-server logins, plugin secrets
+  and everything else in that item stay exactly as they were. Every open Claude session
+  moves to the new account at its next message.
+- **Codex:** HQ replaces `~/.codex/auth.json`. Open Codex sessions keep the account they
+  started with, so HQ says how many are open and asks you to restart them. Codex set to keep
+  its login in the Keychain (`cli_auth_credentials_store`) can't be switched yet.
+
+These three are the only files or items of another app that HQ ever writes, and only when
+you switch. Before switching away, HQ saves the outgoing account's latest login, so you can
+switch back. If that login was being renewed at that moment, the account is marked to sign
+in again in case switching back fails. A write that fails is put back, so nothing is left
+half switched.
+
+HQ never renews a login. For an account that isn't signed in, it reads usage with that
+account's saved access token only while the token is still valid, about every 30 to 60
+minutes and never two accounts in a row. After that it shows the last numbers it read, with
+their time. Logins go only to Anthropic or OpenAI, and never into logs, the database, the
+process list or anything HQ shows.
+
 `hq float stop` quits it, `hq float status` reports on it, and `hq float install` starts it
 at login (`hq float uninstall` undoes that). It needs macOS and Xcode's command line tools
 (`xcode-select --install`), because it compiles one small Swift file the first time it runs.

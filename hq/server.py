@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from . import attachments as files
+from .accounts import Accounts, AccountsWorker
 from .adapters import Dispatcher
 from .store import Store, data_dir
 from .presence import ClaudePresence
@@ -24,16 +25,18 @@ STATIC = Path(__file__).parent / "static"
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port, store=None):
+    def __init__(self, port, store=None, accounts=None):
         self.store = store or Store()
         self.token = secrets.token_urlsafe(32)
         self.instance = str(uuid.uuid4())
         # The design lab's pages exist only on the throwaway HQ that `hq float lab` starts.
         self.lab = os.environ.get("HQ_FLOAT_LAB") == "1"
         self.usage = SampleUsage() if self.lab else Usage()
+        # The lab never reads a real login. Constructing Accounts reads nothing; its worker does.
+        self.accounts = None if self.lab else (accounts or Accounts(self.store))
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
-        self.feed = StateFeed(self.store, self.usage)
+        self.feed = StateFeed(self.store, self.usage, self.accounts)
 
     def server_close(self):
         self.feed.close()
@@ -92,6 +95,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.allowed(token=True):
                 self.attachment(path.rsplit("/", 1)[1])
             return
+        if path == "/api/accounts" or path.startswith("/api/accounts/jobs/"):
+            if self.allowed(token=True):
+                self.accounts_get(path)
+            return
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
                   "/float": ("float.html", "text/html"), "/float.js": ("float.js", "text/javascript"),
@@ -108,6 +115,31 @@ class Handler(BaseHTTPRequestHandler):
         if mime == "text/html":
             body = body.replace(b"__HQ_TOKEN__", self.server.token.encode())
         self.output(200, body, mime)
+
+    def accounts_get(self, path):
+        accounts = self.server.accounts
+        if accounts is None:
+            return self.output(404, {"error": "Accounts aren't available here"})
+        try:
+            if path == "/api/accounts":
+                return self.output(200, accounts.list(self.server.usage.current()))
+            return self.output(200, accounts.job(path.rsplit("/", 1)[1]))
+        except ValueError as error:
+            return self.output(400, {"error": str(error)})
+
+    def accounts_post(self, parts, body):
+        accounts = self.server.accounts
+        if accounts is None:
+            raise ValueError("Accounts aren't available here")
+        if len(parts) == 4 and parts[3] == "add":
+            return accounts.add(parts[2])
+        if len(parts) == 5 and parts[2] == "jobs" and parts[4] == "cancel":
+            return accounts.cancel(parts[3])
+        if len(parts) == 5 and parts[4] == "use":
+            return accounts.use(parts[2], parts[3])
+        if len(parts) == 5 and parts[4] == "remove":
+            return accounts.remove(parts[2], parts[3])
+        return None
 
     def upload(self):
         """A pasted or dropped file: raw bytes, its type, and its name in X-HQ-Filename."""
@@ -214,6 +246,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(404, {"error": "Not found"})
             elif parts == ["api", "sessions"]:
                 result = store.register(**body)
+            elif parts[:2] == ["api", "accounts"]:
+                result = self.accounts_post(parts, body)
+                if result is None:
+                    return self.output(404, {"error": "Not found"})
             else:
                 return self.output(404, {"error": "Not found"})
             self.output(200, result)
@@ -239,8 +275,13 @@ def serve(port=4310):
             pass  # Leftover uploads are tidied next start.
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
-        workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3),
-                                         (UsageWorker(server.usage, cache=home / "claude-usage.json", activity=server.store.agent_activity), 3)]
+        workers = []
+        if not server.lab:
+            usage = UsageWorker(server.usage, cache=home / "claude-usage.json", activity=server.store.agent_activity)
+            # A switch, by HQ or by /login, makes the last account's numbers wrong for the new one.
+            server.accounts.on_switch = usage.forget
+            workers = [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3), (usage, 3),
+                       (AccountsWorker(server.accounts, server.usage), 3)]
         threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
         for thread in threads:
             thread.start()

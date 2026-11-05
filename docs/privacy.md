@@ -16,5 +16,9 @@ What HQ reads, and when:
   activity checks never read transcripts. See [Connections](connections.md).
 - **Usage left:** Codex reports it with nothing to set up. Claude usage is off until you opt in
   to one of two routes, described in [the pill](pill.md).
+- **Several accounts:** only if you add one. HQ keeps each account's login in your Keychain
+  and nowhere else. Switching rewrites the account's own part of Claude Code's Keychain login
+  and `oauthAccount` in `~/.claude.json`, or `~/.codex/auth.json`; nothing else of another
+  app's is ever written. See [several accounts](pill.md#several-accounts).
 - **Replies:** HQ never says a reply was received until the agent acknowledges it, and pending
   replies survive disconnects.
