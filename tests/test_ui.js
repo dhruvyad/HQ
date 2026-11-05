@@ -971,4 +971,28 @@ assert.deepEqual(junk.tabs.needs, JSON.parse(run('JSON.stringify(blankTab())')))
 assert.equal(run("remember('hq-float-tabs')"), null); // no storage here at all, and nothing throws
 run('render = realRender; dropNotices = realDrop; floatOpen = false; route = parseRoute("#/"); listView = "needs"; agentOpen = null');
 
+// The pill's size: kept within 22 to 40, whole pixels, and anything odd is Medium.
+for (const [given, kept] of [[24, 24], ['34', 34], [27.6, 28], [50, 40], [10, 22], ['abc', 28], [null, 28], [undefined, 28], [true, 28], ['', 28], [{}, 28]]) {
+  assert.equal(run(`cleanPillSize(${JSON.stringify(given) ?? 'undefined'})`), kept, `size ${JSON.stringify(given)}`);
+}
+// Padding and gaps grow with the circles, and every dock still fits the capsule on screen.
+assert.deepEqual([24, 28, 34, 40].map((n) => run(`pillPad(${n})`)), [3, 4, 5, 6]);
+assert.deepEqual([24, 28, 34, 40].map((n) => run(`pillChrome(${n})`)), [8, 10, 12, 14]);
+const free = {x: 0, y: 33, width: 1728, height: 994};
+for (const size of [22, 24, 28, 34, 40]) {
+  const pad = run(`pillPad(${size})`), chrome = run(`pillChrome(${size})`), long = 4 * size + 3 * pad + chrome, short = size + chrome;
+  for (const dock of ['top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right']) {
+    const shape = JSON.parse(run(`JSON.stringify(capsuleSize({width: ${short}, height: ${long}}, layoutFor('${dock}')))`));
+    const at = JSON.parse(run(`JSON.stringify(dockRect('${dock}', ${JSON.stringify(shape)}, ${JSON.stringify(free)}))`));
+    assert.ok(at.x >= free.x && at.y >= free.y && at.x + at.width <= free.x + free.width && at.y + at.height <= free.y + free.height, `${dock} at ${size}`);
+    assert.deepEqual([at.width, at.height], [shape.width, shape.height], `${dock} at ${size} is never squeezed`);
+  }
+}
+// Customize offers the sizes, with the current one chosen, and saves it with the rest.
+run('feel.size = 34');
+html = run('settingsHTML(attention())');
+assert.ok(html.includes('aria-label="Pill size"') && html.includes('data-pill-size="34" aria-checked="true">Large') && html.includes('data-pill-size="24" aria-checked="false">Small'));
+run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}}; saveSettings(); delete globalThis.window; feel.size = 28`);
+assert.equal(run("posted.find((m) => m.type === 'settings').settings.pillSize"), 34);
+
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

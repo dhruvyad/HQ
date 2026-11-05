@@ -19,7 +19,15 @@ const LIST_WIDTH = 380, LIST_MAX = 520, SETTINGS_MAX = 840, ITEM_MIN = 240, ITEM
 // The box can be resized by its edges away from the pill, down to these and up to the screen.
 const MIN_SIZE = {list: {width: 300, height: 200}, item: {width: 380, height: ITEM_MIN}}, GRIP = 6;
 const CONTROLS = 'button, a, input, textarea, select, summary';
-const PILL_CHROME = 10;
+// The pill's size: each circle's diameter, from which its padding, gaps and numbers follow.
+const PILL_SIZES = [['Small', 24], ['Medium', 28], ['Large', 34]], PILL_MIN = 22, PILL_MAX = 40;
+function cleanPillSize(saved) {
+  const n = Math.round(Number(saved));
+  return Number.isFinite(n) && saved !== null && saved !== '' && typeof saved !== 'boolean' ? Math.max(PILL_MIN, Math.min(PILL_MAX, n)) : 28;
+}
+// Padding, gaps and border around the circles, so the capsule keeps its proportions at any size.
+const pillPad = (size) => Math.max(3, Math.round(size / 7));
+const pillChrome = (size) => 2 * pillPad(size) + 2;
 const CARD = {width: 308, height: 62};
 // The open box sits beside the pill, which stays put so answered items can fly home to it.
 // Opening and closing are quick: a spring with no long tail, about 200ms from input to settled.
@@ -417,7 +425,10 @@ function settingsHTML(items) {
     return `<div class="f-set"><button type="button" class="check" role="checkbox" data-circle="${id}" aria-checked="${on}" ${on && circles.length === 1 ? 'disabled' : ''}><span class="box">${icon('check')}</span><span>${esc(METRICS[id].name)}<small>${esc(now)}</small></span></button>${moves}</div>`;
   }).join('');
   return `<header class="f-head"><h1>Pill</h1><button class="icon-btn f-push" type="button" data-customized aria-label="Done" title="Done">${icon('check')}</button></header>
-    <div class="f-rows scroll"><div class="f-rows-in f-settings"><div class="f-capsule f-preview" aria-hidden="true"><span class="f-rail">${pillHTML(items, true)}</span></div><div class="f-set-list">${rows}${notifyHTML()}${shortcutsHTML()}${panelKeysHTML()}</div></div></div>`;
+    <div class="f-rows scroll"><div class="f-rows-in f-settings"><div class="f-capsule f-preview" aria-hidden="true"><span class="f-rail">${pillHTML(items, true)}</span></div><div class="f-set-list">${pillSizeHTML()}${rows}${notifyHTML()}${shortcutsHTML()}${panelKeysHTML()}</div></div></div>`;
+}
+function pillSizeHTML() {
+  return `<div class="f-section">Size</div><div class="f-sizes" role="radiogroup" aria-label="Pill size">${PILL_SIZES.map(([name, px]) => `<button type="button" role="radio" data-pill-size="${px}" aria-checked="${feel.size === px}">${name}</button>`).join('')}</div>`;
 }
 function notifyHTML() {
   const rows = Object.entries(NOTIFY).map(([kind, name]) => `<div class="f-set"><button type="button" class="check" role="checkbox" data-notify="${kind}" aria-checked="${notify[kind]}"><span class="box">${icon('check')}</span><span>${esc(name)}</span></button></div>`).join('');
@@ -825,8 +836,9 @@ function dropNotices() {
 // Window
 function pillSize() {
   const rail = $('#rail');
-  return layoutFor(dock) === 'horizontal' ? {width: rail.offsetWidth + PILL_CHROME, height: feel.size + PILL_CHROME}
-    : {width: feel.size + PILL_CHROME, height: rail.offsetHeight + PILL_CHROME};
+  const chrome = pillChrome(feel.size);
+  return layoutFor(dock) === 'horizontal' ? {width: rail.offsetWidth + chrome, height: feel.size + chrome}
+    : {width: feel.size + chrome, height: rail.offsetHeight + chrome};
 }
 function setRect(el, r) {
   Object.assign(el.style, {left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px`});
@@ -1159,7 +1171,7 @@ function hideSpot() {
   markSpot();
 }
 function saveSettings() {
-  native({type: 'settings', settings: {circles, notify, shortcuts, panelKeys, sizes}});
+  native({type: 'settings', settings: {circles, notify, shortcuts, panelKeys, sizes, pillSize: feel.size}});
 }
 function setCircles(next) {
   circles = next;
@@ -1328,6 +1340,8 @@ function receive(message) {
     notify = cleanNotify(message.settings?.notify);
     shortcuts = cleanShortcuts(message.settings?.shortcuts);
     panelKeys = cleanPanelKeys(message.settings?.panelKeys);
+    feel.size = cleanPillSize(message.settings?.pillSize);
+    applyFeel();
     sizes = cleanSizes(message.settings?.sizes);
     applyShortcuts();
     render();
@@ -1368,6 +1382,7 @@ function receive(message) {
 function applyFeel() {
   const root = document.documentElement;
   root.style.setProperty('--f-size', `${feel.size}px`);
+  root.style.setProperty('--f-pad', `${pillPad(feel.size)}px`);
   root.style.setProperty('--f-glide', `${feel.glide}ms`);
   document.body.dataset.backdrop = feel.backdrop;
 }
@@ -1433,6 +1448,12 @@ function bootFloat() {
     else if (e.target.closest('[data-view]')) showList(e.target.closest('[data-view]').dataset.view);
     else if (e.target.closest('[data-agent]')) showList('agents', e.target.closest('[data-agent]').dataset.agent);
     else if (e.target.closest('[data-back]')) backToList();
+    else if (e.target.closest('[data-pill-size]')) {
+      feel.size = cleanPillSize(e.target.closest('[data-pill-size]').dataset.pillSize);
+      applyFeel();
+      saveSettings();
+      render();
+    }
     else if (e.target.closest('[data-record-panel]')) {recordingPanel = e.target.closest('[data-record-panel]').dataset.recordPanel; render();}
     else if (e.target.closest('[data-reset-panel-keys]')) {panelKeys = cleanPanelKeys(); saveSettings(); render();}
     else if (e.target.closest('[data-agents-all]')) {agentsAll = true; render();}

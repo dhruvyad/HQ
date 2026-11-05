@@ -5,8 +5,8 @@ html.float, html.float body {height: 100%; background: transparent; overflow: hi
 /* Pill: a black capsule of circles, each one a live number you choose. The window around it
    is a transparent layer over the whole display, so every change of shape here, and a drop,
    runs on the compositor. */
-.f-capsule {display: inline-flex; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
-.f-rail {display: flex; flex: none; flex-direction: column; gap: 4px; transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
+.f-capsule {display: inline-flex; width: max-content; padding: var(--f-pad, 4px); background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
+.f-rail {display: flex; flex: none; flex-direction: column; gap: var(--f-pad, 4px); transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
 .f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
 .f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
 body[data-across="end"] .f-pill .f-rail {margin-left: auto;}
@@ -19,7 +19,7 @@ body[data-down="center"] .f-pill .f-rail {margin-block: auto;}
 body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-offline {justify-content: center; min-height: 12px;}
 .f-tag {display: none; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: rgb(250 250 250 / 0.88);}
-.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: opacity .2s ease, transform .45s var(--f-spring, ease), background .15s, border-color .15s;}
+.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 calc(var(--f-size, 28px) * 0.43)/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: opacity .2s ease, transform .45s var(--f-spring, ease), background .15s, border-color .15s;}
 /* Spotlight: the circle under the cursor steps forward, the others step back. */
 .f-row.dim .f-circle {opacity: .32; transform: scale(.9);}
 .f-row.hot .f-circle {transform: scale(1.08);}
@@ -28,7 +28,7 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot.instant {transition: opacity .2s ease;}
 .f-ripple {position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--foreground); pointer-events: none;}
 body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
-.f-circle.wide {font-size: 10px; letter-spacing: -0.03em;}
+.f-circle.wide {font-size: calc(var(--f-size, 28px) * 0.357); letter-spacing: -0.03em;}
 .f-circle.loud {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
 body[data-hover] .f-pill .f-circle.loud {border-color: var(--primary);}
 .f-circle.live {border-color: var(--live);}
@@ -195,6 +195,10 @@ body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):h
 .f-cap:hover {background: rgb(250 250 250 / 0.14);}
 .f-cap.empty {background: none; border: 1px dashed rgb(250 250 250 / 0.2); color: var(--muted-foreground);}
 .f-cap.live {background: var(--primary); color: var(--primary-foreground);}
+.f-sizes {display: flex; gap: 4px; margin: 4px 8px 6px;}
+.f-sizes button {flex: 1; height: 30px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); border: 1px solid rgb(250 250 250 / 0.1); transition: background .12s, color .12s;}
+.f-sizes button:hover {color: var(--foreground);}
+.f-sizes button[aria-checked="true"] {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
 .f-hint {margin: 6px 8px 0; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground);}
 .f-reset {color: rgb(250 250 250 / 0.85); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(250 250 250 / 0.3);}
 .f-reset:hover {color: var(--foreground);}
