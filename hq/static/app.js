@@ -241,7 +241,8 @@ function paintDashboard({background = false} = {}) {
 
 function sidebarHTML() {
   const you = count(model.items, 'you');
-  const active = model.agents.filter((a) => ['active', 'waiting'].includes(agentState(a))).length;
+  // The same count as the pill's agents circle and the Agents page: running right now.
+  const running = model.agents.filter((a) => agentState(a) === 'active').length;
   const here = (page) => (route.page === page && !search ? 'aria-current="page"' : '');
   const projects = model.projects.filter((p) => p.items.some((i) => i.lane !== 'done') || p.id === route.project).sort((a, b) => a.name.localeCompare(b.name));
   return `<div class="sb-head">
@@ -251,7 +252,7 @@ function sidebarHTML() {
     <div class="sb-body scroll">
       <nav class="sb-nav" aria-label="Main">
         <a class="sb-item" href="#/" ${here('needs')}>${icon('inbox')}<span class="label">Needs you</span>${you ? `<span class="badge">${you}</span>` : ''}</a>
-        <a class="sb-item" href="#/agents" ${['agents', 'agent'].includes(route.page) && !search ? 'aria-current="page"' : ''}>${icon('bot')}<span class="label">Agents</span>${active ? `<span class="sb-count">${active} active</span>` : ''}</a>
+        <a class="sb-item" href="#/agents" ${['agents', 'agent'].includes(route.page) && !search ? 'aria-current="page"' : ''}>${icon('bot')}<span class="label">Agents</span>${running ? `<span class="sb-count">${running} running</span>` : ''}</a>
       </nav>
       <div class="sb-section">Projects</div>
       <nav class="sb-nav" aria-label="Projects">${projects.map(projectNavHTML).join('')}</nav>
