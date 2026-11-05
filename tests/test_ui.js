@@ -481,6 +481,20 @@ assert.deepEqual(resize('left', 500, 0), {width: 300, height: 520}); // never be
 assert.deepEqual(resize('left', -5000, 0), {width: limits.max.width, height: 520}); // nor off the screen
 assert.deepEqual(resize('right', 40, 30, 'top-left'), {width: 420, height: 520}); // a top-left box has no top edge to drag
 assert.deepEqual(resize('bottom', 0, 30, 'top-left'), {width: 380, height: 550});
+// The window sets the cursor the page asks for, since macOS shows a page's own cursor only
+// for the active app: the right one for every edge and corner at every dock.
+const kinds = {left: 'ew', right: 'ew', top: 'ns', bottom: 'ns', 'top-left': 'nwse', 'bottom-right': 'nwse', 'top-right': 'nesw', 'bottom-left': 'nesw'};
+for (const dock of ['top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right']) {
+  for (const edge of Array.from(run(`gripEdges('${dock}')`))) assert.equal(run(`gripCursor('${edge}')`), kinds[edge], `${dock} ${edge}`);
+}
+assert.deepEqual(Array.from(run("gripEdges('right')")).map((e) => run(`gripCursor('${e}')`)), ['ew', 'ns', 'ns', 'nwse', 'nesw']);
+assert.deepEqual(Array.from(run("gripEdges('top-left')")), ['right', 'bottom', 'bottom-right']);
+assert.deepEqual(Array.from(run("gripEdges('bottom')")), ['left', 'right', 'top', 'top-left', 'top-right']);
+assert.equal(run("gripCursor('middle')"), 'default');
+run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}}; cursorSent = 'default|';
+  sendCursor('ew', 'left'); sendCursor('ew', 'left'); sendCursor('nwse', 'top-left'); sendCursor('default'); sendCursor('default')`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(posted)')), [{type: 'cursor', kind: 'ew', edge: 'left'}, {type: 'cursor', kind: 'nwse', edge: 'top-left'}, {type: 'cursor', kind: 'default', edge: ''}]); // only on change
+run('delete globalThis.window; cursorSent = "default|"');
 // Sizes are kept per view, and anything odd in settings falls back to the default.
 assert.deepEqual(JSON.parse(run("JSON.stringify(cleanSizes({list: {width: 500.4, height: 700}, item: {width: 'wide'}}))")), {list: {width: 500, height: 700}, item: null});
 assert.deepEqual(JSON.parse(run("JSON.stringify(chosenSize('list', cleanSizes()))")), {width: 380, height: 520});

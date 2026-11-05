@@ -815,6 +815,27 @@ function layout() {
   placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key: mode !== 'pill', shadow: false});
 }
 // Resize grips: one per free edge and corner, drawn over the box's border.
+const gripEdges = (name) => {
+  const free = freeEdges(name);
+  return [...free.x, ...free.y, ...free.y.flatMap((v) => free.x.map((h) => `${v}-${h}`))];
+};
+// macOS only shows a page's cursor for the active app, and the panel's app never is. So the
+// page says which cursor it wants and the window sets it, only when that changes.
+const CURSORS = {left: 'ew', right: 'ew', top: 'ns', bottom: 'ns', 'top-left': 'nwse', 'bottom-right': 'nwse', 'top-right': 'nesw', 'bottom-left': 'nesw'};
+const gripCursor = (edge) => CURSORS[edge] || 'default';
+let cursorSent = 'default|';
+function sendCursor(kind, edge = '') {
+  const key = `${kind}|${edge}`;
+  if (key === cursorSent) return;
+  cursorSent = key;
+  native({type: 'cursor', kind, edge});
+}
+function cursorAt(x, y) {
+  if (resizing) return sendCursor(gripCursor(resizing.edge), resizing.edge);
+  if (drag) return sendCursor('grabbing');
+  const grip = document.elementFromPoint?.(x, y)?.closest?.('.f-grip');
+  sendCursor(grip ? gripCursor(grip.dataset.edge) : 'default', grip?.dataset.edge || '');
+}
 function placeGrips(rect, mode) {
   let grips = $('#grips');
   if (!grips) {
@@ -824,10 +845,10 @@ function placeGrips(rect, mode) {
     document.body.append(grips);
   }
   grips.hidden = !rect;
-  if (!rect) return;
+  if (!rect) return sendCursor('default');
   const card = mode === 'item' ? {...rect, height: rect.height - STACK} : rect;
   setRect(grips, inflateRect(card, GRIP));
-  const free = freeEdges(dock), edges = [...free.x, ...free.y, ...free.y.flatMap((v) => free.x.map((h) => `${v}-${h}`))];
+  const edges = gripEdges(dock);
   const signature = edges.join(' ');
   if (grips.dataset.edges !== signature) {
     grips.dataset.edges = signature;
@@ -846,6 +867,7 @@ function startResize(e) {
     limits: sizeLimits(dock, view, pillSize(), area)};
   grip.setPointerCapture?.(e.pointerId);
   document.body.dataset.resizing = grip.dataset.edge;
+  sendCursor(gripCursor(grip.dataset.edge), grip.dataset.edge);
   $('#box').classList.add('instant');
 }
 function moveResize(e) {
@@ -857,9 +879,10 @@ function moveResize(e) {
   document.documentElement.style.setProperty('--f-content', `${next.width}px`);
   layoutSoon();
 }
-function endResize() {
+function endResize(e) {
   if (!resizing) return;
   resizing = null;
+  cursorAt(e?.clientX ?? -1, e?.clientY ?? -1);
   delete document.body.dataset.resizing;
   saveSettings();
   requestAnimationFrame(() => {if (!resizing) $('#box').classList.remove('instant');});
@@ -1101,6 +1124,7 @@ function beginDrag(e) {
   hideSpot();
   drag = {phase: 'dragging', size: pillSize(), target: dock, rects: {}};
   swallowClick = true;
+  sendCursor('grabbing');
   document.body.dataset.drag = 'on';
   $('#drag').hidden = false;
   const ghost = $('#ghost');
@@ -1200,6 +1224,7 @@ function endDrag() {
   delete document.body.dataset.drag;
   $('#drag').hidden = true;
   $('#ghost').classList.remove('gliding');
+  sendCursor('default');
   native({type: 'drag', on: false});
   requestAnimationFrame(() => requestAnimationFrame(() => {
     pill.classList.remove('instant');
@@ -1242,9 +1267,10 @@ function receive(message) {
     // A panel that is not key never gets :hover or mouse moves from WebKit, so the window reports both.
     document.body.toggleAttribute('data-hover', message.on);
     hovering = message.on;
-    if (!message.on) hideSpot();
+    if (!message.on) {hideSpot(); sendCursor('default');}
   } else if (message.type === 'pointer') {
     if (hovering) spotlight(message.x, message.y);
+    cursorAt(message.x, message.y);
   } else if (message.type === 'feel' && message.key in feel) {
     feel[message.key] = message.value;
     applyFeel();
@@ -1345,7 +1371,7 @@ function bootFloat() {
   document.addEventListener('keydown', recordPanelKey, true);
   document.addEventListener('pointerdown', startResize, true);
   document.addEventListener('pointermove', moveResize);
-  document.addEventListener('mousemove', () => {delete document.body.dataset.keys;});
+  document.addEventListener('mousemove', (e) => {delete document.body.dataset.keys; cursorAt(e.clientX, e.clientY);});
   document.addEventListener('pointerup', endResize);
   document.addEventListener('pointercancel', endResize);
   document.addEventListener('dblclick', resetSize);

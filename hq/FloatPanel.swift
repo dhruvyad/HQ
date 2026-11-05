@@ -103,6 +103,9 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     private var hitRects: [NSRect] = []
     private var hitTimer: Timer?
     private var pointerInside = false
+    // The cursor the page asked for. An app that is never active gets no cursor from WebKit's
+    // CSS, so the window sets it, and keeps setting it, while the pointer is ours.
+    private var cursorKind = "default", cursorEdge = ""
     private var lastPointer: NSPoint?
 
     private var hotKeyRefs: [EventHotKeyRef] = []
@@ -300,6 +303,8 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             for (key, value) in feel { send(["type": "feel", "key": key, "value": value]) }
         case "place":
             place(body)
+        case "cursor":
+            setCursor(body["kind"] as? String ?? "default", edge: body["edge"] as? String ?? "")
         case "drag":
             setDragging(body["on"] as? Bool ?? false)
         case "save":
@@ -408,6 +413,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     private func checkPointer() {
         guard !hitRects.isEmpty, !dragging else {
             panel.ignoresMouseEvents = false
+            if dragging { assertCursor() }
             return
         }
         let mouse = NSEvent.mouseLocation, frame = panel.frame
@@ -419,16 +425,68 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         // taking it as soon as the drag is over the box.
         if NSEvent.pressedMouseButtons != 0 {
             if inside { panel.ignoresMouseEvents = false }
+            // A resize that started on an edge keeps its cursor until the button comes up.
+            if !panel.ignoresMouseEvents { assertCursor() }
             return
         }
         panel.ignoresMouseEvents = !inside
         if inside != pointerInside {
             pointerInside = inside
             send(["type": "hover", "on": inside])
+            if !inside, cursorKind != "default" { NSCursor.arrow.set() }
         }
+        // Other apps and WebKit reset the cursor, so say it again while the pointer stays here.
+        if inside { assertCursor() }
         guard inside, local != lastPointer else { return }
         lastPointer = local
         send(["type": "pointer", "x": local.x, "y": local.y])
+    }
+
+    private func setCursor(_ kind: String, edge: String) {
+        let was = cursorKind
+        cursorKind = kind
+        cursorEdge = edge
+        if kind == "default" {
+            if was != "default", pointerInside || dragging { NSCursor.arrow.set() }
+        } else if pointerInside || dragging || NSEvent.pressedMouseButtons != 0 {
+            assertCursor()
+        }
+    }
+
+    private func assertCursor() {
+        guard cursorKind != "default" else { return }
+        cursor(kind: cursorKind, edge: cursorEdge).set()
+    }
+
+    private func cursor(kind: String, edge: String) -> NSCursor {
+        switch kind {
+        case "grab": return .openHand
+        case "grabbing": return .closedHand
+        default: break
+        }
+        if #available(macOS 15.0, *) {
+            let positions: [String: NSCursor.FrameResizePosition] = [
+                "left": .left, "right": .right, "top": .top, "bottom": .bottom,
+                "top-left": .topLeft, "top-right": .topRight, "bottom-left": .bottomLeft, "bottom-right": .bottomRight,
+            ]
+            if let position = positions[edge] { return NSCursor.frameResize(position: position, directions: .all) }
+        }
+        switch kind {
+        case "ew": return .resizeLeftRight
+        case "ns": return .resizeUpDown
+        case "nwse": return privateCursor("_windowResizeNorthWestSouthEastCursor")
+        case "nesw": return privateCursor("_windowResizeNorthEastSouthWestCursor")
+        default: return .arrow
+        }
+    }
+
+    // Before macOS 15 the diagonal resize cursors are only reachable this way.
+    private func privateCursor(_ name: String) -> NSCursor {
+        let selector = NSSelectorFromString(name)
+        guard NSCursor.responds(to: selector),
+              let cursor = NSCursor.perform(selector)?.takeUnretainedValue() as? NSCursor
+        else { return .crosshair }
+        return cursor
     }
 
     private func number(_ value: Any?) -> CGFloat? {
