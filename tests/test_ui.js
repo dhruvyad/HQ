@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const elements = {'meta[name="hq-token"]': {content: 'test'}};
-const context = vm.createContext({URL, URLSearchParams, document: {
+const context = vm.createContext({URL, URLSearchParams, File, atob, document: {
   body: {dataset: {}},
   querySelector(selector) {return elements[selector] || null;},
   querySelectorAll() {return [];},
@@ -994,5 +994,20 @@ html = run('settingsHTML(attention())');
 assert.ok(html.includes('aria-label="Pill size"') && html.includes('data-pill-size="34" aria-checked="true">Large') && html.includes('data-pill-size="24" aria-checked="false">Small'));
 run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}}; saveSettings(); delete globalThis.window; feel.size = 28`);
 assert.equal(run("posted.find((m) => m.type === 'settings').settings.pillSize"), 34);
+
+// Files from the window (Finder drops): base64 becomes a File, and one it refused keeps its reason.
+context.fromWindow = [{name: 'shot.png', type: 'image/png', data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 1, 2, 3]).toString('base64')},
+  {name: 'movie.mov', error: 'Too big (max 25 MB)'}, {name: 'odd'}];
+assert.deepEqual(JSON.parse(run('JSON.stringify(nativeFiles(fromWindow).map((f) => [f.name, f.type, f.size, f.error || null, f instanceof File]))')),
+  [['shot.png', 'image/png', 11, null, true], ['movie.mov', '', 0, 'Too big (max 25 MB)', false], ['odd', '', 0, 'Could not read it', false]]);
+run(`toasts = []; realToast = toast; toast = (m) => toasts.push(m); realUpload = uploadFile; uploadFile = () => new Promise(() => {});
+  setDraft('dq', {files: undefined}); addFiles('dq', 'text', nativeFiles(fromWindow))`);
+assert.deepEqual(JSON.parse(run("JSON.stringify(draftOf('dq').files.text.map((f) => [f.name, f.status, f.error || null]))")),
+  [['shot.png', 'uploading', null], ['movie.mov', 'error', 'Too big (max 25 MB)'], ['odd', 'error', 'Could not read it']]);
+// Dropped where no item can take them, they are not lost silently.
+run(`route.item = null; dropped = dropFilesAt(null, nativeFiles(fromWindow))`);
+assert.equal(run('dropped'), false);
+assert.deepEqual(Array.from(run('toasts')), ['Open an item to attach files']);
+run(`toast = realToast; uploadFile = realUpload; setDraft('dq', {files: undefined})`);
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

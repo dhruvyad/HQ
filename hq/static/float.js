@@ -1365,6 +1365,9 @@ function receive(message) {
     applyShortcuts();
     render();
   } else if (message.type === 'notice') enqueue([message.event]);
+  // Files dragged from Finder: the window says where they are, then hands them over on a drop.
+  else if (message.type === 'fileDrag') markDrop(message.off ? null : document.elementFromPoint(message.x, message.y));
+  else if (message.type === 'files') dropFilesAt(document.elementFromPoint(message.x, message.y), nativeFiles(message.files));
   else if (message.type === 'hover') {
     // A panel that is not key never gets :hover or mouse moves from WebKit, so the window reports both.
     document.body.toggleAttribute('data-hover', message.on);

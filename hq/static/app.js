@@ -733,10 +733,39 @@ function setFiles(id, key, list) {
   const draft = draftOf(id);
   setDraft(id, {files: {...(draft.files || {}), [key]: list}});
 }
+// Where dropped files go: the box under them, or the item's own answer box, opening a note
+// first if picking an option folded it away. One path for drops in the page and from the window.
+function markDrop(el) {
+  const detail = $('#detail');
+  detail?.querySelectorAll('.drop-on').forEach((x) => x.classList.remove('drop-on'));
+  const key = el && route.item && detail?.contains(el) ? dropTarget(el) : null;
+  if (key) (detail.querySelector(`.compose[data-attach="${key}"]`) || detail.querySelector('.d-dock'))?.classList.add('drop-on');
+  return key;
+}
+function dropFilesAt(el, files) {
+  const id = route.item, detail = $('#detail');
+  markDrop(null);
+  const key = el && id && detail?.contains(el) ? dropTarget(el) : null;
+  if (!key) {toast('Open an item to attach files'); return false;}
+  const respond = detail.querySelector('#respond'), item = model.items.find((x) => x.id === id);
+  if (key === 'text' && respond?.dataset.state === 'picked' && item) {setDraft(id, {note: true}); syncRespond(respond, item);}
+  addFiles(id, key, files);
+  return true;
+}
+// The window reads dropped files itself and sends them as base64, or with a reason it left one out.
+function nativeFiles(list) {
+  return (Array.isArray(list) ? list : []).map((f) => {
+    if (f.error || typeof f.data !== 'string') return {name: String(f.name || 'file'), error: String(f.error || 'Could not read it'), size: 0, type: ''};
+    const bytes = atob(f.data), buffer = new Uint8Array(bytes.length);
+    for (let n = 0; n < bytes.length; n += 1) buffer[n] = bytes.charCodeAt(n);
+    return new File([buffer], String(f.name || 'file'), {type: String(f.type || '')});
+  });
+}
 function addFiles(id, key, picked) {
   const list = [...filesOf(draftOf(id), key)];
   for (const file of picked) {
-    const problem = fileProblem(file, list.filter((f) => f.status !== 'error').length);
+    // A file the window already refused, such as a folder or one too big, arrives with its reason.
+    const problem = file.error || fileProblem(file, list.filter((f) => f.status !== 'error').length);
     const kind = fileKind(file);
     const entry = {key: `f${fileSeq += 1}`, name: file.name || `pasted${kind === 'image/png' ? '.png' : ''}`, type: kind, size: file.size,
       status: problem ? 'error' : 'uploading', error: problem, url: !problem && ATTACH.shown.has(kind) ? URL.createObjectURL(file) : ''};
@@ -1343,27 +1372,16 @@ function bindDetail(detail) {
     else if (sent && document.body.dataset.surface === 'float') window.open(`/${href({...route, item: id})}`, '_blank', 'noreferrer');
     else if (sent) openFile(sent.dataset.openFile, sent.dataset.type);
   };
-  const dropOn = (key) => {
-    detail.querySelectorAll('.drop-on').forEach((el) => el.classList.remove('drop-on'));
-    if (key) (detail.querySelector(`.compose[data-attach="${key}"]`) || detail.querySelector('.d-dock'))?.classList.add('drop-on');
-  };
   detail.ondragover = (e) => {
-    const key = carriesFiles(e) && dropTarget(e.target);
-    if (!key) return;
+    if (!carriesFiles(e) || !markDrop(e.target)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    dropOn(key);
   };
-  detail.ondragleave = (e) => {if (!detail.contains(e.relatedTarget)) dropOn(null);};
+  detail.ondragleave = (e) => {if (!detail.contains(e.relatedTarget)) markDrop(null);};
   detail.ondrop = (e) => {
-    const key = carriesFiles(e) && dropTarget(e.target);
-    dropOn(null);
-    if (!key) return;
+    if (!carriesFiles(e) || !dropTarget(e.target)) return markDrop(null);
     e.preventDefault();
-    const files = [...e.dataTransfer.files];
-    // A drop on the dock opens its box first, if picking an option folded it away.
-    if (key === 'text' && respond?.dataset.state === 'picked') {setDraft(id, {note: true}); syncRespond(respond, item());}
-    addFiles(id, key, files);
+    dropFilesAt(e.target, [...e.dataTransfer.files]);
   };
   const closeSelf = detail.querySelector('[data-close-self]');
   if (closeSelf) closeSelf.onclick = () => {openMove = 'close'; rerender(); detail.querySelector('#close-note')?.focus();};

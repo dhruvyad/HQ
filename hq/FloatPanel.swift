@@ -8,6 +8,7 @@
 
 import AppKit
 import Carbon.HIToolbox
+import UniformTypeIdentifiers
 import WebKit
 
 func log(_ message: String) {
@@ -32,6 +33,58 @@ final class PanelWebView: WKWebView {
     // WebKit only accepts first mouse on scrollbars and selections, which would
     // eat the first click on a panel that is not key.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Files dragged from Finder. WebKit's own drop never reaches a page in a
+    /// non-activating panel this high, so the window takes file drags itself
+    /// and hands the page where they are and, on a drop, the files.
+    var onFileDrag: ((NSPoint?) -> Void)?
+    var onFileDrop: (([URL], NSPoint) -> Void)?
+
+    private func fileURLs(_ info: NSDraggingInfo?) -> [URL] {
+        guard let info else { return [] }
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        return urls as? [URL] ?? []
+    }
+
+    // The window covers the display, so the page's coordinates are the view's, top left.
+    private func pagePoint(_ info: NSDraggingInfo) -> NSPoint {
+        let p = convert(info.draggingLocation, from: nil)
+        return NSPoint(x: p.x, y: isFlipped ? p.y : bounds.height - p.y)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return super.draggingEntered(sender) }
+        onFileDrag?(pagePoint(sender))
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return super.draggingUpdated(sender) }
+        onFileDrag?(pagePoint(sender))
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        guard fileURLs(sender).isEmpty else { return onFileDrag?(nil) ?? () }
+        super.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        fileURLs(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(sender)
+        guard !urls.isEmpty else { return super.performDragOperation(sender) }
+        onFileDrag?(nil)
+        onFileDrop?(urls, pagePoint(sender))
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        guard fileURLs(sender).isEmpty else { return }
+        super.concludeDragOperation(sender)
+    }
 
     // Reloading would throw away unsent replies, which live in the page.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
@@ -192,6 +245,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         if #available(macOS 13.3, *), ProcessInfo.processInfo.environment["HQ_FLOAT_DEBUG"] != nil {
             view.isInspectable = true
         }
+        view.registerForDraggedTypes(view.registeredDraggedTypes + [.fileURL])
+        view.onFileDrag = { [weak self] point in
+            guard let self else { return }
+            if let point { self.send(["type": "fileDrag", "x": point.x, "y": point.y]) } else { self.send(["type": "fileDrag", "off": true]) }
+        }
+        view.onFileDrop = { [weak self] urls, point in self?.sendFiles(urls, at: point) }
         return view
     }
 
@@ -815,6 +874,68 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         }
         openExternally(target)
         decisionHandler(.cancel)
+    }
+
+    /// The paperclip's <input type=file>. Without this, WebKit on macOS ignores it.
+    func webView(
+        _: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame _: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let open = NSOpenPanel()
+        open.allowsMultipleSelection = parameters.allowsMultipleSelection
+        open.canChooseFiles = true
+        open.canChooseDirectories = false
+        open.resolvesAliases = true
+        // Above the panel, which sits at the screen saver's level.
+        open.level = NSWindow.Level(rawValue: panel.level.rawValue + 1)
+        NSApp.activate(ignoringOtherApps: true)
+        var answered = false
+        open.begin { [weak self] response in
+            guard !answered else { return }
+            answered = true
+            completionHandler(response == .OK ? open.urls : nil)
+            // The panel is still open, so it keeps the keyboard.
+            guard let self, self.panel.acceptsKey else { return }
+            self.panel.makeKey()
+            self.panel.makeFirstResponder(self.web)
+        }
+    }
+
+    /// Files dropped from Finder, read here and handed to the page: at most 10, each at
+    /// most 25 MB, with the reason for any left out.
+    private func sendFiles(_ urls: [URL], at point: NSPoint) {
+        let limit = 25 * 1024 * 1024
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var files: [[String: Any]] = []
+            for (index, url) in urls.enumerated() {
+                let name = url.lastPathComponent
+                guard index < 10 else {
+                    files.append(["name": name, "error": "10 files at most"])
+                    continue
+                }
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .fileSizeKey, .contentTypeKey])
+                if values?.isDirectory == true || values?.isPackage == true {
+                    files.append(["name": name, "error": "Folders can't be attached"])
+                    continue
+                }
+                if let size = values?.fileSize, size > limit {
+                    files.append(["name": name, "error": "Too big (max 25 MB)"])
+                    continue
+                }
+                guard let data = try? Data(contentsOf: url), data.count <= limit else {
+                    files.append(["name": name, "error": "Could not read it"])
+                    continue
+                }
+                let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? values?.contentType?.preferredMIMEType ?? "application/octet-stream"
+                files.append(["name": name, "type": type, "data": data.base64EncodedString()])
+            }
+            DispatchQueue.main.async {
+                self?.send(["type": "files", "x": point.x, "y": point.y, "files": files])
+            }
+        }
     }
 
     /// target="_blank" asks for a new window; hand it to the browser instead.
