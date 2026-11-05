@@ -426,7 +426,7 @@ assert.equal(run("folderName('')"), 'No folder');
 run(`savedSessions = state.sessions; state.sessions = agentSessions; listView = 'agents'`);
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(html.includes('<span class="f-headline"><h1>Agents</h1>') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
-assert.ok(!html.includes('data-view="needs"') && !html.includes('role="tablist"')); // no way across to Needs you but the pill
+assert.ok(!html.includes('data-view="needs"') && (html.match(/role="tablist"/g) || []).length === 1 && html.includes('role="tablist" aria-label="Show"')); // no way across to Needs you but the pill; its only tabs are All and Not acted on
 assert.ok(html.includes('Old &lt;chat&gt;') === false && html.includes('data-agents-all>1 more, in 1 folder')); // quiet ones folded
 assert.ok(!html.includes('/Users/someone'));
 run("agentOpen = 'c:done'");
@@ -435,6 +435,86 @@ assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.inclu
 run("agentOpen = 'c:gone'");
 assert.ok(run('agentsPanelHTML(attention(), true)').includes('data-agent="c:bg"')); // a vanished agent falls back to the list
 run(`state.sessions = savedSessions; listView = 'needs'; agentOpen = null`);
+
+// Decisions agents hold. All shows a quiet count: what it has not heard, or, only once stuck,
+// what it heard and never closed. Not acted on lists every agent of any age holding one.
+const heldDecision = (id, sid, title, stage, stuck, ago, extra = {}) => ({...item({id, session_id: sid, title, status: 'answered', owner: 'agent', project: 'harbor', project_name: 'Harbor', answer: `Answer to ${title}`,
+  followup: {stage, stuck, adoptable: false, replied: clockNow - ago, heard: stage === 'acknowledged' ? clockNow - ago + 60 : null}, ...extra}), lane: 'agents'});
+context.heldItems_ = [
+  heldDecision('h1', 'c:old', 'Which archive format', 'delivering', 'unheard', 3 * 86400 + 7200),
+  heldDecision('h2', 'c:old', 'Backfill from 2021', 'delivering', 'unheard', 3 * 86400 + 3600),
+  heldDecision('h3', 'c:old', 'Drop the <duplicates>', 'delivering', 'unheard', 3 * 86400 + 600, {handoff: true}),
+  heldDecision('h4', 'c:old', 'Run it at night', 'acknowledged', 'unclosed', 4 * 86400),
+  heldDecision('h5', 'c:done', 'Rounding rule', 'acknowledged', null, 5400),
+  heldDecision('h6', 'x:run', 'Launch headline', 'delivering', null, 240),
+  heldDecision('h7', 'c:wait', 'Retry or alert', 'acknowledged', 'unclosed', 2 * 86400, {project: 'other', project_name: 'Other'}),
+  item({id: 'h8', session_id: 'c:done', title: 'Still open', status: 'open'}),
+];
+const heldOf = (sid) => `heldItems(heldItems_).filter((i) => i.session_id === '${sid}')`;
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldBy(${heldOf('c:old')}))`)), {unheard: 3, open: 1, total: 4, stuck: true, oldest: clockNow - 4 * 86400});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('c:old')}))`)), {n: 3, word: 'unheard', stuck: true});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('c:wait')}))`)), {n: 1, word: 'not closed', stuck: true}); // heard a day ago, never closed
+assert.equal(run(`heldCount(${heldOf('c:done')})`), null); // heard and still being worked on is normal
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('x:run')}))`)), {n: 1, word: 'unheard', stuck: false});
+assert.equal(run("heldSplit({unheard: 3, open: 1})"), '3 unheard · 1 not closed');
+assert.equal(run("heldSplit({unheard: 0, open: 2})"), '2 not closed');
+// Not acted on: stuck first, then the most, then the longest waiting, in folders that keep their first agent's place.
+const unacted = JSON.parse(run(`JSON.stringify((() => {const v = unactedAgents(agentSessions, heldItems_, ${clockNow}); return {rows: v.rows.map((r) => [r.a.id, r.o.total, r.o.stuck]), folders: v.folders.map((f) => [f.name, f.rows.map((r) => r.a.id)]), total: v.total, most: v.most?.a.id, stuck: v.stuck};})())`));
+assert.deepEqual(unacted.rows, [['c:old', 4, true], ['c:wait', 1, true], ['c:done', 1, false], ['x:run', 1, false]]);
+assert.deepEqual(unacted.folders, [['harbor', ['c:old', 'c:done']], ['site', ['c:wait']], ['lantern', ['x:run']]]);
+assert.deepEqual([unacted.total, unacted.most, unacted.stuck], [7, 'c:old', true]);
+assert.ok(run(`unactedSummary(unactedAgents(agentSessions, heldItems_, ${clockNow}))`).startsWith('7 decisions not acted on, across 4 agents. <b>Old &lt;chat&gt;</b> holds 4 of them, and last ran 3d ago.'));
+// Nobody clearly heavier, nobody named.
+assert.equal(run(`unactedAgents(agentSessions, heldItems_.filter((i) => i.session_id !== 'c:old'), ${clockNow}).most`), null);
+assert.equal(run(`unactedSummary(unactedAgents(agentSessions, heldItems_.filter((i) => i.session_id !== 'c:old'), ${clockNow}))`), '3 decisions not acted on, across 3 agents.');
+// Where each one stands, in words.
+const stage = (id) => run(`heldStage(heldItems_.find((i) => i.id === '${id}'), ${clockNow})`);
+assert.equal(stage('h1'), 'You decided 3d ago · <span class="bad">not heard in 3 days</span>');
+assert.ok(stage('h4').endsWith('<span class="bad">heard, never closed</span>'));
+assert.ok(stage('h5').endsWith('· heard, not closed yet') && stage('h6').endsWith('· not heard yet'));
+assert.ok(run(`heldStage({...heldItems_[0], followup: {...heldItems_[0].followup, stuck: 'stopped'}})`).endsWith('agent stopped before hearing it</span>'));
+// The panel: All carries the quiet count; Not acted on its split and share; the filter says how many.
+run(`state.sessions = agentSessions; savedItems = state.items; state.items = heldItems_; model = derive(); listView = 'agents'; agentsAll = false; agentsShow = 'all'; heldSheet = null`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<button type="button" class="held-n stuck" data-held="c:wait" title="1 decision it heard a day ago and never closed"'));
+assert.ok(html.includes('data-held="x:run"') && html.includes('>1 unheard</button>') && !html.includes('data-held="c:done"'));
+assert.ok(html.includes('role="tab" data-agents-show="unacted" aria-selected="false" tabindex="-1">Not acted on<span class="n stuck">7</span>'));
+assert.ok(html.includes('<div class="f-agent" data-agent="x:run"><button class="f-hit" type="button" aria-label="Release build"></button>')); // the row opens the agent, its count the sheet
+run(`agentsShow = 'unacted'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<p class="ag-sum">7 decisions not acted on') && html.includes('data-agent="c:old"')); // older than a day, still here
+assert.ok(html.includes('>3 unheard · 1 not closed</button><span class="held-share most"><span class="held-meter" aria-hidden="true"><i style="width:57%"></i></span>holds 4 of 7</span>'));
+assert.ok(html.includes('Claude Code · last ran 3d ago') && html.includes('Codex · running now'));
+// The sheet: that agent's decisions, stuck and oldest first, your answer, where each stands, what you can do.
+run(`heldSheet = 'c:old'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('class="f-rows scroll" inert') && html.includes('class="ag-bar" inert')); // the list waits under it
+assert.ok(html.includes('role="dialog" aria-modal="true" aria-labelledby="held-title"') && html.includes('<b id="held-title">3 unheard · 1 not closed</b><span>Old &lt;chat&gt;</span>'));
+assert.deepEqual([...html.matchAll(/data-held-item="(h\d)"/g)].map((m) => m[1]), ['h4', 'h1', 'h2', 'h3']);
+assert.ok(html.includes('<div class="you">You: Answer to Drop the &lt;duplicates&gt;</div>') && !html.includes('<duplicates>'));
+assert.ok(html.includes('data-held-open="h1"') && html.includes('data-held-handoff="h1"') && html.includes('data-held-close="h1"'));
+assert.ok(html.includes('Offered to the next agent in Harbor') && !html.includes('data-held-handoff="h3"')); // offered already
+run(`heldClosing = 'h2'; heldNote = 'Did it <by hand>'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<input id="held-note" class="held-input" type="text" maxlength="2000" value="Did it &lt;by hand&gt;"') && html.includes('data-held-confirm="h2"') && !html.includes('data-held-close="h2"'));
+html = run(`heldSheetHTML({id: 'c:wait', name: 'Asks you first'}, heldItems_.filter((i) => i.id === 'h7'))`);
+assert.ok(!html.includes('data-held-handoff')); // nothing to hand an Other item to
+html = run(`heldSheetHTML({id: 'c:old', name: 'Old'}, Array.from({length: 33}, (_, n) => ({...heldItems_[0], id: 'm' + n})))`);
+assert.equal((html.match(/data-held-item=/g) || []).length, 30);
+assert.ok(html.includes('…and 3 more on <button type="button" class="held-link" data-held-page="c:old">the agent\'s page</button>'));
+// A sheet whose agent holds nothing any more closes itself.
+run(`heldSheet = 'c:nosig'; heldClosing = 'h1'; heldStill(heldItems_)`);
+assert.deepEqual([run('heldSheet'), run('heldClosing')], [null, null]);
+// Tab memory keeps the list chosen and an open sheet; anything odd starts clean.
+let keptAgents = run(`JSON.stringify(cleanTabs({view: 'agents', tabs: {agents: {show: 'unacted', sheet: 'c:old'}}}).tabs.agents)`);
+assert.deepEqual([JSON.parse(keptAgents).show, JSON.parse(keptAgents).sheet], ['unacted', 'c:old']);
+keptAgents = run(`JSON.stringify(cleanTabs({tabs: {agents: {show: '<odd>', sheet: 42}}}).tabs.agents)`);
+assert.deepEqual([JSON.parse(keptAgents).show, JSON.parse(keptAgents).sheet], ['all', null]);
+run(`tabState.tabs.agents = {...blankTab(), show: 'unacted', sheet: 'c:old'}; restoreTab('agents')`);
+assert.deepEqual([run('agentsShow'), run('heldSheet'), run('heldClosing')], ['unacted', 'c:old', null]);
+run(`restoreTab('needs')`);
+assert.equal(run('heldSheet'), null); // the sheet belongs to Agents
+run(`state.sessions = savedSessions; state.items = savedItems; model = derive(); listView = 'needs'; agentsShow = 'all'; heldSheet = null; heldClosing = null; heldNote = ''; tabState.tabs.agents = blankTab()`);
 
 // Opening and closing are quick: a spring that settles in about 200ms, with no long tail.
 assert.ok(run('springMs(SNAP)') >= 180 && run('springMs(SNAP)') <= 220, `snap spring lasts ${run('springMs(SNAP)')}ms`);

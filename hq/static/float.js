@@ -501,12 +501,24 @@ function agentsPanelHTML(items, live = liveHealthy) {
   const view = agentFolders(state.sessions, model.items), now = Date.now() / 1000;
   const shown = agentOpen && view.all.find((a) => a.id === agentOpen);
   if (shown) return `<header class="f-head"><button class="f-return" type="button" data-back>${icon('back', 'sm')}Agents</button>${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${agentPageHTML(shown, now)}</div></div>`;
-  const agent = (a) => `<button class="f-agent" type="button" data-agent="${esc(a.id)}">${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${esc(a.harness)} · ${agentMeta(a, now)}</span></span><span class="a-side">${agentSide(a)}</span></button>`;
-  const folder = (f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="f-run">running</span>' : ''}</div>${f.agents.map(agent).join('')}</div>`;
-  const quiet = view.quiet.length ? (agentsAll ? view.quiet.map(folder).join('')
-    : `<button class="f-quiet" type="button" data-agents-all>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}</button>`) : '';
-  const body = view.groups.map(folder).join('') || '<div class="f-empty">No agent has run in the last day</div>';
-  return `<header class="f-head">${agentsTitle()}${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${body}${quiet}</div></div>`;
+  heldStill();
+  const v = unactedAgents(state.sessions, model.items, now);
+  // The whole row opens the agent; its count, above that button, opens the sheet instead.
+  const agent = (a, side = agentSideHTML(a, v.held.get(a.id)), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
+    `<div class="f-agent" data-agent="${esc(a.id)}"><button class="f-hit" type="button" aria-label="${esc(a.name)}"></button>${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${meta}</span></span><span class="a-side">${side}</span></div>`;
+  const folder = (f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="f-run">running</span>' : ''}</div>${f.agents.map((a) => agent(a)).join('')}</div>`;
+  let body;
+  if (agentsShow === 'unacted') {
+    body = v.rows.length ? `<p class="ag-sum">${unactedSummary(v)}</p>${v.folders.map((f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span></div>${f.rows.map((r) => agent(r.a, unactedSide(r, v), `${esc(r.a.harness)} · ${esc(lastRan(r.a))}`)).join('')}</div>`).join('')}`
+      : `<div class="f-empty ag-empty">${UNACTED_EMPTY}</div>`;
+  } else {
+    const quiet = view.quiet.length ? (agentsAll ? view.quiet.map(folder).join('')
+      : `<button class="f-quiet" type="button" data-agents-all>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}</button>`) : '';
+    body = (view.groups.map(folder).join('') || '<div class="f-empty">No agent has run in the last day</div>') + quiet;
+  }
+  const held = heldSheet && v.held.get(heldSheet), who = held && view.all.find((a) => a.id === heldSheet);
+  const shut = who ? ' inert' : '';
+  return `<header class="f-head">${agentsTitle()}${offlineNote(live)}${moreButton}</header><div class="ag-bar"${shut}>${agentsShowHTML(agentsShow, v)}</div><div class="f-rows scroll"${shut}><div class="f-rows-in">${body}</div></div>${who ? heldSheetHTML(who, held, {closing: heldClosing, note: heldNote}) : ''}`;
 }
 // One agent: what it is doing, where, and its open items, which open as usual.
 function agentPageHTML(a, now) {
@@ -526,7 +538,7 @@ function agentPageHTML(a, now) {
 // Each tab keeps where you were in it: what it had open, its highlight and its scroll. Closing
 // the panel keeps it, and so does a restart, since only ids and positions are stored.
 const TABS_KEY = 'hq-float-tabs', TAB_NAMES = ['needs', 'agents', 'stuck'];
-const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false, filter: blankNeeds('none')});
+const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false, filter: blankNeeds('none'), show: 'all', sheet: null});
 const idOrNull = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 200 ? v : null);
 const place = (v) => (Number.isFinite(v) && v >= 0 ? Math.min(Math.round(v), 1e6) : 0);
 function cleanTabs(saved) {
@@ -535,7 +547,7 @@ function cleanTabs(saved) {
     if (!t || typeof t !== 'object') return [name, blankTab()];
     return [name, {item: idOrNull(t.item), agent: idOrNull(t.agent), cursor: idOrNull(t.cursor), index: place(t.index), scroll: place(t.scroll),
       body: place(t.body), itemTab: ['steps', 'why', 'context', 'ask'].includes(t.itemTab) ? t.itemTab : null, all: t.all === true,
-      filter: cleanNeeds(t.filter, 'none')}];
+      filter: cleanNeeds(t.filter, 'none'), show: t.show === 'unacted' ? 'unacted' : 'all', sheet: idOrNull(t.sheet)}];
   }));
   return {view: TAB_NAMES.includes(saved?.view) ? saved.view : 'needs', tabs};
 }
@@ -544,6 +556,9 @@ listView = tabState.view;
 needsFilter = () => tabState.tabs.needs.filter;
 needsBase = () => attention();
 saveNeeds = () => {saveTab();};
+saveAgentsShow = () => {saveTab();};
+openHeldItem = (id) => openItem(id);
+openHeldPage = (agent) => showList('agents', agent);
 // Whether what a tab had open is still there to show.
 function stillOpen(view, id, agent) {
   const i = model?.items.find((x) => x.id === id);
@@ -559,7 +574,7 @@ function saveTab() {
   Object.assign(t, {item: route.item || null, agent: listView === 'agents' ? agentOpen : null, cursor,
     index: Math.max(0, rows.findIndex((r) => rowKey(r) === on)), scroll: place($('.f-rows')?.scrollTop),
     body: route.item ? place($('.d-body')?.scrollTop) : 0, itemTab: route.item ? draftOf(route.item).tab || null : null,
-    all: listView === 'agents' && agentsAll});
+    all: listView === 'agents' && agentsAll, show: listView === 'agents' ? agentsShow : t.show, sheet: listView === 'agents' ? heldSheet : null});
   tabState.view = listView;
   const kept = {view: tabState.view, tabs: Object.fromEntries(Object.entries(tabState.tabs).map(([name, x]) => [name, {...x, filter: keptNeeds(x.filter || blankNeeds('none'))}]))};
   const json = JSON.stringify(kept);
@@ -572,6 +587,10 @@ function restoreTab(view) {
   listView = view;
   agentOpen = view === 'agents' && t.agent && state.sessions.some((x) => x.id === t.agent) ? t.agent : null;
   agentsAll = view === 'agents' && t.all;
+  // Agents comes back on the list you chose, with its sheet if one was open.
+  if (view === 'agents') agentsShow = t.show || 'all';
+  heldSheet = view === 'agents' ? t.sheet : null;
+  heldClosing = null;
   const item = t.item && stillOpen(view, t.item, agentOpen) ? t.item : null;
   if (item && t.itemTab && !draftOf(item).tab) setDraft(item, {tab: t.itemTab});
   // A stale item stays the highlight; it is gone from the list, so the row now at its place lights.
@@ -645,6 +664,8 @@ function panelKey(e) {
   if (!floatOpen || customizing || drag || recording || recordingPanel || e.defaultPrevented) return;
   // While typing, the arrows and Enter belong to the text; Escape first leaves the box.
   if (!route.item && listView === 'needs' && needsKey(e)) {e.preventDefault(); e.stopImmediatePropagation(); return;}
+  if (!route.item && listView === 'agents' && heldKey(e)) {e.stopImmediatePropagation(); return;}
+  if (!route.item && listView === 'agents' && (heldSheet || e.target.closest?.('[data-held], .ag-show'))) return;
   if (e.target.matches?.('input, textarea, select, [contenteditable="true"]')) {
     if (e.key !== 'Escape') return;
     e.preventDefault();
@@ -741,7 +762,9 @@ function paintFloat({background = false} = {}) {
   pill.title = 'Click to open. Drag to move. Right-click for more.';
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
   const finding = document.activeElement?.matches?.('[data-g-q]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+  const sheet = keepSheet();
   setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
+  sheet();
   if (finding) {const q = $('#main [data-g-q]'); q?.focus({preventScroll: true}); q?.setSelectionRange(...finding);}
   if (mode === 'list') {markCursor(); slideList(listMotion); glideAgents(tops);}
   listMotion = null;
@@ -978,7 +1001,8 @@ function boxSize(mode = document.body.dataset.mode) {
   }
   const chosen = chosenSize(sizeView(mode));
   if (mode === 'list') {
-    const above = [...($('#main')?.children || [])].filter((el) => !el.matches('.f-rows, .g-pop')).reduce((n, el) => n + el.offsetHeight, 0);
+    if (listView === 'agents' && heldSheet && $('#main .held-sheet')) return {width: chosen.width, height: chosen.height};
+    const above = [...($('#main')?.children || [])].filter((el) => !el.matches('.f-rows, .g-pop, .held-scrim, .held-sheet')).reduce((n, el) => n + el.offsetHeight, 0);
     const rows = $('.f-rows-in')?.offsetHeight || 0;
     return {width: chosen.width, height: Math.min(chosen.height, above + rows + 2)};
   }
@@ -1556,6 +1580,7 @@ function bootFloat() {
       e.stopPropagation();
       return;
     }
+    if (e.target.closest('#main') && heldClick(e)) return;
     const row = e.target.closest('#main [data-item]');
     const inner = e.target.closest('[data-href], #detail a[href^="#"]');
     const circle = e.target.closest('[data-circle]'), shift = e.target.closest('[data-circle-move]');
@@ -1607,6 +1632,7 @@ function bootFloat() {
     if (e.key !== 'Escape') return;
     if (drag) cancelDrag();
     else if (customizing) {customizing = false; render();}
+    else if (floatOpen && !route.item && listView === 'agents' && heldEscape()) {/* the note or the sheet took it */}
     else if (floatOpen && !route.item && listView === 'needs' && needsEscape(e)) {/* the search or a menu took it */}
     else if (floatOpen && !route.item && (agentOpen || listView === 'stuck')) backToList();
     else if (floatOpen && !route.item) setOpen(false);
@@ -1631,7 +1657,7 @@ function bootFloat() {
   // The surface hugs its content, so anything that changes its size has to re-place the window.
   new ResizeObserver(layoutSoon).observe($('#rail'));
   new MutationObserver(layoutSoon).observe($('#box'), {childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'open', 'hidden']});
-  document.addEventListener('input', layoutSoon);
+  document.addEventListener('input', (e) => {heldInput(e); layoutSoon();});
   // The answer folds in place; once it settles, the box may need to grow to hold it.
   $('#box').addEventListener('transitionend', (e) => {if (e.target.classList?.contains('d-fold')) layoutSoon();});
   // Scrolling is remembered too, once it settles.
