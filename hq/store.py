@@ -67,7 +67,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS activity (
                     session_id TEXT NOT NULL REFERENCES sessions(id), source TEXT NOT NULL,
                     state TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL,
-                    priority INTEGER NOT NULL, PRIMARY KEY(session_id,source)
+                    priority INTEGER NOT NULL, since REAL, last_active REAL, PRIMARY KEY(session_id,source)
                 );
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
@@ -82,7 +82,14 @@ class Store:
                 db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
             if "presentation" not in columns:
                 db.execute("ALTER TABLE items ADD COLUMN presentation TEXT NOT NULL DEFAULT '{}'")
-            db.execute("PRAGMA user_version=5")
+            # When a state began, and when an agent was last seen running: observations
+            # repeat every second, so neither can be read from the latest one alone.
+            observed = {r["name"] for r in db.execute("PRAGMA table_info(activity)")}
+            if "since" not in observed:
+                db.execute("ALTER TABLE activity ADD COLUMN since REAL")
+            if "last_active" not in observed:
+                db.execute("ALTER TABLE activity ADD COLUMN last_active REAL")
+            db.execute("PRAGMA user_version=6")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -163,26 +170,32 @@ class Store:
             raise ValueError("Activity lease must be between 0 and 3600 seconds")
         source = required(source, "activity source", 1000)
         now = time.time()
+        at = now if observed is None else observed
         with self.db() as db:
-            db.execute("""INSERT INTO activity VALUES (?,?,?,?,?,?)
-                ON CONFLICT(session_id,source) DO UPDATE SET state=excluded.state,
-                observed=excluded.observed,expires=excluded.expires,priority=excluded.priority
+            db.execute("""INSERT INTO activity (session_id,source,state,observed,expires,priority,since,last_active)
+                VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id,source) DO UPDATE SET
+                since=CASE WHEN activity.state=excluded.state AND activity.since IS NOT NULL THEN activity.since ELSE excluded.observed END,
+                last_active=CASE WHEN excluded.state='active' THEN excluded.observed ELSE activity.last_active END,
+                state=excluded.state,observed=excluded.observed,expires=excluded.expires,priority=excluded.priority
                 WHERE excluded.observed>=activity.observed""",
-                       (session_id, source, state, now if observed is None else observed, now+lease, priority))
+                       (session_id, source, state, at, now + lease, priority, at, at if state == "active" else None))
 
     def expire_activity(self, source, missing=None, before=None):
         with self.db() as db:
             if missing is None:
                 now = time.time()
-                db.execute("UPDATE activity SET state='unknown',observed=?,expires=? WHERE source=?", (now, now+6, source))
+                db.execute("UPDATE activity SET since=CASE WHEN state='unknown' THEN since ELSE ? END,"
+                           "state='unknown',observed=?,expires=? WHERE source=?", (now, now, now+6, source))
             else:
                 for row in db.execute("SELECT session_id,observed FROM activity WHERE source=?", (source,)).fetchall():
                     if row["session_id"] not in missing and (before is None or row["observed"] <= before):
                         # A successful live inventory confirms this runtime no longer owns it.
                         self_id = row["session_id"]
                         now = time.time()
-                        db.execute("UPDATE activity SET state='offline',observed=?,expires=? WHERE source=? AND session_id=?",
-                                   (now, now+6, source, self_id))
+                        db.execute("UPDATE activity SET since=CASE WHEN state='offline' THEN since ELSE ? END,"
+                                   "state='offline',observed=?,expires=? WHERE source=? AND session_id=?",
+                                   (now, now, now+6, source, self_id))
 
     def attach_activity(self, sessions):
         now, observations = time.time(), {}
@@ -190,10 +203,14 @@ class Store:
             rows = db.execute("SELECT * FROM activity WHERE expires>? ORDER BY priority DESC,observed DESC", (now,))
             for row in rows:
                 observations.setdefault(row["session_id"], dict(row))
+            # Expired observations still say when an agent last ran, from any source.
+            last_active = {r["session_id"]: r["last"] for r in db.execute(
+                "SELECT session_id,MAX(last_active) AS last FROM activity GROUP BY session_id")}
         for session in sessions:
             observation = observations.get(session["id"])
-            session["activity"] = ({k: observation[k] for k in ("state", "source", "observed", "expires")}
-                                   if observation else {"state": "unknown", "source": None})
+            session["activity"] = ({k: observation[k] for k in ("state", "source", "observed", "expires", "since")}
+                                   if observation else {"state": "unknown", "source": None, "since": None})
+            session["last_active"] = last_active.get(session["id"])
 
     def claim_hook_messages(self, session_id, limit=4):
         """Queue context once; only an agent acknowledgement establishes receipt."""

@@ -150,3 +150,54 @@ class PresenceTests(unittest.TestCase):
         other.observe_activity("claude-code:a", "idle", "claude-live")
         feed.publish()
         self.assertEqual(feed.version, version)
+
+class ActivityTimesTests(unittest.TestCase):
+    """When a state began, and when an agent last ran, survive the every-second observations."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name) / "hq.sqlite3")
+        self.store.register("claude-code:a", "Agent", "claude-code")
+
+    def session(self):
+        return next(s for s in self.store.snapshot()["sessions"] if s["id"] == "claude-code:a")
+
+    def test_since_marks_the_change_not_the_latest_observation(self):
+        self.store.observe_activity("claude-code:a", "active", "claude-live", observed=100)
+        self.store.observe_activity("claude-code:a", "active", "claude-live", observed=105)
+        self.store.observe_activity("claude-code:a", "active", "claude-live", observed=110)
+        self.assertEqual(self.session()["activity"]["since"], 100)  # running since it started
+        self.store.observe_activity("claude-code:a", "idle", "claude-live", observed=120)
+        self.store.observe_activity("claude-code:a", "idle", "claude-live", observed=125)
+        session = self.session()
+        self.assertEqual(session["activity"]["since"], 120)  # idle since it finished
+        self.assertEqual(session["last_active"], 110)  # last seen running
+
+    def test_last_active_outlives_the_observation_and_spans_sources(self):
+        self.store.observe_activity("claude-code:a", "active", "hooks", observed=50, priority=50)
+        self.store.observe_activity("claude-code:a", "active", "claude-live", observed=90)
+        self.store.expire_activity("claude-live", missing=set())
+        self.assertEqual(self.session()["last_active"], 90)
+        self.store.expire_activity("claude-live")
+        self.assertEqual(self.session()["last_active"], 90)  # going quiet does not erase when it last ran
+
+    def test_never_active_has_no_last_active(self):
+        self.store.observe_activity("claude-code:a", "idle", "claude-live", observed=10)
+        self.assertIsNone(self.session()["last_active"])
+
+    def test_an_older_database_gains_the_columns(self):
+        import sqlite3
+        path = Path(self.temp.name) / "old.sqlite3"
+        Store(path)
+        with sqlite3.connect(path) as db:
+            # The table as it was before these columns existed.
+            db.execute("DROP TABLE activity")
+            db.execute("""CREATE TABLE activity (session_id TEXT NOT NULL REFERENCES sessions(id), source TEXT NOT NULL,
+                state TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL,
+                priority INTEGER NOT NULL, PRIMARY KEY(session_id,source))""")
+        store = Store(path)
+        store.register("codex:x", "X", "codex")
+        store.observe_activity("codex:x", "active", "codex-runtime:default", observed=7)
+        self.assertEqual(next(s for s in store.snapshot()["sessions"] if s["id"] == "codex:x")["last_active"], 7)
+
