@@ -138,7 +138,8 @@ body[data-resizing="top-left"], body[data-resizing="bottom-right"] {cursor: nwse
 body[data-resizing="top-right"], body[data-resizing="bottom-left"] {cursor: nesw-resize;}
 body[data-resizing] .f-box {transition: none;}
 
-.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
+/* Inside the box's 1px border, so whatever sits at the right edge is as far in as it looks. */
+.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: calc(var(--f-content, 380px) - 2px);}
 .f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
 .f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
 /* Agents' header: its name and how many are running, set like Needs you's. */
@@ -177,7 +178,9 @@ body[data-resizing] .f-box {transition: none;}
 .f-head .icon {width: 18px; height: 18px;}
 /* Needs you's header in the panel: one 48px row, labels folded to icons at this width. */
 .f-list {position: relative; container-type: inline-size;}
-html.float .g-head {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+/* Its 32px buttons sit 8px below the top, so 8px in from the right: a corner button's centre on
+   the corner's diagonal. */
+html.float .g-head {flex: none; height: 48px; padding: 0 8px 0 16px; -webkit-user-select: none; user-select: none;}
 html.float .g-head .g-view {margin-left: -6px;}
 html.float .g-head .icon-btn {width: 32px; height: 32px;}
 html.float .g-tally {flex: none; padding: 4px 10px 8px 16px; border-bottom: 1px solid var(--hairline);}
