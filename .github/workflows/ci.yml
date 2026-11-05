@@ -18,4 +18,11 @@ jobs:
         with:
           node-version: "22"
       - run: node --check hq/static/app.js
+      - run: node --check hq/static/float.js
+      - run: node --check hq/static/float-lab.js
       - run: node tests/test_ui.js
+  panel:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swiftc -typecheck hq/FloatPanel.swift

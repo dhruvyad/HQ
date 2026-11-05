@@ -36,26 +36,31 @@ def running():
         return None
 
 
-def launch(port, open_browser=True):
+def ensure_server(port):
+    """Start the local service if it is down, and return its state."""
     state = running()
-    if not state:
-        home = data_dir()
-        home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        log_path = home / "server.log"
-        with log_path.open("ab") as log:
-            os.chmod(log_path, 0o600)
-            executable = Path(__file__).resolve().parents[1] / "bin/hq"
-            command = [sys.executable, str(executable)] if executable.exists() else [sys.executable, "-m", "hq"]
-            child = subprocess.Popen(command + ["serve", "--port", str(port)], stdout=log, stderr=log, start_new_session=True)
-        for _ in range(50):
-            state = running()
-            if state:
-                break
-            if child.poll() is not None:
-                raise ValueError(f"HQ could not start. See {log_path}")
-            time.sleep(0.1)
-        if not state:
-            raise ValueError(f"HQ did not start in time. See {log_path}")
+    if state:
+        return state
+    home = data_dir()
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_path = home / "server.log"
+    with log_path.open("ab") as log:
+        os.chmod(log_path, 0o600)
+        executable = Path(__file__).resolve().parents[1] / "bin/hq"
+        command = [sys.executable, str(executable)] if executable.exists() else [sys.executable, "-m", "hq"]
+        child = subprocess.Popen(command + ["serve", "--port", str(port)], stdout=log, stderr=log, start_new_session=True)
+    for _ in range(50):
+        state = running()
+        if state:
+            return state
+        if child.poll() is not None:
+            raise ValueError(f"HQ could not start. See {log_path}")
+        time.sleep(0.1)
+    raise ValueError(f"HQ did not start in time. See {log_path}")
+
+
+def launch(port, open_browser=True):
+    state = ensure_server(port)
     url = f"http://127.0.0.1:{state['port']}"
     if open_browser:
         webbrowser.open(url)
@@ -226,7 +231,27 @@ def parser():
     desktop = commands.add_parser("desktop", help="Install, verify, or remove the Codex + HQ launcher")
     desktop.add_argument("action", choices=["install", "status", "uninstall"])
     desktop.add_argument("--app", help="Codex desktop .app installation")
+    panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
+    panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
+                       help="install starts it at login; lab tries designs on throwaway data; run is for launchd")
+    panel.add_argument("--port", type=int, default=4310)
+    panel.add_argument("--item", help="lab: reply to this HQ item with your picks")
     return root
+
+
+def float_panel(args):
+    from . import floating
+    if args.item and args.action != "lab":
+        raise ValueError("--item is for hq float lab")
+    if args.action == "start":
+        return floating.start(args.port, ensure_server)
+    if args.action == "run":
+        return floating.run(args.port, ensure_server)
+    if args.action == "install":
+        return floating.install(args.port)
+    if args.action == "lab":
+        return floating.lab(args.item)
+    return {"stop": floating.stop, "status": floating.status, "uninstall": floating.uninstall}[args.action]()
 
 
 def main():
@@ -261,6 +286,8 @@ def main():
             if args.action == "uninstall":
                 return output(uninstall_launcher())
             return output(install_launcher(args.app) if args.action == "install" else desktop_status(args.app))
+        if args.command == "float":
+            return output(float_panel(args))
         store = Store()
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)

@@ -26,6 +26,8 @@ class Server(ThreadingHTTPServer):
         self.store = store or Store()
         self.token = secrets.token_urlsafe(32)
         self.instance = str(uuid.uuid4())
+        # The design lab's pages exist only on the throwaway HQ that `hq float lab` starts.
+        self.lab = os.environ.get("HQ_FLOAT_LAB") == "1"
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.feed = StateFeed(self.store)
@@ -85,14 +87,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+                  "/float": ("float.html", "text/html"), "/float.js": ("float.js", "text/javascript"),
+                  "/float.css": ("float.css", "text/css"),
                   "/inter-latin.woff2": ("inter-latin.woff2", "font/woff2"),
                   "/outfit-latin.woff2": ("outfit-latin.woff2", "font/woff2"),
                   "/instrument-serif-latin.woff2": ("instrument-serif-latin.woff2", "font/woff2")}
+        if self.server.lab:
+            assets.update({"/float-lab": ("float-lab.html", "text/html"), "/float-lab.js": ("float-lab.js", "text/javascript")})
         if path not in assets:
             return self.output(404, {"error": "Not found"})
         name, mime = assets[path]
         body = (STATIC / name).read_bytes()
-        if name == "index.html":
+        if mime == "text/html":
             body = body.replace(b"__HQ_TOKEN__", self.server.token.encode())
         self.output(200, body, mime)
 

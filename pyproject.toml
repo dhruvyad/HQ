@@ -13,4 +13,4 @@ dependencies = []
 hq = "hq.cli:main"
 
 [tool.setuptools.package-data]
-hq = ["static/*", "AGENT_GUIDE.md"]
+hq = ["static/*", "AGENT_GUIDE.md", "FloatPanel.swift"]

@@ -652,6 +652,89 @@ class HTTPTests(unittest.TestCase):
         error.exception.close()
 
 
+class FloatRouteTests(unittest.TestCase):
+    """The floating panel's pages keep the dashboard's boundaries. Stub pages, so only the routes are tested."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        static = root / "static"
+        static.mkdir()
+        for name in ("float.html", "float-lab.html"):
+            (static / name).write_text('<meta name="hq-token" content="__HQ_TOKEN__">' + name)
+        for name in ("float.js", "float.css", "float-lab.js"):
+            (static / name).write_text("/* __HQ_TOKEN__ stays literal outside pages */")
+        patcher = patch("hq.server.STATIC", static)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.store = Store(root / "http.sqlite3")
+        self.servers = []
+
+    def serve(self, lab=False):
+        with patch.dict(os.environ, {"HQ_FLOAT_LAB": "1"} if lab else {}):
+            if not lab:
+                os.environ.pop("HQ_FLOAT_LAB", None)
+            server = Server(0, self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def stop():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.addCleanup(stop)
+        return server
+
+    @staticmethod
+    def get(server, path, headers=None):
+        return urllib.request.urlopen(urllib.request.Request(server.origin + path, headers=headers or {}))
+
+    def test_panel_page_has_the_token_and_the_same_policy_as_the_dashboard(self):
+        server = self.serve()
+        with self.get(server, "/float") as response:
+            page = response.read().decode()
+            self.assertIn(server.token, page)
+            self.assertNotIn("__HQ_TOKEN__", page)
+            self.assertEqual(response.headers["Content-Type"], "text/html; charset=utf-8")
+            policy = response.headers["Content-Security-Policy"]
+            self.assertIn("script-src 'self'", policy)
+            self.assertIn("frame-ancestors 'none'", policy)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+        for path, mime in (("/float.js", "text/javascript"), ("/float.css", "text/css")):
+            with self.get(server, path) as response:
+                body = response.read().decode()
+                self.assertEqual(response.headers["Content-Type"], mime + "; charset=utf-8")
+                self.assertEqual(response.headers["Content-Security-Policy"], policy)
+                self.assertNotIn(server.token, body)  # The token is only ever injected into a page.
+
+    def test_lab_pages_exist_only_on_the_labs_own_server(self):
+        server = self.serve()
+        for path in ("/float-lab", "/float-lab.js"):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.get(server, path)
+            self.assertEqual(error.exception.code, 404)
+            error.exception.close()
+        lab = self.serve(lab=True)
+        with self.get(lab, "/float-lab") as response:
+            self.assertIn(lab.token, response.read().decode())
+            self.assertIn("script-src 'self'", response.headers["Content-Security-Policy"])
+        with self.get(lab, "/float-lab.js") as response:
+            self.assertEqual(response.status, 200)
+
+    def test_new_routes_reject_foreign_hosts_and_origins(self):
+        lab = self.serve(lab=True)
+        for path in ("/float", "/float.js", "/float.css", "/float-lab", "/float-lab.js"):
+            for headers in ({"Host": "attacker.example"}, {"Origin": "https://attacker.example"}):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    self.get(lab, path, headers)
+                self.assertEqual(error.exception.code, 403)
+                error.exception.close()
+
+    def test_a_new_server_passes_the_route_check_the_panel_runs(self):
+        from hq.floating import require_route
+        require_route(self.serve().origin + "/float")
+
+
 class CodexRoutingTests(unittest.TestCase):
     def client(self, thread):
         client = CodexClient.__new__(CodexClient)
