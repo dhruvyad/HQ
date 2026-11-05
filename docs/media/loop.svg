@@ -11,7 +11,7 @@
     .panel {fill: #18181b; stroke: #27272a;}
     .wire {fill: none; stroke: #3f3f46; stroke-width: 1.5; stroke-dasharray: 3 5;}
   </style>
-  <rect x="0.5" y="0.5" width="839" height="261" rx="16" fill="#09090b" stroke="#27272a"/>
+  <rect x="0.5" y="0.5" width="839" height="261" rx="12" fill="#09090b" stroke="#27272a"/>
   <g transform="translate(0 -36)">
 
   <!-- Wires -->

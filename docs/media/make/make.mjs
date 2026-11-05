@@ -139,19 +139,33 @@ export async function stage(hq, {width, height, app, dock = 'top-left'}) {
   return s;
 }
 
+// Every picture gets rounded corners, transparent outside, so it sits as well on GitHub's light
+// page as on its dark one: RADIUS CSS pixels at the width the README shows it.
+const RADIUS = 12;
+const rounded = (r) => `255*clip(${r}-hypot(X+0.5-clip(X+0.5,${r},W-${r}),Y+0.5-clip(Y+0.5,${r},H-${r}))+0.5,0,1)`;
+function roundPng(input, output, radius) {
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', input, '-vf',
+    `format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${rounded(radius)}'`, output]);
+}
+
 // Screencast frames arrive with their times, about 60 a second; space them evenly and keep every
 // pixel as animated WebP: full colour, so gradients never band. Lossy at q95 tracks the source
 // closely; a clip that dims the whole screen trails under lossy blending, so that one is lossless.
-function webp(frames, out, {lossless = false} = {}) {
+function webp(frames, out, {width, height, lossless = false}) {
   const {times, end} = JSON.parse(readFileSync(join(frames, 'times.json'), 'utf8'));
   const hold = end - times[times.length - 1];
   const lines = times.flatMap((t, n) => [`file '${join(frames, `f${String(n).padStart(5, '0')}.png`)}'`,
     `duration ${((times[n + 1] ?? t + Math.max(hold, 0.04)) - t).toFixed(4)}`]);
   lines.push(lines[lines.length - 2]);
   writeFileSync(join(frames, 'list.txt'), `${lines.join('\n')}\n`);
+  // One mask for the corners, laid over every frame.
+  const mask = join(frames, 'mask.png');
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=white:s=${width}x${height}`, '-frames:v', '1',
+    '-vf', `format=gray,geq=lum='${rounded(RADIUS * SCALE)}'`, mask]);
   const quality = lossless ? ['-lossless', '1', '-compression_level', '4'] : ['-lossless', '0', '-q:v', '95', '-compression_level', '6', '-preset', 'picture'];
-  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', join(frames, 'list.txt'),
-    '-vf', `fps=${FPS}`, '-c:v', 'libwebp_anim', ...quality, '-loop', '0', join(OUT, out)]);
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', join(frames, 'list.txt'), '-i', mask,
+    '-filter_complex', `[0:v]fps=${FPS},format=rgba[v];[1:v]format=gray[m];[v][m]alphamerge,format=bgra`,
+    '-c:v', 'libwebp_anim', ...quality, '-loop', '0', join(OUT, out)]);
 }
 
 async function take(name, size, scene, out, encode = {}) {
@@ -163,7 +177,7 @@ async function take(name, size, scene, out, encode = {}) {
     await scene(s, hq, () => s.page.record(frames));
     await s.page.stop();
     if (s.page.errors.length) throw new Error(`${name}: ${s.page.errors.join('; ')}`);
-    webp(frames, out, encode);
+    webp(frames, out, {width: size.width * SCALE, height: size.height * SCALE, ...encode});
   } finally {
     s?.page.close();
     hq.stop();
@@ -253,7 +267,11 @@ const TAKES = {
       await s.until(`document.body.dataset.mode === 'settings'`);
       await sleep(1200);
       const box = await s.rect('#box');
-      await s.page.shot(join(OUT, 'settings.png'), {x: 0, y: 0, width: Math.ceil(box.x + box.width + 16) * SCALE, height: Math.ceil(box.y + box.height + 16) * SCALE});
+      const raw = join(tmpdir(), `hq-media-settings-${process.pid}.png`), width = Math.ceil(box.x + box.width + 16);
+      await s.page.shot(raw, {x: 0, y: 0, width: width * SCALE, height: Math.ceil(box.y + box.height + 16) * SCALE});
+      // The README shows it 380 wide.
+      roundPng(raw, join(OUT, 'settings.png'), Math.round(RADIUS * width * SCALE / 380));
+      rmSync(raw, {force: true});
     } finally {
       s?.page.close();
       hq.stop();
@@ -271,7 +289,10 @@ const TAKES = {
       await sleep(1500);
       if (page.errors.length) throw new Error(page.errors.join('; '));
       await page.shot(raw);
-      execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', raw, '-vf', 'scale=1600:-1:flags=lanczos', join(OUT, 'dashboard.png')]);
+      const scaled = `${raw}.scaled.png`;
+      execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-i', raw, '-vf', 'scale=1600:-1:flags=lanczos', scaled]);
+      roundPng(scaled, join(OUT, 'dashboard.png'), RADIUS * 2);
+      rmSync(scaled, {force: true});
     } finally {
       page.close();
       hq.stop();

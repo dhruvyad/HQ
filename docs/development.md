@@ -60,5 +60,8 @@ agent.
 - **`settings.png`, `dashboard.png`**: 2x screenshots.
 - **`loop.svg`**: drawn by hand.
 
+Every picture has rounded corners, 12 CSS pixels at the width the README shows it, and is
+transparent outside them, so it sits as well on GitHub's light page as on its dark one.
+
 It needs Google Chrome (or `CHROME=/path/to/chrome`), `ffmpeg` with libwebp, and Python's
 `fonttools` with `brotli` to embed a small Inter subset in the SVGs (or `uv`, which fetches them).

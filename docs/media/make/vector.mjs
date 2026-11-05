@@ -211,8 +211,10 @@ function svg(W, H, title, desc, style, defs, body) {
 <desc id="desc">${desc}</desc>
 <style>${style}
 text {font-family: ${FONT}; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;}</style>
-<defs>${defs}</defs>
+<defs><clipPath id="frame"><rect width="${W}" height="${H}" rx="12"/></clipPath>${defs}</defs>
+<g clip-path="url(#frame)">
 ${body}
+</g>
 </svg>
 `;
 }
