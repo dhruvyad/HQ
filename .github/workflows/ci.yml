@@ -18,3 +18,22 @@ jobs:
         with:
           node-version: "22"
       - run: node --check hq/static/app.js
+      - run: node --check hq/static/float.js
+      - run: node --check hq/static/float-lab.js
+      - run: node tests/test_ui.js
+  panel:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swiftc -typecheck hq/FloatPanel.swift
+  install:
+    # The one-line install a friend runs, from a fresh home with no uv, stopping before setup.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -n install.sh
+      - name: Install into an empty home
+        run: |
+          home="$(mktemp -d)"
+          env -i HOME="$home" PATH=/usr/bin:/bin HQ_SOURCE="$PWD" HQ_NO_SETUP=1 sh install.sh
+          env -i HOME="$home" PATH=/usr/bin:/bin "$home/.local/bin/hq" setup --help

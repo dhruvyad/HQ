@@ -8,3 +8,5 @@ __pycache__/
 .hq/
 node_modules/
 test-results/
+build/
+dist/

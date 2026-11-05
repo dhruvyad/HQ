@@ -1,0 +1,262 @@
+/* The floating panel and its design lab. style.css supplies the tokens, fonts and the
+   item pane; this file adds only what a small floating window needs. See DESIGN.md. */
+html.float, html.float body {height: 100%; background: transparent; overflow: hidden; overscroll-behavior: none;}
+
+/* Pill: a black capsule of circles, each one a live number you choose. The window around it
+   is a transparent layer over the whole display, so every change of shape here, and a drop,
+   runs on the compositor. */
+.f-capsule {display: inline-flex; width: max-content; padding: var(--f-pad, 4px); background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
+.f-rail {display: flex; flex: none; flex-direction: column; gap: var(--f-pad, 4px); transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
+.f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
+.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
+body[data-across="end"] .f-pill .f-rail {margin-left: auto;}
+body[data-across="center"] .f-pill .f-rail {margin-inline: auto;}
+body[data-down="end"] .f-pill .f-rail {margin-top: auto;}
+body[data-down="center"] .f-pill .f-rail {margin-block: auto;}
+.f-pill:focus-visible {outline-offset: -3px;}
+.f-pill.instant, .f-pill.instant .f-rail {transition: none;}
+.f-row {display: flex; align-items: center; gap: 8px; min-height: var(--f-size, 28px);}
+body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
+.f-offline {justify-content: center; min-height: 12px;}
+.f-tag {display: none; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: rgb(250 250 250 / 0.88);}
+.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 calc(var(--f-size, 28px) * 0.43)/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: opacity .2s ease, transform .45s var(--f-spring, ease), background .15s, border-color .15s;}
+/* Spotlight: the circle under the cursor steps forward, the others step back. */
+.f-row.dim .f-circle {opacity: .32; transform: scale(.9);}
+.f-row.hot .f-circle {transform: scale(1.08);}
+.f-spot {position: absolute; left: 0; top: 0; z-index: 30; display: flex; align-items: center; height: var(--f-size, 28px); padding: 0 12px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: 14px; box-shadow: 0 6px 22px rgb(0 0 0 / 0.35); font-size: 12.5px; white-space: nowrap; color: rgb(250 250 250 / 0.92); opacity: 0; pointer-events: none; transition: transform .5s var(--f-spring, ease), opacity .2s ease;}
+.f-spot.on {opacity: 1;}
+.f-spot.instant {transition: opacity .2s ease;}
+.f-ripple {position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--foreground); pointer-events: none;}
+body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
+.f-circle.wide {font-size: calc(var(--f-size, 28px) * 0.357); letter-spacing: -0.03em;}
+.f-circle.loud {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
+body[data-hover] .f-pill .f-circle.loud {border-color: var(--primary);}
+.f-circle.live {border-color: var(--live);}
+body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
+.f-circle.none {border-style: dashed; color: var(--muted-foreground);}
+.f-circle.gauge {border: 0;}
+.f-circle.stale {opacity: 0.5;}
+.f-circle svg {position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); fill: none; stroke-width: 3; stroke-linecap: round;}
+.f-circle .track {stroke: rgb(250 250 250 / 0.16);}
+.f-circle .fill {stroke: var(--foreground);}
+.f-circle.low .fill {stroke: var(--error);}
+.f-circle.low {color: var(--error);}
+
+/* Island: the capsule becomes a card, then folds back. */
+.f-pill.noting {border-radius: 31px;}
+.f-pill.noting .f-rail {opacity: 0; transform: scale(.7); filter: blur(3px); transition-delay: 0s;}
+.f-hero {position: absolute; left: 12px; top: 50%; opacity: 0; transform: translateY(-50%) scale(.55); transition: opacity .2s ease, transform .55s var(--f-spring, ease);}
+.f-pill.noting .f-hero {opacity: 1; transform: translateY(-50%) scale(1.25); transition-delay: .1s;}
+.f-note {position: absolute; left: 58px; right: 18px; top: 50%; display: flex; flex-direction: column; text-align: left; opacity: 0; transform: translateY(calc(-50% + 8px)); transition: opacity .16s ease, transform .3s ease;}
+.f-pill.noting .f-note {opacity: 1; transform: translateY(-50%); transition: opacity .3s ease .16s, transform .55s var(--f-soft, ease) .12s;}
+.f-note-title {overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 500; line-height: 1.3;}
+.f-note-sub {margin-top: 1px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 1.3; color: var(--muted-foreground);}
+.f-dot {display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; vertical-align: 1px;}
+.f-dot.on {background: var(--live); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.16);}
+.f-dot.off {border: 1.5px solid rgb(250 250 250 / 0.45);}
+.f-dot.bad {background: var(--error);}
+/* A number is trimmed to its own glyphs, so the circle centers the digit and not its line
+   box, which sits it a little low. Rolling digits share one grid cell, each centered alone. */
+.f-circle > span:last-child, .f-num b {text-box: trim-both cap alphabetic;}
+.f-num {display: grid; place-items: center;}
+.f-num b {grid-area: 1 / 1; font-weight: inherit; transition: transform .42s var(--f-soft, ease), opacity .26s ease;}
+.f-num b.from-below, .f-num b.to-below {transform: translateY(140%); opacity: 0;}
+.f-num b.from-above, .f-num b.to-above {transform: translateY(-140%); opacity: 0;}
+
+/* The box: one surface for the list and the expanded item. */
+.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transform-origin: var(--f-from, left top); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), transform var(--f-snap-ms, .2s) var(--f-snap, ease-out), opacity .1s ease, background .2s, border-color .2s, box-shadow .2s;}
+.f-box.instant {transition: none;}
+/* Fold's springs, Fly home's direction: the box grows out of the pill's center and shrinks
+   back into it, fading as it goes, while the pill itself stays where it is. */
+.f-box.folded {transform: scale(.16); opacity: 0;}
+.f-box.closing {transform: scale(.16); opacity: 0; transition: transform var(--f-snap-ms, .2s) var(--f-snap, ease-out), opacity .12s ease .07s;}
+.f-box > * {transition: opacity .2s ease, filter .2s ease;}
+.f-box.opening > :not(.f-back) {animation: f-reveal var(--f-snap-ms, .2s) var(--f-snap, ease-out) backwards;}
+.f-box.closing > * {opacity: 0; filter: blur(6px); transition-duration: .1s;}
+@keyframes f-reveal {from {opacity: 0; filter: blur(5px); transform: translateY(6px);}}
+/* Deck: in an item the box steps back and the cards carry the surface. */
+.f-box.bare {overflow: visible; background: transparent; border-color: transparent; box-shadow: none;}
+.f-box.bare > .f-list {visibility: hidden;}
+.f-back {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.12); border-radius: 16px; box-shadow: 0 8px 22px rgb(0 0 0 / 0.35); transform-origin: center bottom; transition: transform .5s var(--f-soft, ease), opacity .3s ease;}
+.f-back[data-depth="1"] {transform: translateY(10px) scale(.96); opacity: .8;}
+.f-back[data-depth="2"] {transform: translateY(20px) scale(.92); opacity: .55;}
+.f-box:not(.bare) .f-back {display: none;}
+.f-leaving {z-index: 5; pointer-events: none;}
+/* Fly home: an answered card arcs into the needs-you circle. */
+.f-flight {position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none;}
+.f-flight-card {position: relative; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 12px 34px rgb(0 0 0 / 0.45); transform-origin: center;}
+.f-flight-card > .detail {position: absolute; inset: 0; width: 100%; height: 100%; border: 0; box-shadow: none; transform: none;}
+@keyframes f-open {from {opacity: 0; transform: scale(.975);}}
+html.float body[data-mode="pill"] #toast {display: none;}
+html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
+/* Resize grips on the box's edges away from the pill: 6px outside the border, 3px in. */
+.f-grips {position: absolute; z-index: 20; pointer-events: none;}
+.f-grip {position: absolute; pointer-events: auto;}
+.f-grip[data-edge="left"], .f-grip[data-edge="right"] {top: 22px; bottom: 22px; width: 9px; cursor: ew-resize;}
+.f-grip[data-edge="top"], .f-grip[data-edge="bottom"] {left: 22px; right: 22px; height: 9px; cursor: ns-resize;}
+.f-grip[data-edge="left"] {left: 0;}
+.f-grip[data-edge="right"] {right: 0;}
+.f-grip[data-edge="top"] {top: 0;}
+.f-grip[data-edge="bottom"] {bottom: 0;}
+.f-grip[data-edge*="-"] {width: 22px; height: 22px;}
+.f-grip[data-edge^="top-"] {top: 0;}
+.f-grip[data-edge^="bottom-"] {bottom: 0;}
+.f-grip[data-edge$="-left"] {left: 0;}
+.f-grip[data-edge$="-right"] {right: 0;}
+.f-grip[data-edge="top-left"], .f-grip[data-edge="bottom-right"] {cursor: nwse-resize;}
+.f-grip[data-edge="top-right"], .f-grip[data-edge="bottom-left"] {cursor: nesw-resize;}
+/* While resizing, the cursor stays the grip's and text never selects. */
+body[data-resizing] {-webkit-user-select: none; user-select: none;}
+body[data-resizing="left"], body[data-resizing="right"] {cursor: ew-resize;}
+body[data-resizing="top"], body[data-resizing="bottom"] {cursor: ns-resize;}
+body[data-resizing="top-left"], body[data-resizing="bottom-right"] {cursor: nwse-resize;}
+body[data-resizing="top-right"], body[data-resizing="bottom-left"] {cursor: nesw-resize;}
+body[data-resizing] .f-box {transition: none;}
+
+.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
+.f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+.f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
+/* The list header: Needs you, and Agents beside it. */
+.f-tabs {display: flex; align-items: baseline; gap: 14px; min-width: 0;}
+.f-tab {font: 400 20px/1 var(--display); letter-spacing: -0.01em; color: rgb(250 250 250 / 0.38); white-space: nowrap; transition: color .15s;}
+.f-tab:hover {color: rgb(250 250 250 / 0.7);}
+.f-tab[aria-selected="true"] {color: var(--foreground);}
+.f-tab small {margin-left: 6px; font: 400 12.5px/1 var(--sans); color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+.f-return {display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 10px 0 4px; margin-left: -6px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); transition: background .12s, color .12s;}
+.f-return:hover {color: var(--foreground); background: var(--hover);}
+.f-return .icon {width: 15px; height: 15px;}
+/* Agents, a folder at a time. */
+.f-folder {margin: 4px 0 10px; padding: 10px 6px 6px; border-radius: 12px; background: rgb(250 250 250 / 0.025);}
+.f-top {display: flex; align-items: baseline; gap: 8px; padding: 0 6px 6px;}
+.f-top .f-name {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 19px/1.1 var(--display);}
+.f-top .f-run {margin-left: auto; font-size: 12px; color: var(--muted-foreground);}
+.f-agent {position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: 9px; text-align: left; transition: background .12s;}
+.f-agent:hover {background: rgb(250 250 250 / 0.05);}
+.f-quiet {display: flex; align-items: center; width: 100%; margin: 0 0 6px; padding: 8px; border-radius: 9px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-quiet:hover {color: var(--foreground); background: rgb(250 250 250 / 0.04);}
+.f-stuck {margin-top: 6px; color: var(--error);}
+.f-title {margin-left: 6px; font: 400 20px/1 var(--display); letter-spacing: -0.01em;}
+/* One agent's page. */
+.f-agent-page {padding: 2px 6px 6px;}
+.f-agent-name {margin: 2px 0 0; font: 500 18px/1.3 var(--sans); letter-spacing: -0.01em;}
+.f-agent-state {display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: rgb(250 250 250 / 0.88);}
+.f-facts {display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px 10px; margin: 14px 0 0; font-size: 12.5px;}
+.f-facts dt {color: var(--muted-foreground);}
+.f-facts dd {min-width: 0; margin: 0; overflow-wrap: anywhere; color: rgb(250 250 250 / 0.9);}
+.f-lane {margin-top: 16px;}
+.f-lane-h {display: flex; padding: 0 0 2px; font-size: 12px; color: var(--muted-foreground);}
+.f-lane-h .c {margin-left: auto; font-variant-numeric: tabular-nums;}
+.f-lane .row {margin: 0 -8px; width: calc(100% + 16px);}
+.f-none {padding: 4px 0; font-size: 12.5px; color: var(--muted-foreground);}
+.f-wide {width: 100%; justify-content: center; margin-top: 18px;}
+.f-off {display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-push {margin-left: auto;}
+.f-head .icon {width: 18px; height: 18px;}
+.f-rows {flex: 1; min-height: 0;}
+.f-rows-in {padding: 0 8px 8px;}
+/* The panel is narrow on any screen. Its window covers the whole display, so the dashboard's
+   small-screen rules, which go by the window's width, no longer reach it: repeat them here. */
+:where(html.float) .row {padding: 10px 8px; gap: 10px; align-items: flex-start; flex-direction: column;}
+:where(html.float) .row .title {white-space: normal;}
+:where(html.float) .row .meta {flex-wrap: wrap; row-gap: 0; max-width: 100%; font-size: 12.5px; white-space: nowrap;} /* parts wrap whole, never mid-word */
+:where(html.float) .row .new {left: -8px;}
+:where(html.float) .group-head {padding: 0 8px;}
+:where(html.float) .agent-row {flex-direction: row; align-items: center;}
+.f-rows .row {gap: 2px; min-height: 0; padding: 9px 8px; border-radius: 10px;}
+.f-rows .row .title {font-size: 14.5px;}
+.f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}
+/* The row the keys are on: the hover look, plus a quiet mark at its left. */
+/* The row the keys are on: a fill and a small → at its right, which is what → does. While
+   the keys drive, the other rows step back; the mouse brings them forward again. Every row
+   keeps the arrow's room, so no title ever reflows as the highlight moves. */
+.f-rows .row, .f-agent {padding-right: 34px; transition: background .12s, opacity .2s;}
+.f-rows .row::after, .f-agent::after {content: ""; position: absolute; right: 8px; top: 9px; width: 20px; height: 20px; border-radius: 50%; background: #fafafa url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2309090b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M13 6l6 6-6 6'/%3E%3C/svg%3E") center / 12px no-repeat; opacity: 0; transform: translateX(-6px); pointer-events: none; transition: opacity .15s ease, transform var(--f-snap-ms, .2s) var(--f-snap, ease-out);}
+.f-agent::after {top: calc(50% - 10px);}
+.f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.06);}
+.f-rows .row.hl .title, .f-agent.hl .a-name {color: var(--foreground);}
+.f-rows .row.hl::after, .f-agent.hl::after {opacity: 1; transform: none;}
+body[data-keys] .f-rows .row:not(.hl), body[data-keys] .f-agent:not(.hl) {opacity: .45;}
+body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
+.f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
+
+/* Choosing the circles: the real pill beside its options. */
+.f-settings {display: flex; align-items: flex-start; gap: 14px; padding: 2px 14px 12px 16px;}
+.f-preview {flex: none; position: sticky; top: 0;}
+.f-set-list {flex: 1; min-width: 0;}
+.f-set {display: flex; align-items: center;}
+.f-set .check {flex: 1; min-width: 0; padding: 7px 8px; font-size: 14px; line-height: 1.3;}
+.f-set .check[aria-checked="true"] {color: var(--foreground);}
+.f-set .check small {display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-section {margin: 14px 8px 4px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-key {display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 2px 8px; font-size: 14px; line-height: 1.3;}
+.f-key > span {flex: 1; min-width: 0;}
+.f-key-bad {display: block; font-size: 12.5px; color: var(--error);}
+.f-cap {flex: none; min-width: 58px; height: 28px; padding: 0 9px; border-radius: 8px; background: rgb(250 250 250 / 0.08); font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--foreground); transition: background .12s;}
+.f-cap:hover {background: rgb(250 250 250 / 0.14);}
+.f-cap.empty {background: none; border: 1px dashed rgb(250 250 250 / 0.2); color: var(--muted-foreground);}
+.f-cap.live {background: var(--primary); color: var(--primary-foreground);}
+.f-sizes {display: flex; gap: 4px; margin: 4px 8px 6px;}
+.f-sizes button {flex: 1; height: 30px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); border: 1px solid rgb(250 250 250 / 0.1); transition: background .12s, color .12s;}
+.f-sizes button:hover {color: var(--foreground);}
+.f-sizes button[aria-checked="true"] {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
+.f-hint {margin: 6px 8px 0; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground);}
+.f-reset {color: rgb(250 250 250 / 0.85); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(250 250 250 / 0.3);}
+.f-reset:hover {color: var(--foreground);}
+.f-moves {display: flex; flex: none;}
+.f-moves .icon-btn {width: 26px; height: 26px;}
+.f-moves .icon {width: 15px; height: 15px;}
+
+/* The dashboard's item pane, filling the box instead of the browser's right edge. */
+html.float .d-bar [data-step], html.float .d-bar [data-pin] {display: none;}
+html.float .detail {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 28px rgb(0 0 0 / 0.42); overflow: hidden; transform-origin: center bottom;}
+html.float .d-bar {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+html.float .d-head {padding: 0 18px 2px;}
+html.float .d-state {font-size: 12.5px;}
+html.float .d-title {margin-top: 3px; font-size: 18px; line-height: 1.32; letter-spacing: -0.012em;}
+html.float .d-tabs {padding: 10px 14px 0;}
+html.float .d-body {padding: 18px 18px 18px;}
+html.float .d-dock {padding: 12px 14px 12px;}
+html.float .plan {gap: 18px;}
+html.float .phead {font-size: 15px;}
+html.float #toast {bottom: 12px; max-width: calc(100vw - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+
+/* Drag: the window covers the display and draws the targets itself. */
+.f-drag {position: fixed; inset: 0; z-index: 100; -webkit-user-select: none; user-select: none;}
+body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-dim .18s ease-out;}
+@keyframes f-dim {from {background: transparent;}}
+.f-drop {position: absolute; border-radius: calc(var(--f-size, 28px) / 2 + 5px); border: 1.5px dashed rgb(250 250 250 / 0.42); background: rgb(0 0 0 / 0.28); transition: background .12s, border-color .12s, transform .12s;}
+.f-drop.on {border: 1.5px solid var(--foreground); background: rgb(250 250 250 / 0.2); transform: scale(1.08);}
+.f-ghost {position: absolute; top: 0; left: 0; box-shadow: 0 10px 34px rgb(0 0 0 / 0.5); transform: translate(var(--x, 0), var(--y, 0)); pointer-events: none; will-change: transform;}
+.f-ghost.outline {background: rgb(0 0 0 / 0.3); border: 1.5px solid var(--foreground); box-shadow: none;}
+.f-ghost .f-tag {display: none;}
+.f-ghost.gliding {transition: transform var(--f-glide, 300ms) cubic-bezier(.16,1,.3,1);}
+
+@media (prefers-reduced-motion: reduce) {
+  .f-box, .f-box.opening > :not(.f-back), body[data-backdrop="dim"] .f-drag {animation: none;}
+  .f-rows .row::after, .f-agent::after {transform: none;}
+}
+
+/* Lab bench */
+.lab {max-width: 460px; margin: 0 auto; padding: 18px 18px 110px;}
+.lab h1 {font-size: 28px;}
+.lab-sub {margin: 6px 0 0; font-size: 13.5px; color: var(--muted-foreground);}
+.lab-group {margin-top: 24px; font-size: 12.5px; color: var(--muted-foreground);}
+.lab-presets {display: flex; flex-direction: column; gap: 2px; margin: 6px -10px 0;}
+.lab-preset {width: 100%; padding: 8px 10px; border-radius: 10px; text-align: left; transition: background .12s;}
+.lab-preset:hover {background: var(--hover);}
+.lab-preset[aria-pressed="true"] {background: var(--current);}
+.lab-preset strong {display: block; font-size: 14px; font-weight: 500;}
+.lab-preset span {display: block; font-size: 12.5px; color: var(--muted-foreground);}
+.lab-axis {padding: 14px 0; border-top: 1px solid var(--hairline);}
+.lab-axis:first-of-type {margin-top: 8px;}
+.lab-q {font-size: 14.5px; font-weight: 500;}
+.lab-seg {display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;}
+.lab-seg button {height: 30px; padding: 0 11px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); border: 1px solid rgb(250 250 250 / 0.1); transition: background .12s, color .12s;}
+.lab-seg button:hover {color: var(--foreground);}
+.lab-seg button[aria-checked="true"] {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
+.lab-why {margin: 8px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted-foreground);}
+.lab-note {width: 100%; margin-top: 8px;}
+.lab-note::placeholder, .lab-all::placeholder {color: var(--placeholder);}
+.lab-all {display: block; width: 100%; height: 72px; margin-top: 8px; padding: 9px 12px; resize: vertical;}
+.lab-foot {position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--background); border-top: 1px solid var(--hairline);}
+.lab-foot small {flex: 1; font-size: 12.5px; color: var(--muted-foreground);}

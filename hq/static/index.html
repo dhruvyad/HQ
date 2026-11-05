@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="hq-token" content="__HQ_TOKEN__">
+  <meta name="color-scheme" content="dark">
+  <title>HQ</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preload" href="/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/instrument-serif-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar" aria-label="HQ"></aside>
+    <main class="main" id="main"></main>
+    <aside class="detail" id="detail" aria-labelledby="detail-title" hidden></aside>
+  </div>
+  <div class="scrim" id="scrim"></div>
+  <dialog id="dialog"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

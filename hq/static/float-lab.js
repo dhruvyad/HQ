@@ -1,0 +1,167 @@
+// The design lab for the floating panel, after NoClick's DashboardLab: a bench of presets
+// and axes, with the real native panel as the stage. Flip an axis and the real window
+// changes now, so drag, focus and always-on-top are never simulated. Every pick and note
+// goes back as one batch. To run a new round, edit AXES and the matching `feel` in float.js.
+const AXES = [
+  {id: 'layout', ask: 'Which way does the pill run?', options: [
+    {value: 'auto', label: 'Depends where it sits', why: 'Up and down at the sides and corners, side to side when centered on an edge.', default: true},
+    {value: 'vertical', label: 'Always up and down', why: 'Your sketch, everywhere.'},
+    {value: 'horizontal', label: 'Always side to side', why: 'Fits along a title bar, but has no room for labels.'},
+  ]},
+  {id: 'size', ask: 'How big are the circles?', options: [
+    {value: 24, label: '24', why: 'Quietest. Three digits get tight.'},
+    {value: 28, label: '28', why: 'Readable at a glance, still narrow.', default: true},
+    {value: 32, label: '32', why: 'Easiest to read and grab, most present.'},
+  ]},
+  {id: 'style', ask: 'How do the circles look?', options: [
+    {value: 'attention', label: 'White when something needs you', why: 'The count you act on stands out from the rest.', default: true},
+    {value: 'outline', label: 'All outlines', why: 'Closest to your sketch, and calmest. Nothing pulls your eye.'},
+  ]},
+  {id: 'labels', ask: 'What happens when you hover the pill?', options: [
+    {value: 'spotlight', label: 'Spotlight', why: 'The circle under your cursor steps forward with its label, and the others step back.', default: true},
+    {value: 'none', label: 'Nothing', why: 'You know your own order, so nothing moves.'},
+  ]},
+  {id: 'targets', ask: 'Where can you drop it?', options: [
+    {value: 'all', label: 'Eight places', why: 'Corners, edge centers, top and bottom.', default: true},
+    {value: 'flow', label: 'OpenFlow’s, plus top left', why: 'Bottom, left and right, plus the top left you asked for.'},
+    {value: 'corners', label: 'Corners only', why: 'Fewest choices, and never over the middle of a window.'},
+  ]},
+  {id: 'ghost', ask: 'What follows the cursor while dragging?', options: [
+    {value: 'pill', label: 'The pill', why: 'Feels like picking it up.', default: true},
+    {value: 'outline', label: 'An outline', why: 'Lets you see what is under it.'},
+  ]},
+  {id: 'backdrop', ask: 'Dim the screen while dragging?', options: [
+    {value: 'dim', label: 'Dim', why: 'As OpenFlow does. Targets stand out on any wallpaper.', default: true},
+    {value: 'none', label: 'No dim', why: 'Less of an event for a small move.'},
+  ]},
+  {id: 'glide', ask: 'How long does it glide into place?', options: [
+    {value: 180, label: '180 ms', why: 'Snappy.'},
+    {value: 300, label: '300 ms', why: 'OpenFlow’s timing.', default: true},
+    {value: 450, label: '450 ms', why: 'Deliberate, and starts to feel slow.'},
+  ]},
+  {id: 'threshold', ask: 'How far before a click becomes a drag?', options: [
+    {value: 3, label: '3 px', why: 'Drag starts instantly; a shaky click may move it.'},
+    {value: 5, label: '5 px', why: 'OpenFlow’s threshold.', default: true},
+    {value: 8, label: '8 px', why: 'Safest for clicks; drag starts a beat late.'},
+  ]},
+  {id: 'order', ask: 'What order is the list in?', options: [
+    {value: 'lead', label: 'Pinned and due first, then newest', why: 'Latest, without burying what is urgent.', default: true},
+    {value: 'newest', label: 'Newest only', why: 'A plain feed. Pinned and due items can sink.'},
+    {value: 'urgent', label: 'Most urgent', why: 'The dashboard’s order, by the rank agents assign.'},
+  ]},
+  {id: 'away', ask: 'What happens when you click somewhere else?', options: [
+    {value: 'collapse', label: 'The list closes', why: 'Behaves like a menu. An open item always stays.', default: true},
+    {value: 'stay', label: 'The list stays', why: 'Stays open until you close it, and stays over your work.'},
+  ]},
+  {id: 'after', ask: 'After you answer an item?', options: [
+    {value: 'next', label: 'Next item', why: 'Fastest through a pile. Delivery shows only as a toast.', default: true},
+    {value: 'list', label: 'Back to the list', why: 'You choose what to do next.'},
+    {value: 'stay', label: 'Stay on it', why: 'Shows the delivery state, as the dashboard does.'},
+  ]},
+  {id: 'hold', ask: 'How long does a notification stay?', options: [
+    {value: 3000, label: '3 seconds', why: 'Out of your way fast. Hovering holds it open either way.'},
+    {value: 4000, label: '4 seconds', why: 'Time to read a title and a line.', default: true},
+    {value: 6000, label: '6 seconds', why: 'Hard to miss, and more in the way.'},
+  ]},
+  {id: 'width', ask: 'How wide is the expanded item?', options: [
+    {value: 420, label: '420', why: 'Covers less of your screen.'},
+    {value: 480, label: '480', why: 'Close to the dashboard’s 500 px pane.', default: true},
+    {value: 560, label: '560', why: 'Longer lines; fewer scrolls.'},
+  ]},
+  // Sample data, not a decision, so it stays out of the picks.
+  {id: 'show', fixture: true, ask: 'Try it with how many items?', options: [
+    {value: 100000, label: 'Many', why: 'A long list that scrolls.', default: true},
+    {value: 3, label: 'A few', why: 'A short list that hugs its rows.'},
+    {value: 0, label: 'None', why: 'The empty state.'},
+  ]},
+];
+// Samples of each kind of notification, so each can be tried on the real window.
+const NOTICES = {
+  'Item added': {group: 'items', metric: 'needs', delta: 1, plural: 'new items', title: 'Choose the launch date', sub: 'New decision · Harbor'},
+  'Item removed': {group: 'items', metric: 'needs', delta: -1, plural: 'items cleared', title: 'Sign the vendor renewal', sub: 'Done · Lantern'},
+  'Agent started': {group: 'agents', metric: 'agents', delta: 1, plural: 'agents started', title: 'Support triage started', sub: 'Claude Code', dot: 'on'},
+  'Agent stopped': {group: 'agents', metric: 'agents', delta: -1, plural: 'agents stopped', title: 'Support triage stopped', sub: 'Claude Code', dot: 'off'},
+  'Usage low': {group: 'usage', metric: 'codex', delta: -9, plural: 'limits running low', title: 'Codex is nearly out', sub: '9% of the weekly limit left', dot: 'bad'},
+};
+const LAB_SESSION = 'lab:fixtures'; // floating.py seeds it; the lab has no other conversation.
+const PRESETS = [
+  {name: 'Recommended', why: 'Each axis at its starting point.', set: {}},
+  {name: 'OpenFlow feel', why: 'Same drag as the flow bar, with the top left added.', set: {targets: 'flow', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5}},
+  {name: 'Quiet', why: 'Least on your screen, least motion.', set: {size: 24, style: 'outline', labels: 'none', targets: 'corners', backdrop: 'none', glide: 180, hold: 3000}},
+  {name: 'Fast triage', why: 'Tells you what is new and keeps you moving.', set: {order: 'newest', after: 'next', width: 420}},
+];
+
+const defaults = () => Object.fromEntries(AXES.map((a) => [a.id, a.options.find((o) => o.default).value]));
+const presetValues = (preset) => ({...defaults(), ...preset.set});
+const optionOf = (axis, value) => axis.options.find((o) => o.value === value);
+function picksText(picked, notes, overall) {
+  const base = defaults(), lines = ['Floating window lab picks'];
+  for (const axis of AXES.filter((a) => !a.fixture)) {
+    const choice = optionOf(axis, picked[axis.id]), note = (notes[axis.id] || '').trim();
+    lines.push(`- ${axis.ask} ${choice.label}${picked[axis.id] === base[axis.id] ? '' : ' (changed)'}${note ? `. Note: ${note}` : ''}`);
+  }
+  if (overall.trim()) lines.push('', `Overall: ${overall.trim()}`);
+  return lines.join('\n');
+}
+
+function bootLab() {
+  const native = (message) => window.webkit?.messageHandlers?.hq?.postMessage(message);
+  const token = document.querySelector('meta[name="hq-token"]').content;
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
+  const api = (path, body) => fetch(`/api/${path}`, {method: 'POST', headers: {'X-HQ-Token': token, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const picked = defaults(), notes = {};
+  let overall = '';
+  const send = (id) => native({type: 'feel', key: id, value: picked[id]});
+  const changed = () => AXES.filter((a) => !a.fixture && picked[a.id] !== defaults()[a.id]).length;
+  function paint() {
+    const live = document.activeElement;
+    const focus = live?.dataset?.note, caret = live?.selectionStart;
+    document.getElementById('lab').innerHTML = `<h1>Floating window lab</h1>
+      <p class="lab-sub">Flip anything here and the real window changes now. Drag it, click it, answer things. This is sample data, so nothing reaches a real agent.</p>
+      <div class="lab-group">Presets</div>
+      <div class="lab-presets">${PRESETS.map((p, n) => `<button class="lab-preset" data-preset="${n}" aria-pressed="${AXES.every((a) => a.fixture || presetValues(p)[a.id] === picked[a.id])}"><strong>${esc(p.name)}</strong><span>${esc(p.why)}</span></button>`).join('')}</div>
+      <div class="lab-group">One at a time</div>
+      ${AXES.map((a) => `<section class="lab-axis"><div class="lab-q">${esc(a.ask)}</div>
+        <div class="lab-seg" role="radiogroup" aria-label="${esc(a.ask)}">${a.options.map((o) => `<button role="radio" data-axis="${a.id}" data-value="${esc(JSON.stringify(o.value))}" aria-checked="${o.value === picked[a.id]}">${esc(o.label)}</button>`).join('')}</div>
+        <p class="lab-why">${esc(optionOf(a, picked[a.id]).why)}</p>
+        ${a.fixture ? '' : `<input class="field lab-note" data-note="${a.id}" placeholder="Note (optional)" aria-label="Note on: ${esc(a.ask)}" value="${esc(notes[a.id] || '')}">`}</section>`).join('')}
+      <div class="lab-group">Try a notification</div>
+      <div class="lab-seg">${Object.keys(NOTICES).map((name) => `<button type="button" data-notice="${name}">${esc(name)}</button>`).join('')}</div>
+      <button class="pill outline sm lab-arrive" id="lab-arrive" type="button">Add a real item</button>
+      <div class="lab-group">Anything else</div>
+      <textarea class="field lab-all" id="lab-all" placeholder="Overall notes for this round">${esc(overall)}</textarea>`;
+    document.getElementById('lab-count').textContent = changed() ? `${changed()} changed from the starting point` : 'All at the starting point';
+    if (focus) {
+      const el = document.querySelector(`[data-note="${focus}"]`);
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    }
+  }
+  document.addEventListener('click', async (e) => {
+    const option = e.target.closest('[data-axis]'), preset = e.target.closest('[data-preset]'), sample = e.target.closest('[data-notice]');
+    if (sample) return native({type: 'notice', event: NOTICES[sample.dataset.notice]});
+    if (option) {
+      picked[option.dataset.axis] = JSON.parse(option.dataset.value);
+      send(option.dataset.axis);
+      paint();
+    } else if (preset) {
+      const values = presetValues(PRESETS[Number(preset.dataset.preset)]);
+      for (const a of AXES.filter((x) => !x.fixture)) {
+        picked[a.id] = values[a.id];
+        send(a.id);
+      }
+      paint();
+    } else if (e.target.closest('#lab-arrive')) {
+      await api('items', {session_id: LAB_SESSION, title: `New decision at ${new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`, kind: 'question', owner: 'human', options: ['Yes', 'No']});
+    } else if (e.target.closest('#lab-send')) {
+      native({type: 'picks', text: picksText(picked, notes, overall)});
+    }
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.dataset?.note) notes[e.target.dataset.note] = e.target.value;
+    if (e.target.id === 'lab-all') overall = e.target.value;
+  });
+  paint();
+  for (const a of AXES) send(a.id);
+}
+bootLab();
