@@ -17,9 +17,9 @@ const AXES = [
     {value: 'attention', label: 'White when something needs you', why: 'The count you act on stands out from the rest.', default: true},
     {value: 'outline', label: 'All outlines', why: 'Closest to your sketch, and calmest. Nothing pulls your eye.'},
   ]},
-  {id: 'labels', ask: 'How do you tell the circles apart?', options: [
-    {value: 'hover', label: 'Labels on hover', why: 'Hover and each circle says what it is. Not available on a centered pill.', default: true},
-    {value: 'none', label: 'No labels', why: 'You know your own order, so nothing ever changes size.'},
+  {id: 'labels', ask: 'What happens when you hover the pill?', options: [
+    {value: 'spotlight', label: 'Spotlight', why: 'The circle under your cursor steps forward with its label, and the others step back.', default: true},
+    {value: 'none', label: 'Nothing', why: 'You know your own order, so nothing moves.'},
   ]},
   {id: 'targets', ask: 'Where can you drop it?', options: [
     {value: 'all', label: 'Eight places', why: 'Corners, edge centers, top and bottom.', default: true},

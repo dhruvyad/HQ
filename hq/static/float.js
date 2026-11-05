@@ -4,7 +4,7 @@
 const native = (message) => window.webkit?.messageHandlers?.hq?.postMessage(message);
 
 // Every open design decision, so `hq float lab` can flip each one live (float-lab.js).
-const feel = {layout: 'auto', size: 28, style: 'attention', labels: 'hover', targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', hold: 4000, width: 480, show: 100000};
+const feel = {layout: 'auto', size: 28, style: 'attention', labels: 'spotlight', targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', hold: 4000, width: 480, show: 100000};
 
 // Where the pill can live: [across, down], each the start, center or end of the free screen.
 const DOCKS = {
@@ -16,11 +16,13 @@ const TARGETS = {all: Object.keys(DOCKS), flow: ['top-left', 'left', 'right', 'b
 const DEFAULT_DOCK = 'top-left';
 const EDGE = 10, BOTTOM_EDGE = 4;
 const LIST_WIDTH = 380, LIST_MAX = 520, SETTINGS_MAX = 840, ITEM_MIN = 240, ITEM_MAX = 760;
-const LABEL_AFTER = 180, LABEL_FOLD = 320, CONTROLS = 'button, a, input, textarea, select, summary';
+const CONTROLS = 'button, a, input, textarea, select, summary';
 // The window around the pill stays this size, with room for its shadow, so the capsule can
 // spring and morph on the compositor. Resizing a window mid-animation can only stutter.
 const STAGE = {width: 420, height: 270}, MARGIN = 32, PILL_CHROME = 10;
 const CARD = {width: 308, height: 62};
+// The open box sits beside the pill, which stays put so answered items can fly home to it.
+const GAP = 8, STACK = 22, BOX_MAX = 840, FOLD_MS = 620, FLY_MS = 560;
 const BURST_WINDOW = 350, FOLD_FOR = 640, ROLL_AFTER = 260, HOLD_TICK = 100;
 // Agents flip between busy and idle on every turn, so a change has to hold before it is news.
 const AGENT_START_HOLD = 3, AGENT_STOP_HOLD = 8;
@@ -50,7 +52,10 @@ function readUsage(name, title) {
     tag: `${tight.left}% of ${title}'s ${tight.name} limit left${resets}${stale ? ` (as of ${ago(usage.as_of)})` : ''}`};
 }
 const METRICS = {
-  needs: {name: 'Items that need you', read: (items) => ({value: items.length, loud: items.length > 0, tag: `${items.length} ${items.length === 1 ? 'needs' : 'need'} you`})},
+  needs: {name: 'Items that need you', read: (items) => {
+    const n = items.length + flying;
+    return {value: n, loud: n > 0, tag: `${n} ${n === 1 ? 'needs' : 'need'} you`};
+  }},
   decisions: {name: 'Decisions waiting', read: (items) => {
     const n = items.filter((i) => i.kind === 'question' && i.lane === 'you').length;
     return {value: n, tag: plural(n, 'decision waiting', 'decisions waiting')};
@@ -87,7 +92,8 @@ function moveCircle(list, id, delta) {
 }
 
 let floatOpen = false, dock = DEFAULT_DOCK, display = null, drag = null, placed = '';
-let swallowClick = false, customizing = false, hovering = false, labelsOpen = false, circles = [...DEFAULT_CIRCLES];
+let swallowClick = false, customizing = false, hovering = false, circles = [...DEFAULT_CIRCLES];
+let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
 let lastItems = null, lastUsage = null, pending = [], notice = null;
 const agentMemory = new Map();
@@ -195,10 +201,58 @@ function dockRect(requested, size, area) {
   const y = down === 'start' ? area.y + EDGE : down === 'center' ? area.y + (area.height - height) / 2 : area.y + area.height - height - BOTTOM_EDGE;
   return {x: Math.round(x), y: Math.round(y), width, height};
 }
-function windowFor(name, surface, area, room = surface) {
-  const inner = dockRect(name, room, area), shown = dockRect(name, surface, area);
-  return {x: inner.x - MARGIN, y: inner.y - MARGIN, width: inner.width + 2 * MARGIN, height: inner.height + 2 * MARGIN,
-    hit: {x: shown.x - inner.x + MARGIN, y: shown.y - inner.y + MARGIN, width: shown.width, height: shown.height}};
+function unionRect(a, b) {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return {x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y};
+}
+const inflate = (r, m = MARGIN) => ({x: r.x - m, y: r.y - m, width: r.width + 2 * m, height: r.height + 2 * m});
+const localRect = (r, room) => ({x: r.x - room.x, y: r.y - room.y, width: r.width, height: r.height});
+const clamp = (v, low, high) => Math.max(low, Math.min(high, v));
+// Beside the pill and away from the screen edge; above or below it when it lies along an edge.
+function boxRect(requested, pill, size, area) {
+  const [across, down] = DOCKS[requested] || DOCKS[DEFAULT_DOCK];
+  const width = Math.min(size.width, area.width - 2 * EDGE), height = Math.min(size.height, area.height - EDGE - BOTTOM_EDGE);
+  let x, y;
+  if (across === 'center') {
+    x = pill.x + pill.width / 2 - width / 2;
+    y = down === 'end' ? pill.y - GAP - height : pill.y + pill.height + GAP;
+  } else {
+    x = across === 'start' ? pill.x + pill.width + GAP : pill.x - GAP - width;
+    y = down === 'start' ? pill.y : down === 'end' ? pill.y + pill.height - height : pill.y + pill.height / 2 - height / 2;
+  }
+  x = clamp(x, area.x + EDGE, area.x + area.width - EDGE - width);
+  y = clamp(y, area.y + EDGE, area.y + area.height - BOTTOM_EDGE - height);
+  return {x: Math.round(x), y: Math.round(y), width, height};
+}
+// Room for everything the pill can become at this dock, plus margin for shadows.
+function roomFor(name, rest, area, wide = Math.max(LIST_WIDTH, feel.width)) {
+  const stage = dockRect(name, STAGE, area), most = boxRect(name, rest, {width: wide, height: BOX_MAX}, area);
+  return inflate(unionRect(unionRect(stage, rest), most));
+}
+// How the panel should move between two moments.
+function motionKind(fromMode, toMode, fromItem, toItem, order = [], answered = false) {
+  if (fromMode === 'pill' && toMode !== 'pill') return 'open';
+  if (fromMode !== 'pill' && toMode === 'pill') return 'close';
+  if (fromMode !== 'item' && toMode === 'item') return 'deal';
+  if (fromMode === 'item' && toMode !== 'item') return 'gather';
+  if (toMode !== 'item' || fromItem === toItem) return 'none';
+  if (answered) return 'answered';
+  const a = order.indexOf(fromItem), b = order.indexOf(toItem);
+  return a >= 0 && b >= 0 && b < a ? 'prev' : 'next';
+}
+// Which way the spotlight label opens from the pill.
+function spotSide(name, layout = layoutFor(name)) {
+  if (layout === 'vertical') return labelSide(name, 'vertical') === 'left' ? 'left' : 'right';
+  return (DOCKS[name] || DOCKS[DEFAULT_DOCK])[1] === 'end' ? 'above' : 'below';
+}
+// The circle nearest the cursor, measured along the pill.
+function nearestCircle(centers, x, y, vertical) {
+  let best = -1, closest = Infinity;
+  centers.forEach((c, n) => {
+    const d = Math.abs(vertical ? y - c.y : x - c.x);
+    if (d < closest) {closest = d; best = n;}
+  });
+  return best;
 }
 function nearestDock(x, y, rects) {
   let best = null, closest = Infinity;
@@ -237,10 +291,10 @@ function attention(items = model.items) {
 const surfaceMode = (open, item, customize = false) => (!open ? 'pill' : customize ? 'settings' : item ? 'item' : 'list');
 // Labels open away from the screen edge, so the circles under your cursor never move.
 // A centered pill would shift as it grew, and a sideways one has no room for them.
-const labelSide = (name, layout = layoutFor(name)) => {
+function labelSide(name, layout = layoutFor(name)) {
   if (layout !== 'vertical') return 'none';
   return {start: 'right', center: 'none', end: 'left'}[(DOCKS[name] || DOCKS[DEFAULT_DOCK])[0]];
-};
+}
 // Where to go after acting on an item: null is the list, undefined means stay.
 function afterAct(after, next, replied) {
   if (after === 'stay' && replied) return undefined;
@@ -304,10 +358,16 @@ function paintFloat({background = false} = {}) {
   model = derive();
   if (snapshotSignature && route.item && !model.items.some((i) => i.id === route.item)) route.item = null;
   const items = attention(), live = liveHealthy || !snapshotSignature;
+  holdAnswered(items);
   noteChanges(items);
+  const mode = surfaceMode(floatOpen, route.item, customizing);
+  const kind = motionKind(lastMode, mode, lastItem, route.item, visibleIds(), flown);
+  flown = false;
+  const outgoing = (kind === 'next' || kind === 'prev') && !$('#detail').hidden ? keepCard() : null;
   const scrolls = ['.f-rows', '.d-body'].map((sel) => [sel, document.querySelector(sel)?.scrollTop]);
   const pill = $('#pill');
   setHTML($('#rail'), pillHTML(items, live));
+  rollChanged(items);
   pill.setAttribute('aria-label', pillLabel(items, live));
   pill.title = 'Click to open. Drag to move. Right-click for more.';
   setHTML($('#main'), customizing ? settingsHTML(items) : floatListHTML(items, live));
@@ -315,11 +375,17 @@ function paintFloat({background = false} = {}) {
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
   if (!(background && detail.contains(active) && active.matches('textarea, input, select'))) renderDetail();
   scrolls.forEach(([sel, top]) => top && document.querySelector(sel) && (document.querySelector(sel).scrollTop = top));
-  document.body.dataset.mode = surfaceMode(floatOpen, route.item, customizing);
-  document.documentElement.style.setProperty('--f-width', `${route.item && !customizing ? feel.width : LIST_WIDTH}px`);
-  syncLabels();
+  document.body.dataset.mode = mode;
+  // Content keeps its final width while the box springs, so it never reflows mid-motion.
+  document.documentElement.style.setProperty('--f-content', `${mode === 'item' ? feel.width : LIST_WIDTH}px`);
+  $('#box').classList.toggle('bare', mode === 'item');
+  stackBehind(mode);
+  syncPill();
   if (route.item && !detail.hidden) bindDetail(detail);
   layout();
+  moveDeck(kind, outgoing);
+  lastMode = mode;
+  lastItem = route.item;
 }
 function noteChanges(items) {
   if (!snapshotSignature) return;
@@ -353,7 +419,7 @@ function runNotice() {
   $('#hero').innerHTML = heroHTML(reading, notice.from);
   $('#note').innerHTML = `<span class="f-note-title">${event.dot ? `<span class="f-dot ${esc(event.dot)}"></span>` : ''}${esc(event.title)}</span><span class="f-note-sub">${esc(event.sub)}</span>`;
   $('#pill').classList.add('noting');
-  syncLabels();
+  syncPill();
   layout();
   notice.roll = setTimeout(() => rollHero(reading.value), ROLL_AFTER);
   // Hovering holds the card open, since you are reading it.
@@ -385,7 +451,7 @@ function foldNotice() {
   clearTimeout(notice.roll);
   notice.folding = true;
   $('#pill').classList.remove('noting');
-  sizePill();
+  layout();
   notice.done = setTimeout(() => {
     notice = null;
     $('#hero').innerHTML = '';
@@ -414,26 +480,22 @@ function pillSize() {
   return layoutFor(dock) === 'horizontal' ? {width: rail.offsetWidth + PILL_CHROME, height: feel.size + PILL_CHROME}
     : {width: feel.size + PILL_CHROME, height: rail.offsetHeight + PILL_CHROME};
 }
-function capsuleTarget() {
-  if (notice && !notice.folding) return CARD;
-  if (labelsOpen) return {width: $('#rail').offsetWidth + PILL_CHROME, height: $('#rail').offsetHeight + PILL_CHROME};
-  return pillSize();
+function setRect(el, r) {
+  Object.assign(el.style, {left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px`});
 }
-function sizePill() {
-  const pill = $('#pill'), size = capsuleTarget();
-  pill.style.width = `${size.width}px`;
-  pill.style.height = `${size.height}px`;
-}
-function surfaceSize() {
-  const mode = document.body.dataset.mode;
-  if (mode === 'pill') return capsuleTarget();
+function boxSize(mode = document.body.dataset.mode) {
   if (mode === 'list' || mode === 'settings') {
     const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
     return {width: LIST_WIDTH, height: Math.min(mode === 'settings' ? SETTINGS_MAX : LIST_MAX, head + rows + 2)};
   }
   const last = $('.d-body')?.lastElementChild;
   const natural = last ? last.offsetTop + last.offsetHeight + 28 : ITEM_MIN;
-  return {width: feel.width, height: Math.max(ITEM_MIN, Math.min(ITEM_MAX, natural + 2))};
+  return {width: feel.width, height: Math.max(ITEM_MIN, Math.min(ITEM_MAX, natural + 2)) + STACK};
+}
+function geometry(mode = document.body.dataset.mode) {
+  const area = display.visible, rest = dockRect(dock, pillSize(), area);
+  const pill = mode === 'pill' && notice && !notice.folding ? dockRect(dock, CARD, area) : rest;
+  return {room: roomFor(dock, rest, area), rest, pill, box: mode === 'pill' ? null : boxRect(dock, rest, boxSize(mode), area)};
 }
 function placeWindow(rect, flags) {
   const message = {type: 'place', ...rect, ...flags}, signature = JSON.stringify(message);
@@ -443,9 +505,37 @@ function placeWindow(rect, flags) {
 }
 function layout() {
   if (drag || !display || (!snapshotSignature && !layout.ready)) return;
+  const mode = document.body.dataset.mode, box = $('#box');
+  // A hidden box measures as nothing, so show it before asking how big its content is.
+  const unfolding = mode !== 'pill' && (box.hidden || box.classList.contains('closing'));
+  if (unfolding) {
+    clearTimeout(layout.closing);
+    box.classList.remove('closing');
+    box.classList.add('instant');
+    box.hidden = false;
+  }
+  const g = geometry(mode), pill = localRect(g.pill, g.room), rest = localRect(g.rest, g.room);
+  setRect($('#pill'), pill);
   document.documentElement.style.setProperty('--f-origin', growFrom(dock));
-  const mode = document.body.dataset.mode, surface = surfaceSize();
-  placeWindow(windowFor(dock, surface, display.visible, mode === 'pill' ? STAGE : surface), {key: mode !== 'pill', shadow: false});
+  if (g.box) {
+    // Fold's springs: the box grows out of the pill and settles beside it.
+    if (unfolding) {
+      setRect(box, rest);
+      box.getBoundingClientRect();
+      box.classList.remove('instant');
+      box.classList.add('opening');
+      clearTimeout(layout.opened);
+      layout.opened = setTimeout(() => box.classList.remove('opening'), FOLD_MS);
+    }
+    setRect(box, localRect(g.box, g.room));
+  } else if (!box.hidden && !box.classList.contains('closing')) {
+    box.classList.add('closing');
+    setRect(box, rest);
+    layout.closing = setTimeout(() => {box.hidden = true; box.classList.remove('closing');}, FOLD_MS);
+  }
+  if (spot.on) placeSpot();
+  const hits = [pill, g.box && localRect(g.box, g.room)].filter(Boolean);
+  placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key: mode !== 'pill', shadow: false});
 }
 function layoutSoon() {
   if (layoutSoon.pending) return;
@@ -458,19 +548,162 @@ function setOpen(open) {
   if (!open) customizing = false;
   render();
 }
-function syncLabels() {
-  const show = hovering && feel.labels === 'hover' && !drag && !notice && document.body.dataset.mode === 'pill' && labelSide(dock) !== 'none';
+function syncPill() {
   const [across, down] = DOCKS[dock] || DOCKS[DEFAULT_DOCK], body = document.body;
   body.dataset.side = labelSide(dock);
   body.dataset.across = across;
   body.dataset.down = down;
   $('#pill').dataset.layout = layoutFor(dock);
-  clearTimeout(syncLabels.fold);
-  labelsOpen = show;
-  if (show) body.toggleAttribute('data-labels', true);
-  // The capsule closes over the words first, so they are never seen to vanish.
-  else if (body.hasAttribute('data-labels')) syncLabels.fold = setTimeout(() => body.removeAttribute('data-labels'), LABEL_FOLD);
-  sizePill();
+  if (spot.on) markSpot();
+}
+
+// Deck: items are cards in a stack. Next lifts the top card away, previous slides it back on.
+const DEPTH = ['none', 'translateY(10px) scale(.96)', 'translateY(20px) scale(.92)'];
+function stackBehind(mode) {
+  const ids = visibleIds(), at = ids.indexOf(route.item), left = mode === 'item' && at >= 0 ? ids.length - at - 1 : 0;
+  document.querySelectorAll('.f-back').forEach((card) => {card.hidden = Number(card.dataset.depth) > left;});
+}
+function keepCard() {
+  const copy = $('#detail').cloneNode(true);
+  copy.removeAttribute('id');
+  copy.removeAttribute('aria-labelledby');
+  copy.classList.add('f-leaving');
+  copy.inert = true;
+  copy.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+  return copy;
+}
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function spring(name) {return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || 'ease';}
+function moveDeck(kind, outgoing) {
+  if (calm()) return outgoing?.remove();
+  const card = $('#detail'), soft = spring('--f-soft');
+  if (kind === 'deal') {
+    card.animate([{transform: 'translateY(34px) scale(.97)', opacity: 0}, {transform: 'none', opacity: 1}], {duration: 500, easing: soft, delay: 90, fill: 'backwards'});
+    document.querySelectorAll('.f-back:not([hidden])').forEach((back) => back.animate(
+      [{transform: `translateY(${34 + back.dataset.depth * 10}px) scale(.97)`, opacity: 0}, {transform: DEPTH[back.dataset.depth], opacity: 1}],
+      {duration: 500, easing: soft, delay: 90 + back.dataset.depth * 45, fill: 'backwards'}));
+  } else if (kind === 'gather') {
+    $('#main').animate([{transform: 'translateY(-10px)', opacity: 0}, {transform: 'none', opacity: 1}], {duration: 360, easing: soft});
+  } else if (kind === 'answered') {
+    card.animate([{transform: 'translateY(14px)', opacity: 0}, {transform: 'none', opacity: 1}], {duration: 460, easing: soft, delay: 130, fill: 'backwards'});
+  } else if (kind === 'next' || kind === 'prev') {
+    if (outgoing) {
+      $('#box').append(outgoing);
+      const away = kind === 'next'
+        ? [{transform: 'none', opacity: 1}, {transform: 'translate(-12px, -58px) rotate(-5deg) scale(.98)', opacity: 0}]
+        : [{transform: 'none', opacity: 1}, {transform: DEPTH[1], opacity: 0}];
+      outgoing.animate(away, {duration: kind === 'next' ? 360 : 220, easing: kind === 'next' ? 'cubic-bezier(.3,.7,.3,1)' : 'ease-out', fill: 'forwards'}).onfinish = () => outgoing.remove();
+    }
+    const arrive = kind === 'next' ? [{transform: DEPTH[1], opacity: 0.8}, {transform: 'none', opacity: 1}]
+      : [{transform: 'translate(10px, -54px) rotate(4deg)', opacity: 0}, {transform: 'none', opacity: 1}];
+    card.animate(arrive, {duration: 480, easing: soft});
+  }
+}
+
+// Fly home: an answered card flies into the needs-you circle, and the count drops when it lands.
+// The count holds from the moment the item leaves the list, so it never drops early.
+function holdAnswered(items) {
+  const answered = floatOpen && route.item && lastShown?.includes(route.item) && !items.some((i) => i.id === route.item);
+  lastShown = items.map((i) => i.id);
+  if (!answered || holding) return;
+  holding = route.item;
+  flying += 1;
+  // If nothing moves on, such as Stay after answering, let the count settle anyway.
+  holdAnswered.timer = setTimeout(() => {if (holding) land();}, 1500);
+}
+function flyHome() {
+  if (!holding) return;
+  clearTimeout(holdAnswered.timer);
+  const card = $('#detail'), circle = $('#rail [data-metric="needs"] .f-circle') || $('#pill');
+  if (card.hidden || calm()) return land();
+  const from = card.getBoundingClientRect(), to = circle.getBoundingClientRect();
+  const outer = document.createElement('div'), inner = document.createElement('div');
+  outer.className = 'f-flight';
+  inner.className = 'f-flight-card';
+  Object.assign(inner.style, {width: `${from.width}px`, height: `${from.height}px`});
+  inner.append(keepCard());
+  outer.append(inner);
+  document.body.append(outer);
+  const dx = to.left + to.width / 2 - (from.left + from.width / 2), dy = to.top + to.height / 2 - (from.top + from.height / 2);
+  const fit = Math.max(to.width / from.width, to.height / from.height);
+  // Different easing on each axis bends the path into an arc.
+  outer.animate([{transform: `translate(${from.left}px, ${from.top}px)`}, {transform: `translate(${from.left + dx}px, ${from.top}px)`}],
+    {duration: FLY_MS, easing: 'cubic-bezier(.45,0,.7,.4)', fill: 'forwards'});
+  const flight = inner.animate([{transform: 'translateY(0) scale(1)', borderRadius: '16px', opacity: 1},
+    {transform: `translateY(${dy}px) scale(${fit})`, borderRadius: `${from.width}px`, opacity: 0.85}],
+  {duration: FLY_MS, easing: 'cubic-bezier(.3,-.28,.5,.9)', fill: 'forwards'});
+  flight.onfinish = flight.oncancel = () => {outer.remove(); land();};
+}
+function land() {
+  clearTimeout(holdAnswered.timer);
+  holding = null;
+  flying = Math.max(0, flying - 1);
+  render();
+  const circle = $('#rail [data-metric="needs"] .f-circle');
+  if (!circle || calm()) return;
+  circle.animate([{transform: 'scale(1)'}, {transform: 'scale(1.26)'}, {transform: 'scale(1)'}], {duration: 460, easing: 'ease-out'});
+  const ripple = document.createElement('span');
+  ripple.className = 'f-ripple';
+  circle.append(ripple);
+  ripple.animate([{opacity: 0.7, transform: 'scale(.9)'}, {opacity: 0, transform: 'scale(2.1)'}], {duration: 620, easing: 'cubic-bezier(.16,1,.3,1)'}).onfinish = () => ripple.remove();
+}
+// Numbers roll rather than swap.
+function rollChanged(items) {
+  for (const id of circles) {
+    const value = METRICS[id].read(items).value, before = lastValues[id];
+    lastValues[id] = value;
+    if (before === undefined || before === null || value === null || value === before || calm()) continue;
+    const num = $(`#rail [data-metric="${id}"] .f-circle > span:last-child`);
+    num?.animate([{transform: `translateY(${value > before ? 60 : -60}%)`, opacity: 0}, {transform: 'none', opacity: 1}], {duration: 420, easing: spring('--f-soft')});
+  }
+}
+
+// Spotlight: the circle under the cursor steps forward with its label; the others step back.
+const spot = {on: false, index: -1};
+function markSpot() {
+  document.querySelectorAll('#rail .f-row[data-metric]').forEach((row, n) => {
+    row.classList.toggle('hot', spot.on && n === spot.index);
+    row.classList.toggle('dim', spot.on && n !== spot.index);
+  });
+}
+function placeSpot() {
+  const row = [...document.querySelectorAll('#rail .f-row[data-metric]')][spot.index], el = $('#spot');
+  if (!row) return;
+  const c = row.querySelector('.f-circle').getBoundingClientRect(), p = $('#pill').getBoundingClientRect();
+  const side = spotSide(dock), w = el.offsetWidth, h = el.offsetHeight;
+  const x = side === 'right' ? p.right + 6 : side === 'left' ? p.left - 6 - w : c.left + c.width / 2 - w / 2;
+  const y = side === 'above' ? p.top - 6 - h : side === 'below' ? p.bottom + 6 : c.top + c.height / 2 - h / 2;
+  el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+}
+function spotlight(x, y) {
+  if (feel.labels !== 'spotlight' || notice || drag) return hideSpot();
+  const rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
+  const centers = rows.map((row) => {
+    const r = row.querySelector('.f-circle').getBoundingClientRect();
+    return {x: r.left + r.width / 2, y: r.top + r.height / 2};
+  });
+  const index = nearestCircle(centers, x, y, layoutFor(dock) === 'vertical');
+  if (index < 0) return;
+  const el = $('#spot'), first = !spot.on;
+  if (index !== spot.index || first) {
+    spot.index = index;
+    const label = el.firstElementChild;
+    label.textContent = METRICS[rows[index].dataset.metric].read(attention()).tag;
+    el.classList.toggle('instant', first);
+    if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
+  }
+  spot.on = true;
+  el.classList.add('on');
+  markSpot();
+  placeSpot();
+  if (first) requestAnimationFrame(() => el.classList.remove('instant'));
+}
+function hideSpot() {
+  if (!spot.on) return;
+  spot.on = false;
+  spot.index = -1;
+  $('#spot').classList.remove('on');
+  markSpot();
 }
 function saveSettings() {
   native({type: 'settings', settings: {circles, notify, shortcuts}});
@@ -522,9 +755,7 @@ function armDrag(e) {
 }
 function beginDrag(e) {
   dropNotices();
-  // Measure the circles alone: the labels are not part of where the pill lands.
-  labelsOpen = false;
-  document.body.removeAttribute('data-labels');
+  hideSpot();
   drag = {phase: 'dragging', size: pillSize(), target: dock, rects: {}};
   swallowClick = true;
   document.body.dataset.drag = 'on';
@@ -542,7 +773,7 @@ function beginDrag(e) {
 function coverDisplay() {
   if (!display || !drag) return;
   const whole = {x: 0, y: 0, width: display.width, height: display.height};
-  placeWindow({...whole, hit: whole}, {key: true, shadow: false});
+  placeWindow({...whole, hit: whole, hits: [whole]}, {key: true, shadow: false});
   drag.rects = dockRects(drag.size, display.visible);
   const zones = $('#drag');
   zones.querySelectorAll('.f-drop').forEach((el) => el.remove());
@@ -606,7 +837,7 @@ function endDrag() {
   $('#drag').hidden = true;
   $('#ghost').classList.remove('gliding');
   native({type: 'drag', on: false});
-  syncLabels();
+  syncPill();
   layout();
 }
 
@@ -640,12 +871,12 @@ function receive(message) {
     render();
   } else if (message.type === 'notice') enqueue([message.event]);
   else if (message.type === 'hover') {
-    // A panel that is not key never gets :hover from WebKit, so the window reports it.
+    // A panel that is not key never gets :hover or mouse moves from WebKit, so the window reports both.
     document.body.toggleAttribute('data-hover', message.on);
     hovering = message.on;
-    clearTimeout(receive.label);
-    if (message.on) receive.label = setTimeout(syncLabels, LABEL_AFTER);
-    else syncLabels();
+    if (!message.on) hideSpot();
+  } else if (message.type === 'pointer') {
+    if (hovering) spotlight(message.x, message.y);
   } else if (message.type === 'feel' && message.key in feel) {
     feel[message.key] = message.value;
     applyFeel();
@@ -666,11 +897,15 @@ function bootFloat() {
   paint = paintFloat;
   moveOn = (next, replied) => {
     const target = afterAct(feel.after, next, replied);
-    if (target !== undefined) go({item: target});
+    if (target === undefined) return;
+    flyHome();
+    flown = true;
+    go({item: target});
   };
   window.hqFloat = {receive};
   document.documentElement.style.setProperty('--f-spring', springCurve({stiffness: 190, damping: 17}));
   document.documentElement.style.setProperty('--f-soft', springCurve({stiffness: 170, damping: 26}));
+  document.documentElement.style.setProperty('--f-hug', springCurve({stiffness: 240, damping: 26}));
   applyFeel();
   document.addEventListener('mousedown', (e) => {
     swallowClick = false;
@@ -690,6 +925,7 @@ function bootFloat() {
     const toggle = e.target.closest('[data-notify]'), record = e.target.closest('[data-record]');
     if (e.target.closest('#pill')) {
       const item = notice?.item;
+      if (floatOpen) return setOpen(false);
       setOpen(true);
       if (item && model.items.some((i) => i.id === item)) openItem(item);
     } else if (e.target.closest('[data-more]')) native({type: 'menu'});
@@ -726,7 +962,7 @@ function bootFloat() {
     native({type: 'menu'});
   });
   // The surface hugs its content, so anything that changes its size has to re-place the window.
-  new ResizeObserver(() => {sizePill(); layoutSoon();}).observe($('#rail'));
+  new ResizeObserver(layoutSoon).observe($('#rail'));
   new MutationObserver(layoutSoon).observe($('#box'), {childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'open', 'hidden']});
   document.addEventListener('input', layoutSoon);
   document.addEventListener('toggle', layoutSoon, true);

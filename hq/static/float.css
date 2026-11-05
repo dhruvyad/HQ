@@ -7,13 +7,7 @@ html.float, html.float body {height: 100%; background: transparent; overflow: hi
 .f-capsule {display: inline-flex; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
 .f-rail {display: flex; flex: none; flex-direction: column; gap: 4px; transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
 .f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
-.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); translate: var(--tx, 0) var(--ty, 0); transition: width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
-body[data-across="start"] .f-pill, body[data-across="start"] .f-box {left: var(--f-margin);}
-body[data-across="end"] .f-pill, body[data-across="end"] .f-box {right: var(--f-margin);}
-body[data-across="center"] .f-pill, body[data-across="center"] .f-box {left: 50%; --tx: -50%;}
-body[data-down="start"] .f-pill, body[data-down="start"] .f-box {top: var(--f-margin);}
-body[data-down="end"] .f-pill, body[data-down="end"] .f-box {bottom: var(--f-margin);}
-body[data-down="center"] .f-pill, body[data-down="center"] .f-box {top: 50%; --ty: -50%;}
+.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
 body[data-across="end"] .f-pill .f-rail {margin-left: auto;}
 body[data-across="center"] .f-pill .f-rail {margin-inline: auto;}
 body[data-down="end"] .f-pill .f-rail {margin-top: auto;}
@@ -23,10 +17,14 @@ body[data-down="center"] .f-pill .f-rail {margin-block: auto;}
 body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-offline {justify-content: center; min-height: 12px;}
 .f-tag {display: none; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: rgb(250 250 250 / 0.88);}
-body[data-labels] .f-pill .f-tag {display: inline;}
-body[data-labels] .f-pill .f-row {padding-inline: 0 8px;}
-body[data-labels][data-side="left"] .f-pill .f-row {padding-inline: 8px 0;}
-.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: background .15s, border-color .15s;}
+.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: opacity .2s ease, transform .45s var(--f-spring, ease), background .15s, border-color .15s;}
+/* Spotlight: the circle under the cursor steps forward, the others step back. */
+.f-row.dim .f-circle {opacity: .32; transform: scale(.9);}
+.f-row.hot .f-circle {transform: scale(1.08);}
+.f-spot {position: absolute; left: 0; top: 0; z-index: 30; display: flex; align-items: center; height: var(--f-size, 28px); padding: 0 12px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: 14px; box-shadow: 0 6px 22px rgb(0 0 0 / 0.35); font-size: 12.5px; white-space: nowrap; color: rgb(250 250 250 / 0.92); opacity: 0; pointer-events: none; transition: transform .5s var(--f-spring, ease), opacity .2s ease;}
+.f-spot.on {opacity: 1;}
+.f-spot.instant {transition: opacity .2s ease;}
+.f-ripple {position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--foreground); pointer-events: none;}
 body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
 .f-circle.wide {font-size: 10px; letter-spacing: -0.03em;}
 .f-circle.loud {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
@@ -61,14 +59,31 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-num b.from-above, .f-num b.to-above {transform: translateY(-100%); opacity: 0;}
 
 /* The box: one surface for the list and the expanded item. */
-.f-box {position: absolute; width: var(--f-width, 380px); height: calc(100% - 2 * var(--f-margin, 32px)); display: flex; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); translate: var(--tx, 0) var(--ty, 0); flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; transform-origin: var(--f-origin, left top); animation: f-open .18s cubic-bezier(.16,1,.3,1);}
+.f-box {position: absolute; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 26px rgb(0 0 0 / 0.42); transition: left .62s var(--f-spring, ease), top .62s var(--f-spring, ease), width .62s var(--f-spring, ease), height .56s var(--f-hug, ease), border-radius .4s ease, background .2s, border-color .2s, box-shadow .2s;}
+.f-box.instant {transition: none;}
+/* Fold's springs: the box grows out of the pill, its content arrives a beat later and leaves first. */
+.f-box.closing {border-radius: calc(var(--f-size, 28px) / 2 + 5px);}
+.f-box > * {transition: opacity .2s ease, filter .2s ease;}
+.f-box.opening > :not(.f-back) {animation: f-reveal .44s var(--f-soft, ease) .11s backwards;}
+.f-box.closing > * {opacity: 0; filter: blur(6px); transition-duration: .15s;}
+@keyframes f-reveal {from {opacity: 0; filter: blur(5px); transform: translateY(6px);}}
+/* Deck: in an item the box steps back and the cards carry the surface. */
+.f-box.bare {overflow: visible; background: transparent; border-color: transparent; box-shadow: none;}
+.f-box.bare > .f-list {visibility: hidden;}
+.f-back {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.12); border-radius: 16px; box-shadow: 0 8px 22px rgb(0 0 0 / 0.35); transform-origin: center bottom; transition: transform .5s var(--f-soft, ease), opacity .3s ease;}
+.f-back[data-depth="1"] {transform: translateY(10px) scale(.96); opacity: .8;}
+.f-back[data-depth="2"] {transform: translateY(20px) scale(.92); opacity: .55;}
+.f-box:not(.bare) .f-back {display: none;}
+.f-leaving {z-index: 5; pointer-events: none;}
+/* Fly home: an answered card arcs into the needs-you circle. */
+.f-flight {position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none;}
+.f-flight-card {position: relative; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 12px 34px rgb(0 0 0 / 0.45); transform-origin: center;}
+.f-flight-card > .detail {position: absolute; inset: 0; width: 100%; height: 100%; border: 0; box-shadow: none; transform: none;}
 @keyframes f-open {from {opacity: 0; transform: scale(.975);}}
-html.float body[data-mode="pill"] .f-box {display: none;}
-html.float body:not([data-mode="pill"]) .f-pill {visibility: hidden;}
 html.float body[data-mode="pill"] #toast {display: none;}
 html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast {visibility: hidden;}
 
-.f-list {display: flex; flex-direction: column; flex: 1; min-height: 0;}
+.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
 .f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
 .f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
 .f-count {margin-left: 8px; font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
@@ -105,7 +120,7 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 
 /* The dashboard's item pane, filling the box instead of the browser's right edge. */
 html.float .d-bar [data-step], html.float .d-bar [data-pin] {display: none;}
-html.float .detail {position: absolute; inset: 0; width: 100%; background: var(--sunken); border: 0; box-shadow: none;}
+html.float .detail {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 28px rgb(0 0 0 / 0.42); overflow: hidden; transform-origin: center bottom;}
 html.float .d-bar {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
 html.float .d-body {padding: 0 18px 24px;}
 html.float .d-title {font-size: 19px;}

@@ -100,9 +100,10 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     private var signals: [DispatchSourceSignal] = []
 
     // The window is larger than what it shows, so the page says which part catches the mouse.
-    private var hitRect: NSRect?
+    private var hitRects: [NSRect] = []
     private var hitTimer: Timer?
     private var pointerInside = false
+    private var lastPointer: NSPoint?
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var hotKeyActions: [UInt32: String] = [:]
@@ -372,7 +373,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         }
         panel.hasShadow = body["shadow"] as? Bool ?? false
         panel.setFrame(NSRect(x: f.minX + x, y: f.maxY - y - height, width: width, height: height), display: true)
-        setHitRect(body["hit"] as? [String: Any])
+        setHitRects(body["hits"] as? [[String: Any]] ?? (body["hit"] as? [String: Any]).map { [$0] } ?? [])
         refreshShadow()
         if !placed {
             placed = true
@@ -381,38 +382,47 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         setKey(body["key"] as? Bool ?? false)
     }
 
-    private func setHitRect(_ hit: [String: Any]?) {
-        guard let hit, let x = number(hit["x"]), let y = number(hit["y"]),
-              let width = number(hit["width"]), let height = number(hit["height"])
-        else {
-            hitRect = nil
+    private func setHitRects(_ hits: [[String: Any]]) {
+        hitRects = hits.compactMap { hit in
+            guard let x = number(hit["x"]), let y = number(hit["y"]),
+                  let width = number(hit["width"]), let height = number(hit["height"])
+            else { return nil }
+            return NSRect(x: x, y: y, width: width, height: height)
+        }
+        guard !hitRects.isEmpty else {
             panel.ignoresMouseEvents = false
             return
         }
-        hitRect = NSRect(x: x, y: y, width: width, height: height)
         checkPointer()
         guard hitTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.checkPointer() }
+        // About 30 a second: often enough for the spotlight to follow the cursor smoothly.
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.checkPointer() }
         RunLoop.main.add(timer, forMode: .common)
         hitTimer = timer
     }
 
     // macOS has no shaped hit area for a transparent window, so ask where the cursor is
     // and let clicks through everywhere else, as OpenFlow's status window does. This also
-    // reports hover: WebKit gives a panel that is not key neither :hover nor mouse moves.
+    // reports hover and the cursor: WebKit gives a panel that is not key neither :hover
+    // nor mouse moves.
     private func checkPointer() {
-        guard let hitRect, !dragging else {
+        guard !hitRects.isEmpty, !dragging else {
             panel.ignoresMouseEvents = false
             return
         }
         // A press that started inside stays ours, such as selecting text past the edge.
         guard NSEvent.pressedMouseButtons == 0 else { return }
         let mouse = NSEvent.mouseLocation, frame = panel.frame
-        let inside = hitRect.contains(NSPoint(x: mouse.x - frame.minX, y: frame.maxY - mouse.y))
+        let local = NSPoint(x: mouse.x - frame.minX, y: frame.maxY - mouse.y)
+        let inside = hitRects.contains { $0.contains(local) }
         panel.ignoresMouseEvents = !inside
-        guard inside != pointerInside else { return }
-        pointerInside = inside
-        send(["type": "hover", "on": inside])
+        if inside != pointerInside {
+            pointerInside = inside
+            send(["type": "hover", "on": inside])
+        }
+        guard inside, local != lastPointer else { return }
+        lastPointer = local
+        send(["type": "pointer", "x": local.x, "y": local.y])
     }
 
     private func number(_ value: Any?) -> CGFloat? {

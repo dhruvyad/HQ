@@ -415,23 +415,63 @@ assert.equal(points[0], 0);
 assert.equal(points.at(-1), 1);
 assert.ok(Math.max(...points) > 1.05 && Math.max(...points) < 1.3);
 
-// Clicks pass through the window except where something is showing.
-const placedFor = (dock, surface, room) => JSON.parse(run(`JSON.stringify(windowFor('${dock}', ${JSON.stringify(surface)}, ${JSON.stringify(area)}, ${JSON.stringify(room)}))`));
-const stage = {width: 420, height: 270}, capsule = {width: 38, height: 102}, card = {width: 308, height: 62};
-let at = placedFor('top-left', capsule, stage);
-assert.deepEqual(at, {x: -22, y: 3, width: 484, height: 334, hit: {x: 32, y: 32, width: 38, height: 102}});
-assert.equal(at.x + at.hit.x, rect('top-left', capsule).x); // the capsule lands exactly on its dock
-assert.equal(at.y + at.hit.y, rect('top-left', capsule).y);
-// Anywhere it docks, the window is the same whatever the pill is doing, so nothing resizes mid-animation.
+// The open box sits beside the pill, which stays put so answered items can fly home to it.
+const js = (code) => JSON.parse(run(`JSON.stringify(${code})`));
+const capsule = {width: 38, height: 102}, card = {width: 308, height: 62}, listBox = {width: 380, height: 520};
+const restAt = (dock, size = capsule) => rect(dock, size);
+const boxAt = (dock, size = listBox) => js(`boxRect('${dock}', ${JSON.stringify(restAt(dock, ['top', 'bottom'].includes(dock) ? {width: 102, height: 38} : capsule))}, ${JSON.stringify(size)}, ${JSON.stringify(area)})`);
+assert.deepEqual(boxAt('top-left'), {x: 56, y: 35, width: 380, height: 520}); // right of the pill, tops aligned
+assert.deepEqual(boxAt('top-right'), {x: 1004, y: 35, width: 380, height: 520}); // left of it
+assert.deepEqual(boxAt('bottom-left'), {x: 56, y: 301, width: 380, height: 520}); // bottoms aligned
+assert.equal(boxAt('left').y + 260, restAt('left').y + 51); // centered on a side pill
+assert.deepEqual(boxAt('bottom'), {x: 530, y: 255, width: 380, height: 520}); // above a pill along the bottom
+assert.deepEqual(boxAt('top'), {x: 530, y: 81, width: 380, height: 520}); // below one along the top
+assert.deepEqual(boxAt('top-left', {width: 480, height: 5000}), {x: 56, y: 35, width: 480, height: 786}); // never off the screen
+// One window holds the pill, its card and its largest box, so nothing resizes mid-motion.
+const inside = (outer, inner) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 for (const dock of ['top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right']) {
-  const resting = placedFor(dock, capsule, stage), noting = placedFor(dock, card, stage);
-  assert.deepEqual([resting.x, resting.y, resting.width, resting.height], [noting.x, noting.y, noting.width, noting.height], dock);
-  assert.equal(resting.x + resting.hit.x, rect(dock, capsule).x, dock);
-  assert.equal(resting.y + resting.hit.y, rect(dock, capsule).y, dock);
-  assert.equal(noting.x + noting.hit.x, rect(dock, card).x, dock);
-  assert.equal(noting.y + noting.hit.y, rect(dock, card).y, dock);
+  const lying = ['top', 'bottom'].includes(dock), rest = restAt(dock, lying ? {width: 102, height: 38} : capsule);
+  const room = js(`roomFor('${dock}', ${JSON.stringify(rest)}, ${JSON.stringify(area)})`);
+  assert.ok(inside(room, rest), `${dock}: the pill`);
+  assert.ok(inside(room, rect(dock, card)), `${dock}: the notification card`);
+  for (const size of [listBox, {width: 480, height: 300}, {width: 480, height: 760}, {width: 380, height: 840}]) {
+    assert.ok(inside(room, js(`boxRect('${dock}', ${JSON.stringify(rest)}, ${JSON.stringify(size)}, ${JSON.stringify(area)})`)), `${dock}: a ${size.width}x${size.height} box`);
+  }
+  assert.ok(room.x <= rest.x - 32 && room.y <= rest.y - 32, `${dock}: margin for shadows`);
 }
-assert.deepEqual(placedFor('right', {width: 380, height: 300}, {width: 380, height: 300}).hit, {x: 32, y: 32, width: 380, height: 300}); // an open box hugs
+assert.deepEqual(js('unionRect({x: 0, y: 0, width: 10, height: 10}, {x: 5, y: -5, width: 10, height: 10})'), {x: 0, y: -5, width: 15, height: 15});
+assert.deepEqual(js('localRect({x: 50, y: 60, width: 5, height: 6}, {x: 40, y: 30})'), {x: 10, y: 30, width: 5, height: 6});
+
+// How the panel moves: Fold springs open and closed, items are a deck, an answer flies home.
+const motion = (...args) => run(`motionKind(${args.map((a) => JSON.stringify(a)).join(', ')})`);
+assert.equal(motion('pill', 'list', null, null), 'open');
+assert.equal(motion('pill', 'item', null, 'a'), 'open'); // a shortcut straight to an item still folds open
+assert.equal(motion('item', 'pill', 'a', 'a'), 'close');
+assert.equal(motion('list', 'item', null, 'a'), 'deal');
+assert.equal(motion('item', 'list', 'a', null), 'gather');
+assert.equal(motion('item', 'item', 'a', 'b', ['a', 'b', 'c']), 'next');
+assert.equal(motion('item', 'item', 'c', 'b', ['a', 'b', 'c']), 'prev');
+assert.equal(motion('item', 'item', 'a', 'b', ['a', 'b'], true), 'answered');
+assert.equal(motion('item', 'item', 'gone', 'b', ['b']), 'next'); // the old one left the list
+assert.equal(motion('item', 'item', 'a', 'a'), 'none');
+assert.equal(motion('list', 'list', null, null), 'none');
+assert.equal(motion('list', 'settings', null, null), 'none');
+
+// Spotlight: the label opens away from the edge, and the circle nearest the cursor along the pill wins.
+assert.equal(run("spotSide('top-left')"), 'right');
+assert.equal(run("spotSide('right')"), 'left');
+assert.equal(run("spotSide('bottom')"), 'above');
+assert.equal(run("spotSide('top')"), 'below');
+const centers = [{x: 19, y: 19}, {x: 19, y: 51}, {x: 19, y: 83}];
+assert.equal(run(`nearestCircle(${JSON.stringify(centers)}, 19, 49, true)`), 1);
+assert.equal(run(`nearestCircle(${JSON.stringify(centers)}, 300, 90, true)`), 2); // off to the side still picks by height
+assert.equal(run(`nearestCircle(${JSON.stringify(centers.map((c) => ({x: c.y, y: c.x})))}, 80, 19, false)`), 2);
+assert.equal(run('nearestCircle([], 1, 1, true)'), -1);
+// The needs count holds while an answered card is still flying home.
+run('flying = 1');
+assert.equal(run('METRICS.needs.read([{}, {}]).value'), 3);
+assert.equal(run('METRICS.needs.read([{}, {}]).tag'), '3 need you');
+run('flying = 0');
 
 // Shortcuts: the same key opens and closes, and what you set survives.
 const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved ?? null)}))`));
