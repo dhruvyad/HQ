@@ -225,6 +225,11 @@ def parser():
     wait.add_argument("--timeout", type=float, default=3600)
     inbox = commands.add_parser("inbox", help="Read responses saved for one conversation")
     inbox.add_argument("--session", required=True)
+    adoptable = commands.add_parser("adoptable", help="List decisions in this conversation's project whose own agent stopped first")
+    adoptable.add_argument("--session", required=True)
+    adopt = commands.add_parser("adopt", help="Take over a decision whose own agent stopped first; act on it, then hq done")
+    adopt.add_argument("item_id")
+    adopt.add_argument("--session", required=True)
     for command in ("ack", "done"):
         action = commands.add_parser(command, help="Acknowledge a response" if command == "ack" else "Complete an item")
         action.add_argument("item_id")
@@ -407,6 +412,11 @@ def main():
             return output(store.cancel_comment(args.comment_id))
         if args.command == "inbox":
             return output(store.inbox(args.session))
+        if args.command == "adoptable":
+            from .mcp import adoptable_entry
+            return output([adoptable_entry(i) for i in store.adoptable(args.session)])
+        if args.command == "adopt":
+            return output(store.adopt(args.item_id, args.session))
         if args.command in {"ack", "done"}:
             if store.item(args.item_id)["session_id"] != args.session:
                 raise ValueError("Item belongs to another session")

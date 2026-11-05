@@ -9,10 +9,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .workstreams import place
+from .workstreams import OTHER, place, project_of
 
 PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "other"}
 ROUTES = {"inbox", "codex"}
+# A decision closes in two steps, like a handshake. Your reply, answer or skip or done, is
+# only the first: it stays tracked until the agent confirms it heard, and for an answer,
+# until it says what it did. An agent that stops first leaves its decision stuck, and the
+# next agent in the same project may adopt it.
+SETTLES = {"skip", "done"}   # your closes that end once the agent has heard them
+STOPPED_AFTER = 300          # offline this long: the agent stopped before acting
+STALE_AFTER = 86400          # a day unheard, or heard but never closed
+REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 
 
 def data_dir():
@@ -23,6 +31,33 @@ def required(value, name, limit=10000):
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"{name} must be nonempty text, at most {limit} characters")
     return value.strip()
+
+
+def followup(item, session, now):
+    """Where a decided item stands, between your reply and the agent closing it.
+
+    stage: delivering until the agent confirms it heard, then acknowledged.
+    stuck: stopped (its agent went offline first), unheard (a day with no acknowledgement)
+    or unclosed (heard a day ago, never closed). adoptable: another agent in the same
+    project may take it over, because its own agent is gone or you handed it off.
+    """
+    if item["status"] != "answered":
+        return None
+    activity = (session or {}).get("activity") or {}
+    state, since = activity.get("state", "unknown"), activity.get("since") or now
+    heard = item.get("delivery") == "received"
+    stuck = None
+    if state == "offline" and now - since >= STOPPED_AFTER:
+        stuck = "stopped"
+    elif not heard and now - (item.get("replied") or now) >= STALE_AFTER:
+        stuck = "unheard"
+    elif heard and state != "active" and now - (item.get("heard") or now) >= STALE_AFTER:
+        stuck = "unclosed"
+    # An agent with no live signal at all that has not heard in a day counts as gone too.
+    gone = stuck == "stopped" or (stuck == "unheard" and state == "unknown")
+    return {"stage": "acknowledged" if heard else "delivering", "stuck": stuck,
+            "adoptable": item["project"] != OTHER and (gone or bool(item.get("handoff"))),
+            "replied": item.get("replied"), "heard": item.get("heard")}
 
 
 class Store:
@@ -89,7 +124,15 @@ class Store:
                 db.execute("ALTER TABLE activity ADD COLUMN since REAL")
             if "last_active" not in observed:
                 db.execute("ALTER TABLE activity ADD COLUMN last_active REAL")
-            db.execute("PRAGMA user_version=6")
+            # Before the handshake a skip closed at once, heard or not: track the unheard ones.
+            if db.execute("PRAGMA user_version").fetchone()[0] < 7:
+                for row in db.execute("""SELECT i.id,i.presentation FROM items i JOIN replies r ON r.item_id=i.id
+                        WHERE i.status='done' AND r.state!='received'""").fetchall():
+                    presentation = json.loads(row["presentation"])
+                    if presentation.get("skipped"):
+                        presentation["settle"] = "skip"
+                        db.execute("UPDATE items SET status='answered',presentation=? WHERE id=?", (json.dumps(presentation), row["id"]))
+            db.execute("PRAGMA user_version=7")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -495,7 +538,7 @@ class Store:
         if item["status"] == "done":
             return "done"
         if item["status"] == "answered":
-            return "waiting"
+            return "pending"
         if item["defer_until"] and item["defer_until"] > (today or date.today().isoformat()):
             return "later"
         return {"human": "needs", "agent": "pending", "external": "waiting"}[item["owner"]]
@@ -526,7 +569,7 @@ class Store:
         with self.db() as db:
             sessions = [dict(r) for r in db.execute("SELECT * FROM sessions ORDER BY seen DESC")]
             items = [self.decode(r) for r in db.execute("""SELECT i.*,s.name AS session_name,s.provider,s.cwd AS session_cwd,
-                r.text AS answer,r.state AS delivery,r.error AS delivery_error
+                r.text AS answer,r.state AS delivery,r.error AS delivery_error,r.created AS replied,r.delivered AS heard
                 FROM items i JOIN sessions s ON s.id=i.session_id
                 LEFT JOIN replies r ON i.id=r.item_id ORDER BY i.created DESC""")]
         self.attach_comments(items)
@@ -534,6 +577,9 @@ class Store:
             if s["lease_until"] < time.time():
                 s["connection"] = "offline"
         self.attach_activity(sessions)
+        by_id, now = {s["id"]: s for s in sessions}, time.time()
+        for item in items:
+            item["followup"] = followup(item, by_id.get(item["session_id"]), now)
         items = [i for i in items if (not session_id or i["session_id"] == session_id)
                  and (not tag or tag in i["tags"]) and (not status or i["status"] == status)
                  and (not bucket or i["bucket"] == bucket)]
@@ -564,13 +610,66 @@ class Store:
             row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
             if not row or row["status"] != "open":
                 raise ValueError("Only open items can be skipped")
-            presentation = {**json.loads(row["presentation"]), "skipped": True, "pinned": False}
+            presentation = {**json.loads(row["presentation"]), "skipped": True, "settle": "skip", "pinned": False}
             # The reply reaches the agent through its usual inbox, hook or live route.
             db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (str(uuid.uuid4()), id, text, now))
             db.execute("""UPDATE comments SET state='cancelled' WHERE item_id=? AND author='human' AND state!='cancelled'
                 AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (id,))
-            db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
+            db.execute("UPDATE items SET status='answered',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
         return self.item(id)
+
+    def mark_done(self, id, note=""):
+        """You finished it yourself: tell the agent, and close once it has heard."""
+        if not isinstance(note, str) or len(note) > 2000:
+            raise ValueError("note must be text, at most 2000 characters")
+        text = "Done: The user marked this done. Don't do it again, and carry on with anything that was waiting on it."
+        if note.strip():
+            text += f" Note: {note.strip()}"
+        now = time.time()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
+            if not row or row["status"] != "open":
+                raise ValueError("Only open items can be marked done")
+            presentation = {**json.loads(row["presentation"]), "settle": "done", "pinned": False}
+            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (str(uuid.uuid4()), id, text, now))
+            db.execute("UPDATE items SET status='answered',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
+        return self.item(id)
+
+    def close(self, id, note=""):
+        """You take a decided item back and close it yourself. A reply the agent has not
+        heard is withdrawn, so it never acts on a decision you have already handled."""
+        if not isinstance(note, str) or len(note) > 2000:
+            raise ValueError("note must be text, at most 2000 characters")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
+            if not row or row["status"] != "answered":
+                raise ValueError("Only decided items can be closed this way")
+            db.execute("UPDATE replies SET state='withdrawn',error=NULL,claim_until=0 WHERE item_id=? AND state!='received'", (id,))
+            presentation = {**json.loads(row["presentation"]), "closed_by": "you", "handoff": False}
+            if note.strip():
+                presentation["agent_note"] = note.strip()
+            db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
+        return self.item(id)
+
+    def hand_off(self, id):
+        """Offer a decided item to the next agent in its project, even while its own agent lives."""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
+            if not row or row["status"] != "answered":
+                raise ValueError("Only decided items can be handed to another agent")
+            presentation = {**json.loads(row["presentation"]), "handoff": True}
+            db.execute("UPDATE items SET presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
+        return self.item(id)
+
+    @staticmethod
+    def settle(db, item_id):
+        """A skip or a done of yours closes once its agent has heard it."""
+        row = db.execute("SELECT status,presentation FROM items WHERE id=?", (item_id,)).fetchone()
+        if row and row["status"] == "answered" and json.loads(row["presentation"]).get("settle") in SETTLES:
+            db.execute("UPDATE items SET status='done',updated=? WHERE id=?", (time.time(), item_id))
 
     def resolve(self, id, note=""):
         if not isinstance(note, str) or len(note) > 4000:
@@ -718,17 +817,74 @@ class Store:
                 JOIN items i ON i.id=r.item_id WHERE i.session_id=?
                 AND r.state IN ('pending','sent','failed') ORDER BY r.created""", (session_id,))]
 
+    def adoptable(self, session_id):
+        """Decisions in this conversation's project whose own agent is gone, or that you handed
+        off, oldest first. Only another conversation in the same project may take them over."""
+        session = self.session(session_id)
+        project = project_of({}, session.get("cwd"))
+        if project == OTHER:
+            return []
+        items = self.snapshot(status="answered")["items"]
+        found = [i for i in items if i["session_id"] != session_id and i["project"] == project
+                 and i.get("followup") and i["followup"]["adoptable"]]
+        return sorted(found, key=lambda i: i["followup"]["replied"] or 0)
+
+    def adopt(self, item_id, session_id):
+        """Take over a stuck decision. Exactly one conversation wins; it now has the answer,
+        so it must act on it and close it with hq_resolve."""
+        offered = {i["id"]: i for i in self.adoptable(session_id)}
+        if item_id not in offered:
+            raise ValueError("That item is not up for adoption in this conversation's project")
+        before = offered[item_id]
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT session_id,status,presentation FROM items WHERE id=?", (item_id,)).fetchone()
+            # Compare and swap: another conversation may have adopted it a moment ago.
+            if not row or row["status"] != "answered" or row["session_id"] != before["session_id"]:
+                raise ValueError("Another conversation has already taken this item")
+            presentation = {**json.loads(row["presentation"]), "handoff": False,
+                            "adopted_from": {"session_id": before["session_id"], "name": before.get("session_name", ""), "at": time.time()}}
+            db.execute("UPDATE items SET session_id=?,presentation=?,updated=? WHERE id=?",
+                       (session_id, json.dumps(presentation), time.time(), item_id))
+            # The adopter reads the answer right here, so this is its acknowledgement.
+            db.execute("UPDATE replies SET state='received',delivered=?,error=NULL,claim_until=0 WHERE item_id=? AND state!='withdrawn'",
+                       (time.time(), item_id))
+            self.settle(db, item_id)
+        item = self.item(item_id)
+        return {"item": item, "answer": item["answer"],
+                "next_step": "Act on this answer now, then close the item with hq_resolve and a one-line note of what you did."
+                if item["status"] == "answered" else "This was a skip or a done; nothing more to do."}
+
+    def unclosed(self, session_id, now=None):
+        """This conversation's decisions it heard but never closed, due a reminder; marks them reminded."""
+        now = now or time.time()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("""SELECT i.id,i.title,i.presentation,r.text,r.delivered FROM items i JOIN replies r ON r.item_id=i.id
+                WHERE i.session_id=? AND i.status='answered' AND r.state='received' AND r.delivered<?
+                ORDER BY r.delivered""", (session_id, now - 3600)).fetchall()
+            due = []
+            for row in rows:
+                presentation = json.loads(row["presentation"])
+                if now - presentation.get("reminded", 0) < REMIND_EVERY:
+                    continue
+                presentation["reminded"] = now
+                db.execute("UPDATE items SET presentation=? WHERE id=?", (json.dumps(presentation), row["id"]))
+                due.append({"item_id": row["id"], "title": row["title"], "answer": row["text"], "heard": row["delivered"]})
+        return due
+
     def has_waiter(self, item_id):
         with self.db() as db:
             return db.execute("SELECT 1 FROM waiters WHERE item_id=? AND lease_until>?", (item_id, time.time())).fetchone() is not None
 
     def acknowledge(self, item_id, session_id):
         with self.db() as db:
-            cursor = db.execute("""UPDATE replies SET state='received',delivered=?,error=NULL
-                WHERE item_id=? AND item_id IN (SELECT id FROM items WHERE session_id=?)""",
+            cursor = db.execute("""UPDATE replies SET state='received',delivered=COALESCE(delivered,?),error=NULL
+                WHERE item_id=? AND state!='withdrawn' AND item_id IN (SELECT id FROM items WHERE session_id=?)""",
                                 (time.time(), item_id, session_id))
             if not cursor.rowcount:
                 raise ValueError("No response for this item in the specified session")
+            self.settle(db, item_id)
         return self.item(item_id)
 
     def wait(self, item_id, session_id, timeout=3600, cancel=None):
@@ -778,8 +934,12 @@ class Store:
 
     def delivery_result(self, reply_id, state, error=None):
         with self.db() as db:
-            db.execute("UPDATE replies SET state=?,error=?,delivered=?,claim_until=0 WHERE id=? AND (state!='received' OR ?='received')",
+            db.execute("UPDATE replies SET state=?,error=?,delivered=?,claim_until=0 WHERE id=? AND state!='withdrawn' AND (state!='received' OR ?='received')",
                        (state, error, time.time() if state == "received" else None, reply_id, state))
+            if state == "received":
+                row = db.execute("SELECT item_id FROM replies WHERE id=?", (reply_id,)).fetchone()
+                if row:
+                    self.settle(db, row["item_id"])
 
     def recover_uncertain(self):
         # Never resend a turn after a crash without knowing whether it was accepted.

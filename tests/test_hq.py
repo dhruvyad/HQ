@@ -108,7 +108,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):
@@ -238,7 +238,8 @@ class StoreTests(unittest.TestCase):
         question = self.store.ask_agent(item["id"], "Why annual?")
         self.store.update(item["id"], pinned=True)
         skipped = self.store.skip(item["id"], "Not a priority this month")
-        self.assertEqual((skipped["status"], skipped["bucket"], skipped["skipped"], skipped["pinned"]), ("done", "done", True, False))
+        # It leaves your list at once, but only closes once the agent has heard it.
+        self.assertEqual((skipped["status"], skipped["bucket"], skipped["skipped"], skipped["pinned"]), ("answered", "pending", True, False))
         inbox = self.store.inbox("a")
         self.assertEqual(len(inbox), 1)
         self.assertTrue(inbox[0]["text"].startswith("Skipped: The user decided not to do this."))
@@ -247,6 +248,7 @@ class StoreTests(unittest.TestCase):
         waited = self.store.wait(item["id"], "a", 1)  # an agent blocked on the decision hears at once
         self.assertEqual(waited["status"], "received")
         self.assertTrue(waited["answer"].startswith("Skipped:"))
+        self.assertEqual(self.store.item(item["id"])["status"], "done")
         self.assertEqual(self.store.inbox("a"), [])
         with self.assertRaises(ValueError):
             self.store.skip(item["id"])
@@ -602,7 +604,8 @@ class HTTPTests(unittest.TestCase):
             item = json.load(response)
         with self.request(f"/api/items/{item['id']}/skip", {"reason": "Done another way"}, headers) as response:
             skipped = json.load(response)
-        self.assertEqual((skipped["status"], skipped["skipped"]), ("done", True))
+        # Tracked until the agent hears it.
+        self.assertEqual((skipped["status"], skipped["skipped"]), ("answered", True))
         self.assertIn("Done another way", self.store.inbox("a")[0]["text"])
         with self.assertRaises(urllib.error.HTTPError) as refused:
             self.request(f"/api/items/{item['id']}/skip", {}, headers)
@@ -617,7 +620,7 @@ class HTTPTests(unittest.TestCase):
         with self.request(f"/api/items/{item['id']}/update", {"owner": "human"}, headers) as response:
             self.assertEqual(json.load(response)["bucket"], "needs")
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Support approved"}, headers) as response:
-            self.assertEqual(json.load(response)["bucket"], "waiting")
+            self.assertEqual(json.load(response)["bucket"], "pending")  # the agent's turn now
         self.assertEqual(self.store.item(other["id"]), other)
 
     def test_http_question_thread_response_and_cancellation(self):

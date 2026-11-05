@@ -121,9 +121,15 @@ owning server or use a verified app relay. Permission approvals still need
 the client's normal approval. A hook being configured is not proof of trust,
 receipt, or a live push connection. Keep any unfinished setup in HQ.
 
-A reply that starts with "Skipped:" means the user decided not to do the item.
-The item is already closed: acknowledge it, stop work that depends on it, and
-don't report it again unless something new makes it worth his time.
+A decision closes like a handshake. The user's reply is only the first half: HQ
+counts the item as not acted on until you acknowledge it and, for an answer, close
+it with hq_resolve and a one-line note of what you did. An answer you heard but
+never closed is reminded to you, and HQ shows the user it was never acted on.
+
+A reply that starts with "Skipped:" means the user decided not to do the item; one
+that starts with "Done:" means they did it themselves. Acknowledge either one and
+it closes: stop or continue the work that depends on it, and don't report it again
+unless something new makes it worth their time.
 
 Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
@@ -131,6 +137,12 @@ loop with hq_resolve and a one-line note describing what you did. A received
 answer does not mean the requested work is finished. New follow-ups get new
 items. Anything newly needed from the user must be its own question/action, not
 buried in context or a completion note. Never claim delivery without receipt.
+
+Decisions whose own agent stopped before acting on them are offered to the next
+agent in the same project, at session start or through hq_adopt (CLI: hq adoptable
+and hq adopt ITEM --session ID). Tell the user about them, and adopt only the ones
+that fit your task or that the user asks you to. Adopting gives you the answer:
+act on it, then close it with hq_resolve. Exactly one conversation can adopt each.
 
 End user-facing work reports with one short HQ line and the item that matters
 now, rather than repeating the whole queue. Link to the running local dashboard.

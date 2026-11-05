@@ -62,9 +62,16 @@ TOOLS = [
      schema({"session_id": TEXT, "comment_id": TEXT}, ["session_id", "comment_id"])),
     ("hq_acknowledge", "Confirm that this conversation has received its human response.",
      schema({"session_id": TEXT, "item_id": TEXT}, ["session_id", "item_id"])),
-    ("hq_resolve", "Close the loop after acting on an item; note is a one-line account of what you did. A response must be received before closing an answered question.",
+    ("hq_resolve", "Close the loop after acting on an item; note is a one-line account of what you did. A response must be received before closing an answered question. A decision is not done until you close it.",
      schema({"session_id": TEXT, "item_id": TEXT, "note": TEXT}, ["session_id", "item_id"])),
+    ("hq_adopt", "Decisions the user made in this project whose own agent stopped before acting on them. Without item_id, lists them. With item_id, takes one over: it moves to this conversation with the user's answer, and you must act on it and close it with hq_resolve. Tell the user before adopting anything unrelated to your task.",
+     schema({"session_id": TEXT, "item_id": TEXT}, ["session_id"])),
 ]
+
+
+def adoptable_entry(item):
+    return {"item_id": item["id"], "title": item["title"], "answer": item["answer"], "from": item.get("session_name", ""),
+            "stuck": item["followup"]["stuck"], "decided": item["followup"]["replied"]}
 
 
 def with_notes(item):
@@ -126,6 +133,10 @@ def run(provider="other", channel=False, session_id=None):
             return store.acknowledge_comment(args["comment_id"], id)
         if name == "hq_acknowledge":
             return store.acknowledge(args["item_id"], id)
+        if name == "hq_adopt":
+            if args.get("item_id"):
+                return store.adopt(args["item_id"], id)
+            return [adoptable_entry(i) for i in store.adoptable(id)]
         if name == "hq_resolve":
             if store.item(args["item_id"])["session_id"] != id:
                 raise ValueError("Item belongs to a different session")
