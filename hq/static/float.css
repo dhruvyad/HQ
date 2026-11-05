@@ -152,6 +152,15 @@ body[data-resizing] .f-box {transition: none;}
 .f-off {display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12.5px; color: var(--muted-foreground);}
 .f-push {margin-left: auto;}
 .f-head .icon {width: 18px; height: 18px;}
+/* Needs you's header in the panel: one 48px row, labels folded to icons at this width. */
+.f-list {position: relative; container-type: inline-size;}
+html.float .g-head {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+html.float .g-head .g-view {margin-left: -6px;}
+html.float .g-head .icon-btn {width: 32px; height: 32px;}
+html.float .g-tally {flex: none; padding: 4px 10px 8px 16px; border-bottom: 1px solid var(--hairline);}
+html.float .g-pop {top: 48px; left: 8px; right: 8px; max-height: calc(100% - 56px);}
+html.float .gh {padding: 10px 8px 4px; background: var(--sunken); font-size: 12.5px;}
+html.float .g-empty {padding: 24px 8px;}
 .f-rows {flex: 1; min-height: 0;}
 .f-rows-in {padding: 0 8px 8px;}
 /* The panel is narrow on any screen. Its window covers the whole display, so the dashboard's

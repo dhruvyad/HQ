@@ -330,6 +330,86 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .from dd {margin: 0; color: rgb(250 250 250 / 0.82); display: flex; align-items: center; gap: 7px; min-width: 0; overflow-wrap: anywhere;}
 .from dt {white-space: nowrap;}
 
+/* Needs you: one header row of view, search, order, group and fold, then groups you fold
+   or narrow to. Search springs open in place: the gap beside it hands over its room. */
+.g-wrap {container-type: inline-size;}
+.g-head {position: relative; display: flex; align-items: center; gap: 3px;}
+.g-view {display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 300px; height: 36px; padding: 0 6px; margin-left: -6px; border-radius: 10px; overflow: hidden; transition: max-width .5s cubic-bezier(.16,1,.3,1), background .15s;}
+.g-view:hover, .g-view[aria-expanded="true"] {background: var(--hover);}
+.g-view .h {min-width: 0; overflow: hidden; font: 400 21px/1.15 var(--display); letter-spacing: -0.01em; white-space: nowrap; text-overflow: ellipsis; transition: max-width .5s cubic-bezier(.16,1,.3,1), opacity .2s;}
+.g-view .count {flex: none; overflow: hidden; font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; transition: max-width .5s cubic-bezier(.16,1,.3,1), opacity .2s;}
+.g-view .ico {flex: none; width: 14px; height: 14px; color: var(--muted-foreground);}
+.g-gap {flex: 1 1 0; min-width: 0; transition: flex-grow .5s cubic-bezier(.16,1,.3,1);}
+.g-find {display: flex; flex: 0 0 32px; align-items: center; min-width: 32px; height: 32px; overflow: hidden; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); transition: flex-grow .5s cubic-bezier(.16,1,.3,1), background .2s, border-color .2s;}
+.g-find:hover {background: var(--hover);}
+.g-find-btn {display: inline-flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; color: rgb(250 250 250 / 0.8);}
+.g-find input {flex: 1 1 0; width: 0; min-width: 0; height: 28px; padding: 0 2px 0 0; background: none; border: 0; outline: 0; font-size: 13.5px; opacity: 0; transition: opacity .2s;}
+.g-find input::placeholder {color: rgb(161 161 170 / 0.7);}
+.g-find input::-webkit-search-cancel-button {display: none;}
+.g-find-x {display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 3px; border-radius: 50%; color: var(--muted-foreground);}
+.g-find-x:hover {background: rgb(250 250 250 / 0.1); color: var(--foreground);}
+.g-find-x .icon {width: 12px; height: 12px; stroke-width: 2.4;}
+.g-head.searching .g-find {flex-grow: 1; background: var(--composer); border-color: rgb(250 250 250 / 0.24);}
+.g-head.searching .g-gap {flex-grow: 0;}
+.g-head.searching .g-find input {opacity: 1;}
+.g-btn {display: inline-flex; flex: none; align-items: center; height: 32px; padding: 0 10px 0 9px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 13px; white-space: nowrap; transition: padding .5s cubic-bezier(.16,1,.3,1), background .15s, border-color .15s;}
+.g-btn:hover, .g-btn[aria-expanded="true"] {background: var(--hover);}
+.g-btn.on {border-color: rgb(250 250 250 / 0.5);}
+.g-btn .ico, .g-round .ico {flex: none; width: 15px; height: 15px; color: rgb(250 250 250 / 0.75);}
+.g-label {display: inline-block; max-width: 72px; margin-left: 5px; overflow: hidden; transition: max-width .5s cubic-bezier(.16,1,.3,1), margin .5s cubic-bezier(.16,1,.3,1), opacity .2s;}
+.g-round {display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; color: rgb(250 250 250 / 0.75);}
+.g-round:hover {background: var(--hover); color: var(--foreground);}
+.g-tally {display: flex; align-items: center; gap: 8px; padding: 6px 0 2px; font-size: 13px; color: var(--muted-foreground);}
+.g-tally b {font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums;}
+.g-spacer {flex: 1;}
+.g-clear {height: 28px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; color: var(--foreground); background: rgb(250 250 250 / 0.06);}
+.g-clear:hover {background: rgb(250 250 250 / 0.12);}
+.g-token {display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border-radius: 999px; background: rgb(250 250 250 / 0.06); font-size: 12.5px; color: var(--foreground);}
+.g-token button {display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; color: var(--muted-foreground);}
+.g-token button:hover {background: rgb(250 250 250 / 0.1); color: var(--foreground);}
+.g-token .icon {width: 11px; height: 11px; stroke-width: 2.4;}
+.g-text {font-size: 12.5px; color: var(--muted-foreground); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(250 250 250 / 0.25);}
+.g-text:hover {color: var(--foreground);}
+.g-pop {position: absolute; z-index: 20; left: 0; right: 0; max-height: min(440px, 70vh); overflow-y: auto; padding: 6px; border-radius: 14px; background: var(--card); border: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 16px 40px rgb(0 0 0 / 0.6); transform-origin: top center; animation: g-pop .35s cubic-bezier(.16,1,.3,1); scrollbar-width: thin;}
+@keyframes g-pop {from {opacity: 0; transform: translateY(-6px) scale(.97);}}
+.g-pop .p-label {padding: 8px 10px 4px; font-size: 11.5px; color: var(--muted-foreground);}
+.g-opt {display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 6px 10px; border-radius: 9px; text-align: left; font-size: 13.5px;}
+.g-opt:hover {background: var(--hover);}
+.g-opt .tick {display: inline-flex; flex: none; width: 16px; color: var(--foreground);}
+.g-opt .tick .icon {width: 14px; height: 14px; stroke-width: 2.4;}
+.g-opt .o-text {display: flex; flex-direction: column; min-width: 0;}
+.g-opt .o-note {font-size: 12px; color: var(--muted-foreground);}
+.g-opt .n {margin-left: auto; font-size: 12.5px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+.g-pop .p-foot {display: flex; gap: 16px; margin-top: 4px; padding: 9px 10px 5px; border-top: 1px solid var(--hairline);}
+.gh {position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 12px 12px 6px; background: var(--background); font-size: 13px; color: var(--muted-foreground); cursor: pointer;}
+.gh .g-name {display: inline-flex; align-items: center; gap: 5px; font-weight: 500; color: var(--foreground);}
+.gh .g-name .icon {width: 14px; height: 14px; stroke-width: 2; transition: transform .35s cubic-bezier(.16,1,.3,1);}
+.gh.shut .g-name .icon {transform: rotate(-90deg);}
+.gh .g-n {font-variant-numeric: tabular-nums;}
+.gh .g-only {margin-left: auto; opacity: 0; transition: opacity .15s;}
+.gh:hover .g-only, .gh .g-only:focus-visible, .gh .g-only:only-of-type[data-g="unonly"] {opacity: 1;}
+.g-empty {padding: 40px 12px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
+/* Narrow: Order and Group fold to their icons while you search; narrower, always, and an open
+   search also takes the title's place. */
+@container (max-width: 639px) {
+  .g-head.searching .g-label {max-width: 0; margin-left: 0; opacity: 0;}
+  .g-head.searching .g-btn {padding: 0 8px;}
+}
+@container (max-width: 439px) {
+  .g-label {max-width: 0; margin-left: 0; opacity: 0;}
+  .g-btn {padding: 0 8px;}
+  .g-head.searching .g-view {gap: 0;}
+  .g-head.searching .g-view .h, .g-head.searching .g-view .count {max-width: 0; opacity: 0;}
+}
+/* On the dashboard the view is the page's title. */
+.g-page {position: relative; display: block;}
+.g-page .g-view {height: auto; padding: 2px 8px;}
+.g-page .g-view .h {font-size: 38px; line-height: 1.1; letter-spacing: -0.015em;}
+.g-page .g-view .count {font-size: 15px;}
+.g-page .g-new {margin-left: 6px;}
+.g-page .desc {margin-top: 8px;}
+.g-page .g-pop {top: 52px; left: auto; width: 320px;}
+
 /* Dialog + toast */
 dialog {width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 24px; border: 1px solid var(--hairline); border-radius: 20px; background: var(--popover); color: var(--foreground); box-shadow: 0 24px 80px rgb(0 0 0 / .6);}
 dialog::backdrop {background: rgb(0 0 0 / .6);}

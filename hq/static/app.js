@@ -225,6 +225,7 @@ function paintDashboard({background = false} = {}) {
   if (snapshotSignature && route.item && !model.items.some((i) => i.id === route.item)) route.item = null;
   const scrolls = ['#page', '.sb-body', '.d-body'].map((sel) => [sel, document.querySelector(sel)?.scrollTop]);
   const active = document.activeElement, selection = active?.id === 'search' ? [active.selectionStart, active.selectionEnd] : null;
+  const finding = active?.matches?.('[data-g-q]') ? [active.selectionStart, active.selectionEnd] : null;
   $('#sidebar').innerHTML = sidebarHTML();
   $('#main').innerHTML = mainHTML();
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
@@ -236,6 +237,7 @@ function paintDashboard({background = false} = {}) {
   else if (scrolls[1][1]) $('.sb-body').scrollTop = scrolls[1][1];
   render.scope = scope;
   if (selection) {const el = $('#search'); el.focus(); el.setSelectionRange(...selection);}
+  if (finding) {const el = $('#main [data-g-q]'); el?.focus({preventScroll: true}); el?.setSelectionRange(...finding);}
   document.body.classList.toggle('detail-open', Boolean(route.item));
   $('#scrim').className = `scrim ${sheetOpen ? 'sheet' : route.item ? 'on' : ''}`;
   $('#sidebar').classList.toggle('on', sheetOpen);
@@ -292,7 +294,8 @@ function mainHTML() {
   return `<div class="phone-bar"><button class="icon-btn" id="menu" aria-label="Open menu">${icon('menu')}</button><span class="t">${esc(page.title)}</span>${page.actions ? newItemIcon : ''}</div>
     <div class="page scroll" id="page"><div class="page-inner">
       ${page.crumb ? `<nav class="crumb" aria-label="Breadcrumb"><button data-href="${esc(page.crumb.href)}">${esc(page.crumb.label)}</button>${icon('chev', 'sm')}</nav>` : ''}
-      <header class="page-head"><div><h1>${esc(page.title)}</h1>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</div>${page.actions || ''}</header>
+      ${page.head ? `<header class="page-head g-page"><div class="g-wrap">${page.head}</div>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</header>`
+        : `<header class="page-head"><div><h1>${esc(page.title)}</h1>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</div>${page.actions || ''}</header>`}
       ${page.body}
     </div></div>`;
 }
@@ -304,13 +307,241 @@ function sortHTML(lane) {
 }
 const headActions = (lane) => `<div class="head-actions">${sortHTML(lane)}${newItemPill}</div>`;
 
+// Needs you, narrowed and arranged (Dhruv's pick, Views + Groups): a view, a search inside
+// it, an order, and a grouping whose folds are kept for each way of grouping.
+const NEED_VIEWS = [['all', 'All'], ['due', 'Due soon'], ['decision', 'Decisions'], ['quick', 'Quick wins'], ['failed', 'Failed replies'], ['new', 'New today'], ['pinned', 'Pinned']];
+const startOfToday = () => new Date(new Date().toDateString()).getTime() / 1000;
+const NEED_FLAGS = {
+  due: dueSoon, quick: (i) => i.minutes > 0 && i.minutes <= 2, failed: (i) => i.delivery === 'failed',
+  new: (i) => i.created >= startOfToday(), pinned: (i) => Boolean(i.pinned),
+};
+// Everything that needs you: your lane, plus any reply that failed to reach its agent.
+const needsYou = (items) => items.filter((i) => i.lane === 'you' || (i.delivery === 'failed' && (i.status !== 'done' || Boolean(i.skipped))));
+const KIND_GROUPS = {blocker: 'Blockers', question: 'Decisions', todo: 'Actions'};
+const DUE_GROUPS = {overdue: 'Overdue', today: 'Today', week: 'This week', later: 'Later', none: 'No due date'};
+// Due dates by week: this week runs through Sunday.
+function weekOf(i) {
+  if (!i.due) return 'none';
+  const d = daysUntil(i.due), toSunday = (7 - new Date().getDay()) % 7;
+  return d < 0 ? 'overdue' : d === 0 ? 'today' : d <= toSunday ? 'week' : 'later';
+}
+const byName = (items, key, name) => [...new Map(items.map((i) => [key(i), name(i)]))].sort((a, b) => a[1].localeCompare(b[1]));
+const GROUP_BY = {
+  none: {label: 'None'},
+  project: {label: 'Project', key: (i) => i.project, list: (items) => byName(items, (i) => i.project, (i) => i.project_name)},
+  kind: {label: 'Kind', key: (i) => (i.kind in KIND_GROUPS ? i.kind : 'todo'), list: () => Object.entries(KIND_GROUPS)},
+  due: {label: 'Due date', short: 'Due', key: weekOf, list: () => Object.entries(DUE_GROUPS)},
+  agent: {label: 'Agent', key: (i) => i.session_id, list: (items) => byName(items, (i) => i.session_id, (i) => i.session_name)},
+};
+const smartOrder = (a, b) => leadOf(a) - leadOf(b) || (leadOf(a) === 1 ? a.due.localeCompare(b.due) : 0) || rankOf(a) - rankOf(b) || b.created - a.created;
+const NEED_ORDERS = {
+  smart: {label: 'Smart', note: 'Pinned, then due soon, then priority', by: smartOrder},
+  newest: {label: 'Newest', note: 'Most recently added first', by: (a, b) => b.created - a.created || smartOrder(a, b)},
+  oldest: {label: 'Oldest', note: 'Waiting longest first', by: (a, b) => a.created - b.created || smartOrder(a, b)},
+  quick: {label: 'Quickest', note: 'Fewest minutes first', by: (a, b) => (a.minutes || 999) - (b.minutes || 999) || smartOrder(a, b)},
+};
+const blankNeeds = (group = 'project') => ({view: 'all', q: '', order: 'smart', group, folds: {}, only: null, searching: false, open: null});
+// Settings come back from storage: keep only what is valid, and ids, never what items say.
+function cleanNeeds(saved, group = 'project') {
+  const f = blankNeeds(group), ok = (v) => typeof v === 'string' && v.length > 0 && v.length <= 200;
+  if (!saved || typeof saved !== 'object') return f;
+  if (ok(saved.view) && (NEED_VIEWS.some(([id]) => id === saved.view) || /^(project|agent):/.test(saved.view))) f.view = saved.view;
+  if (saved.order in NEED_ORDERS) f.order = saved.order;
+  if (saved.group in GROUP_BY) f.group = saved.group;
+  for (const name of Object.keys(GROUP_BY)) {
+    const list = saved.folds?.[name];
+    if (Array.isArray(list)) f.folds[name] = list.filter(ok).slice(0, 200);
+  }
+  if (saved.only && saved.only.group in GROUP_BY && ok(saved.only.v)) f.only = {group: saved.only.group, v: saved.only.v, label: ok(saved.only.label) ? saved.only.label : saved.only.v};
+  return f;
+}
+const keptNeeds = (f) => ({view: f.view, order: f.order, group: f.group, folds: f.folds, only: f.only});
+function viewOk(view, i) {
+  if (view === 'all') return true;
+  if (view === 'decision') return i.kind === 'question';
+  if (view.startsWith('project:')) return i.project === view.slice(8);
+  if (view.startsWith('agent:')) return i.session_id === view.slice(6);
+  return Boolean(NEED_FLAGS[view]?.(i));
+}
+function searchOk(q, i) {
+  const words = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = `${i.title} ${i.project_name} ${i.workstream_name} ${i.session_name} ${KIND_GROUPS[i.kind] || ''} ${(i.tags || []).join(' ')}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+const onlyOk = (only, i) => !only || GROUP_BY[only.group].key(i) === only.v;
+const isNarrowed = (f) => f.view !== 'all' || Boolean(f.q.trim()) || Boolean(f.only);
+function narrowNeeds(base, f) {
+  return base.filter((i) => viewOk(f.view, i) && searchOk(f.q, i) && onlyOk(f.only, i)).sort(NEED_ORDERS[f.order].by);
+}
+// The groups that have rows, in their own order, with the order inside each.
+function needsGroups(rows, f, base = rows) {
+  const g = GROUP_BY[f.group];
+  if (!g.key) return [{k: '', name: '', rows}];
+  return g.list(base).map(([k, name]) => ({k, name, rows: rows.filter((i) => g.key(i) === k)})).filter((x) => x.rows.length);
+}
+function needsViewName(f, base) {
+  if (f.view.startsWith('project:')) return base.find((i) => i.project === f.view.slice(8))?.project_name || 'Project';
+  if (f.view.startsWith('agent:')) return base.find((i) => i.session_id === f.view.slice(6))?.session_name || 'Agent';
+  return f.view === 'all' ? 'Needs you' : NEED_VIEWS.find(([id]) => id === f.view)[1];
+}
+const foldsOf = (f) => new Set(f.folds[f.group] || []);
+function setFolds(f, keys, shut) {
+  const set = foldsOf(f);
+  for (const k of keys) shut ? set.add(k) : set.delete(k);
+  f.folds = {...f.folds, [f.group]: [...set]};
+}
+const G_ICON = {
+  order: '<path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/>', group: '<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/>',
+  foldAll: '<path d="m7 20 5-5 5 5M7 4l5 5 5-5"/>', openAll: '<path d="m7 15 5 5 5-5M7 9l5-5 5 5"/>',
+};
+const gIcon = (name) => `<svg class="icon ico" viewBox="0 0 24 24" aria-hidden="true">${G_ICON[name] || ICONS[name]}</svg>`;
+// The header: one row whatever the width. Search springs open in place of the gap beside it.
+function needsHeadHTML(f, base, {extra = '', more = '', elsewhere = ''} = {}) {
+  const rows = narrowNeeds(base, f), narrowed = isNarrowed(f), g = GROUP_BY[f.group];
+  const name = needsViewName(f, base);
+  const view = `<button class="g-view" type="button" data-g="pop" data-v="view" aria-haspopup="menu" aria-expanded="${f.open === 'view'}" title="View: ${esc(name)}"><span class="h">${esc(name)}</span>${narrowed ? '' : `<span class="count">${base.length}</span>`}${icon('down', 'sm ico')}</button>`;
+  const find = `<div class="g-find"><button class="g-find-btn" type="button" data-g="search" aria-label="Search" title="Search  /">${icon('search', 'sm')}</button><input data-g-q type="search" autocomplete="off" spellcheck="false" tabindex="${f.searching ? 0 : -1}" placeholder="${esc(f.view === 'all' ? 'Search' : `Search in ${name}`)}" value="${esc(f.q)}" aria-label="Search"><button class="g-find-x" type="button" data-g="clearq" aria-label="Clear the search" ${f.q ? '' : 'hidden'}>${icon('x', 'sm')}</button></div>`;
+  const button = (v, ic, label, tip, on) => `<button class="g-btn ${on ? 'on' : ''}" type="button" data-g="pop" data-v="${v}" aria-haspopup="menu" aria-expanded="${f.open === v}" aria-label="${esc(tip)}" title="${esc(tip)}">${gIcon(ic)}<span class="g-label">${esc(label)}</span></button>`;
+  const order = button('order', 'order', NEED_ORDERS[f.order].label, `Order: ${NEED_ORDERS[f.order].label}`, f.order !== 'smart');
+  const group = button('group', 'group', f.group === 'none' ? 'Group' : g.short || g.label, f.group === 'none' ? 'Group by' : `Group by: ${g.label}`, f.group !== 'none');
+  const groups = needsGroups(rows, f, base), shut = f.group !== 'none' && groups.length > 0 && groups.every((x) => foldsOf(f).has(x.k));
+  const foldAll = f.group === 'none' ? '' : `<button class="g-round" type="button" data-g="foldall" aria-label="${shut ? 'Open all groups' : 'Fold all groups'}" title="${shut ? 'Open all groups  ⌥→' : 'Fold all groups  ⌥←'}">${gIcon(shut ? 'openAll' : 'foldAll')}</button>`;
+  const only = f.only ? `<span class="g-token">Only ${esc(f.only.label)}<button type="button" data-g="unonly" aria-label="Show every group">${icon('x', 'sm')}</button></span>` : '';
+  const tally = narrowed ? `<div class="g-tally"><span class="count"><b>${rows.length}</b> of ${base.length}</span>${only}<span class="g-spacer"></span><button class="g-clear" type="button" data-g="clear">Clear</button></div>` : '';
+  return `<div class="g-head ${f.searching ? 'searching' : ''}">${view}<span class="g-gap"></span>${find}${order}${group}${foldAll}${extra}${more}</div>${tally}${needsPopHTML(f, base, elsewhere)}`;
+}
+function needsPopHTML(f, base, elsewhere = '') {
+  if (!f.open) return '';
+  const radio = (act, id, label, n, on, note = '') => `<button class="g-opt" type="button" data-g="${act}" data-v="${esc(id)}" role="menuitemradio" aria-checked="${on}"><span class="tick">${on ? icon('check', 'sm') : ''}</span><span class="o-text">${esc(label)}${note ? `<span class="o-note">${esc(note)}</span>` : ''}</span>${n === undefined ? '' : `<span class="n">${n}</span>`}</button>`;
+  const counted = (view) => base.filter((i) => viewOk(view, i) && searchOk(f.q, i)).length;
+  const sections = {
+    view: () => [['Views', NEED_VIEWS], ['By project', byName(base, (i) => i.project, (i) => i.project_name).map(([k, n]) => [`project:${k}`, n])],
+      ['By agent', byName(base, (i) => i.session_id, (i) => i.session_name).map(([k, n]) => [`agent:${k}`, n])]]
+      .filter(([, list]) => list.length).map(([title, list]) => `<div class="p-label">${title}</div>${list.map(([id, label]) => radio('view', id, label, counted(id), f.view === id)).join('')}`).join('') + elsewhere,
+    order: () => Object.entries(NEED_ORDERS).map(([id, o]) => radio('order', id, o.label, undefined, f.order === id, o.note)).join(''),
+    group: () => `<div class="p-label">Group by</div>${Object.entries(GROUP_BY).map(([id, x]) => radio('group', id, x.label, undefined, f.group === id)).join('')}${f.group === 'none' ? '' : '<div class="p-foot"><button class="g-text" type="button" data-g="foldall" data-v="fold">Fold all</button><button class="g-text" type="button" data-g="foldall" data-v="open">Open all</button></div>'}`,
+  };
+  return `<div class="g-pop" role="menu" data-pop="${f.open}">${sections[f.open]()}</div>`;
+}
+// The rows, under group heads you can fold or narrow to.
+function needsBodyHTML(f, base, row, empty) {
+  const rows = narrowNeeds(base, f);
+  if (!rows.length) return empty(isNarrowed(f));
+  if (f.group === 'none') return rows.map(row).join('');
+  const folds = foldsOf(f);
+  return needsGroups(rows, f, base).map(({k, name, rows: list}) => {
+    const shut = folds.has(k), isOnly = f.only?.group === f.group && f.only.v === k;
+    const action = isOnly ? '<button class="g-text g-only" type="button" data-g="unonly">Show all</button>'
+      : `<button class="g-text g-only" type="button" data-g="only" data-v="${esc(k)}" data-name="${esc(name)}">Only this</button>`;
+    return `<div class="gh ${shut ? 'shut' : ''}" data-g="fold" data-v="${esc(k)}" title="Option-click to fold or open every group"><button class="g-name" type="button" data-g="fold" data-v="${esc(k)}" aria-expanded="${!shut}">${icon('down', 'sm')}<span>${esc(name)}</span></button><span class="g-n">${list.length}</span>${action}</div>${shut ? '' : `<div class="g-rows" data-rows="${esc(k)}">${list.map(row).join('')}</div>`}`;
+  }).join('');
+}
+// What a header control does to the state; true when the list needs drawing again.
+function needsAct(f, act, el, e, base) {
+  const v = el.dataset.v;
+  if (act === 'pop') f.open = f.open === v ? null : v;
+  else if (act === 'view') {f.view = v; f.only = null; f.open = null;}
+  else if (act === 'order') {f.order = v; f.open = null;}
+  else if (act === 'group') {f.group = v; f.open = null;}
+  else if (act === 'fold') {
+    const folds = foldsOf(f), keys = needsGroups(narrowNeeds(base, f), f, base).map((x) => x.k);
+    // Option-click works as in Finder: on an open group it folds them all, on a folded one it opens them all.
+    if (e?.altKey) setFolds(f, keys, !folds.has(v));
+    else setFolds(f, [v], !folds.has(v));
+  } else if (act === 'foldall') {
+    const keys = needsGroups(narrowNeeds(base, f), f, base).map((x) => x.k), all = keys.length > 0 && keys.every((k) => foldsOf(f).has(k));
+    setFolds(f, keys, v === 'fold' || (v !== 'open' && !all));
+    f.open = null;
+  } else if (act === 'only') {f.only = {group: f.group, v, label: el.dataset.name}; f.open = null;}
+  else if (act === 'unonly') f.only = null;
+  else if (act === 'clear') Object.assign(f, {view: 'all', q: '', only: null, open: null, searching: false});
+  else if (act === 'clearq') f.q = '';
+  else return false;
+  return true;
+}
+// The dashboard keeps its own Needs you arrangement; the panel keeps one in its tab memory.
+let needsState = cleanNeeds(remember('hq-needs'), 'project');
+let needsFilter = () => needsState, needsBase = () => needsYou(model.items);
+let saveNeeds = () => remember('hq-needs', keptNeeds(needsState));
+const showingNeeds = () => Boolean($('#main .g-head'));
+function needsClick(e) {
+  if (!showingNeeds()) return;
+  const f = needsFilter(), el = e.target.closest('[data-g]');
+  // A click outside an open menu closes it.
+  if (f.open && !e.target.closest('.g-pop, [data-g="pop"]')) {f.open = null; render(); if (!el) return;}
+  if (!el || !$('#main').contains(el)) return;
+  if (el.dataset.g === 'search') return openNeedsSearch();
+  const folded = el.dataset.g === 'fold' && foldsOf(f).has(el.dataset.v) && !e.altKey ? el.dataset.v : null;
+  if (!needsAct(f, el.dataset.g, el, e, needsBase())) return;
+  e.preventDefault();
+  saveNeeds();
+  render();
+  if (el.dataset.g === 'clearq') $('#main [data-g-q]')?.focus();
+  // A group that unfolds springs its rows in.
+  const rows = folded && $(`#main [data-rows="${CSS.escape(folded)}"]`);
+  if (rows && !matchMedia('(prefers-reduced-motion: reduce)').matches) rows.animate([{opacity: 0, transform: 'translateY(-8px)'}, {opacity: 1, transform: 'none'}], {duration: 420, easing: 'cubic-bezier(.16,1,.3,1)'});
+}
+// Search opens and closes by a class on the same header, so its spring runs and nothing redraws.
+function openNeedsSearch() {
+  const f = needsFilter(), head = $('#main .g-head'), input = $('#main [data-g-q]');
+  f.searching = true;
+  f.open = null;
+  $('#main .g-pop')?.remove();
+  head?.classList.add('searching');
+  if (input) {input.tabIndex = 0; input.focus({preventScroll: true});}
+}
+function closeNeedsSearch() {
+  const f = needsFilter();
+  if (!f.searching || f.q) return false;
+  f.searching = false;
+  $('#main .g-head')?.classList.remove('searching');
+  const input = $('#main [data-g-q]');
+  if (input) {input.tabIndex = -1; input.blur();}
+  return true;
+}
+// Escape closes a menu, then clears the search, then folds the field back to its icon.
+function needsEscape(e) {
+  if (!showingNeeds()) return false;
+  const f = needsFilter();
+  if (f.open) {f.open = null; render(); return true;}
+  if (!e.target.matches?.('[data-g-q]')) return false;
+  if (f.q) {f.q = ''; render(); $('#main [data-g-q]')?.focus(); return true;}
+  closeNeedsSearch();
+  return true;
+}
+// / opens the search; ⌥← folds every group and ⌥→ opens them.
+function needsKey(e) {
+  if (!showingNeeds() || e.metaKey || e.ctrlKey || e.target.matches?.('input, textarea, select')) return false;
+  const f = needsFilter();
+  if (e.key === '/' && !e.altKey) {openNeedsSearch(); return true;}
+  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && f.group !== 'none') {
+    setFolds(f, needsGroups(narrowNeeds(needsBase(), f), f, needsBase()).map((x) => x.k), e.key === 'ArrowLeft');
+    saveNeeds();
+    render();
+    return true;
+  }
+  return false;
+}
+function needsInput(e) {
+  if (!e.target.matches?.('[data-g-q]')) return;
+  needsFilter().q = e.target.value;
+  render();
+}
+// Leaving an empty search folds it back; the pause lets a click that caused the blur land first.
+function needsBlur(e) {
+  if (!e.target.matches?.('[data-g-q]')) return;
+  clearTimeout(needsBlur.timer);
+  needsBlur.timer = setTimeout(() => {if (!needsFilter().q && !document.activeElement?.matches?.('[data-g-q]')) closeNeedsSearch();}, 180);
+}
+const needsEmpty = (narrowed) => (narrowed ? '<div class="g-empty">Nothing here matches. <button class="g-text" type="button" data-g="clear">Clear</button></div>' : emptyHTML('you'));
 function needsPage() {
-  const items = sortLane(model.items.filter((i) => i.lane === 'you'), 'you');
+  const items = needsYou(model.items), f = needsState;
   const decisions = items.filter((i) => i.kind === 'question').length;
   const minutes = items.reduce((n, i) => n + (i.minutes || 0), 0);
   const fresh = items.filter(isNew).length;
   const desc = items.length ? [`${items.length} items`, `${decisions} decisions`, fresh ? `${fresh} new` : '', minutes ? `about ${Math.max(1, Math.round(minutes / 60))} h of your time` : ''].filter(Boolean).join(' · ') : '';
-  return {title: 'Needs you', desc: esc(desc), actions: headActions('you'), body: listHTML(items, 'you', 'all')};
+  return {title: 'Needs you', desc: esc(desc), head: needsHeadHTML(f, items, {extra: `<span class="g-new">${newItemPill}</span>`}),
+    body: `<div class="g-list">${needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project'}), needsEmpty)}</div>`};
 }
 function scopePage({title, crumb, items, level, desc}) {
   const lanes = LANES.map(([id, label]) => {
@@ -1444,12 +1675,14 @@ function boot() {
     if (e.key === 'Escape') {
       if ($('#dialog').open) return;
       if ($('#lightbox')) return $('#lightbox').remove();
+      if (needsEscape(e)) return e.preventDefault();
       if (typing && e.target.id === 'search' && search) {search = ''; render(); return;}
       if (sheetOpen) {sheetOpen = false; return render();}
       if (route.item) go({item: null});
       return;
     }
     if (typing || $('#dialog').open) return;
+    if (needsKey(e)) return e.preventDefault();
     const option = route.item && /^[1-9]$/.test(e.key) && !(e.metaKey || e.ctrlKey || e.altKey) && document.querySelectorAll('#detail [data-choice]')[Number(e.key) - 1];
     if (option) {e.preventDefault(); option.click(); return;}
     if (e.key === 'j' || e.key === 'ArrowDown') {e.preventDefault(); step(1);}
@@ -1460,6 +1693,9 @@ function boot() {
     go({item: null});
   };
   $('#dialog').addEventListener('click', (e) => {if (e.target.closest('[data-dclose]') || e.target === $('#dialog')) $('#dialog').close();});
+  $('#main').addEventListener('click', needsClick);
+  $('#main').addEventListener('input', needsInput);
+  $('#main').addEventListener('focusout', needsBlur);
   document.addEventListener('dragover', (e) => {if (carriesFiles(e) && !e.defaultPrevented) {e.preventDefault(); e.dataTransfer.dropEffect = 'none';}});
   document.addEventListener('drop', (e) => {if (carriesFiles(e)) e.preventDefault();});
   render();

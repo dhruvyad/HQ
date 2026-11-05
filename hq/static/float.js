@@ -452,11 +452,17 @@ function panelKeysHTML() {
   return `<div class="f-section">Keys inside the panel</div>${rows}<p class="f-hint">While the panel is open. Enter also opens and Escape also goes back. While recording, Delete clears a key and Escape cancels.${changed ? ' <button type="button" class="f-reset" data-reset-panel-keys>Reset to the arrows</button>' : ''}</p>`;
 }
 function floatListHTML(items, live = liveHealthy) {
-  const head = `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header>`;
-  const rows = items.map((i) => rowHTML(i, {where: true, age: true, kind: true})).join('');
-  const stuck = stuckItems().length;
+  const f = needsFilter(), stuck = stuckItems().length;
+  const head = needsHeadHTML(f, items, {extra: offlineNote(live), more: moreButton, elsewhere: elsewhereHTML()});
+  const rows = needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project', age: true, kind: true}),
+    (narrowed) => (narrowed ? needsEmpty(true) : `<div class="f-empty">${EMPTY.you[0]}</div>`));
   const quiet = stuck ? `<button class="f-quiet f-stuck" type="button" data-view="stuck">${stuckWords(stuck)}</button>` : '';
-  return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows || `<div class="f-empty">${EMPTY.you[0]}</div>`}${quiet}</div></div>`;
+  return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows}${quiet}</div></div>`;
+}
+// The panel's other lists, at the foot of the view menu, since its header has no room for tabs.
+function elsewhereHTML() {
+  const running = model.agents.filter((a) => agentState(a) === 'active').length, stuck = stuckItems().length;
+  return `<div class="p-label">Elsewhere</div><button class="g-opt" type="button" data-view="agents"><span class="tick"></span><span class="o-text">Agents</span><span class="n">${running ? `${running} running` : ''}</span></button>${stuck ? `<button class="g-opt" type="button" data-view="stuck"><span class="tick"></span><span class="o-text">Not acted on</span><span class="n">${stuck}</span></button>` : ''}`;
 }
 
 // Decisions an agent has not acted on, oldest first: a quiet view under Needs you.
@@ -511,7 +517,7 @@ function agentPageHTML(a, now) {
 // Each tab keeps where you were in it: what it had open, its highlight and its scroll. Closing
 // the panel keeps it, and so does a restart, since only ids and positions are stored.
 const TABS_KEY = 'hq-float-tabs', TAB_NAMES = ['needs', 'agents', 'stuck'];
-const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false});
+const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false, filter: blankNeeds('none')});
 const idOrNull = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 200 ? v : null);
 const place = (v) => (Number.isFinite(v) && v >= 0 ? Math.min(Math.round(v), 1e6) : 0);
 function cleanTabs(saved) {
@@ -519,12 +525,16 @@ function cleanTabs(saved) {
     const t = saved?.tabs?.[name];
     if (!t || typeof t !== 'object') return [name, blankTab()];
     return [name, {item: idOrNull(t.item), agent: idOrNull(t.agent), cursor: idOrNull(t.cursor), index: place(t.index), scroll: place(t.scroll),
-      body: place(t.body), itemTab: ['steps', 'why', 'context', 'ask'].includes(t.itemTab) ? t.itemTab : null, all: t.all === true}];
+      body: place(t.body), itemTab: ['steps', 'why', 'context', 'ask'].includes(t.itemTab) ? t.itemTab : null, all: t.all === true,
+      filter: cleanNeeds(t.filter, 'none')}];
   }));
   return {view: TAB_NAMES.includes(saved?.view) ? saved.view : 'needs', tabs};
 }
 let tabState = cleanTabs(remember(TABS_KEY));
 listView = tabState.view;
+needsFilter = () => tabState.tabs.needs.filter;
+needsBase = () => attention();
+saveNeeds = () => {saveTab();};
 // Whether what a tab had open is still there to show.
 function stillOpen(view, id, agent) {
   const i = model?.items.find((x) => x.id === id);
@@ -542,8 +552,9 @@ function saveTab() {
     body: route.item ? place($('.d-body')?.scrollTop) : 0, itemTab: route.item ? draftOf(route.item).tab || null : null,
     all: listView === 'agents' && agentsAll});
   tabState.view = listView;
-  const json = JSON.stringify(tabState);
-  if (json !== saveTab.last) {saveTab.last = json; remember(TABS_KEY, tabState);}
+  const kept = {view: tabState.view, tabs: Object.fromEntries(Object.entries(tabState.tabs).map(([name, x]) => [name, {...x, filter: keptNeeds(x.filter || blankNeeds('none'))}]))};
+  const json = JSON.stringify(kept);
+  if (json !== saveTab.last) {saveTab.last = json; remember(TABS_KEY, kept);}
 }
 // Back into a tab as you left it. Something answered, closed or gone in the meantime shows
 // its list instead, on the row that took its place.
@@ -624,6 +635,7 @@ function backToList() {
 function panelKey(e) {
   if (!floatOpen || customizing || drag || recording || recordingPanel || e.defaultPrevented) return;
   // While typing, the arrows and Enter belong to the text; Escape first leaves the box.
+  if (!route.item && listView === 'needs' && needsKey(e)) {e.preventDefault(); e.stopImmediatePropagation(); return;}
   if (e.target.matches?.('input, textarea, select, [contenteditable="true"]')) {
     if (e.key !== 'Escape') return;
     e.preventDefault();
@@ -717,7 +729,9 @@ function paintFloat({background = false} = {}) {
   pill.setAttribute('aria-label', pillLabel(items, live));
   pill.title = 'Click to open. Drag to move. Right-click for more.';
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
+  const finding = document.activeElement?.matches?.('[data-g-q]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
+  if (finding) {const q = $('#main [data-g-q]'); q?.focus({preventScroll: true}); q?.setSelectionRange(...finding);}
   if (mode === 'list') {markCursor(); slideList(listMotion); glideAgents(tops);}
   listMotion = null;
   const detail = $('#detail'), active = document.activeElement;
@@ -850,8 +864,9 @@ function boxSize(mode = document.body.dataset.mode) {
   }
   const chosen = chosenSize(sizeView(mode));
   if (mode === 'list') {
-    const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
-    return {width: chosen.width, height: Math.min(chosen.height, head + rows + 2)};
+    const above = [...($('#main')?.children || [])].filter((el) => !el.matches('.f-rows, .g-pop')).reduce((n, el) => n + el.offsetHeight, 0);
+    const rows = $('.f-rows-in')?.offsetHeight || 0;
+    return {width: chosen.width, height: Math.min(chosen.height, above + rows + 2)};
   }
   return {width: chosen.width, height: Math.max(ITEM_MIN, Math.min(chosen.height, itemHeight() + 2)) + STACK};
 }
@@ -1410,7 +1425,7 @@ function bootFloat() {
   applyFeel();
   document.addEventListener('mousedown', (e) => {
     swallowClick = false;
-    if (e.target.closest('#pill') || (e.target.closest('.f-head, .d-bar') && !e.target.closest(CONTROLS))) armDrag(e);
+    if (e.target.closest('#pill') || (e.target.closest('.f-head, .g-head, .d-bar') && !e.target.closest(CONTROLS))) armDrag(e);
   });
   // Ending a drag on the pill must not also count as clicking it.
   document.addEventListener('click', (e) => {
@@ -1471,6 +1486,7 @@ function bootFloat() {
     if (e.key !== 'Escape') return;
     if (drag) cancelDrag();
     else if (customizing) {customizing = false; render();}
+    else if (floatOpen && !route.item && listView === 'needs' && needsEscape(e)) {/* the search or a menu took it */}
     else if (floatOpen && !route.item && (agentOpen || listView === 'stuck')) backToList();
     else if (floatOpen && !route.item) setOpen(false);
     else return;
@@ -1487,7 +1503,7 @@ function bootFloat() {
   // Before the dashboard's own keys, which boot() adds after this.
   document.addEventListener('keydown', panelKey);
   document.addEventListener('contextmenu', (e) => {
-    if (!e.target.closest('#pill, .f-head, .d-bar')) return;
+    if (!e.target.closest('#pill, .f-head, .g-head, .d-bar')) return;
     e.preventDefault();
     native({type: 'menu'});
   });

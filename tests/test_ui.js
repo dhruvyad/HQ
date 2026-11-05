@@ -50,19 +50,23 @@ assert.equal(lane('d1'), 'done');
 assert.equal(lane('l1'), 'later');
 assert.equal(lane('q1'), 'agents'); // an open question leaves Needs you until answered
 
-// Needs you: pinned and due-soon lead, then project › workstream groups, most urgent first.
+// Needs you (Views + Groups): grouped by project by default, smart order inside each group.
+run('needsState = cleanNeeds(null, "project")');
 let html = run('needsPage().body');
-assert.ok(html.indexOf('Pinned') < html.indexOf('Due soon'));
-assert.ok(html.indexOf('Due soon') < html.indexOf('Restyle the inbox'));
-assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Human &lt;b&gt;action&lt;/b&gt;')); // rank 20 before 300
-assert.ok(html.includes('<span class="of">HQ</span><span class="of">›</span>Design'));
+assert.ok(html.includes('class="gh "') && html.indexOf('>HQ<') < html.indexOf('>NoClick<')); // projects by name
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('>NoClick<')); // HQ's own item sits under HQ
 assert.ok(!html.includes('<b>action</b>'));
 assert.ok(!html.includes('Agent action') && !html.includes('Snoozed') && !html.includes('Asked the agent'));
-run("sortMode = 'new'");
+run('needsState.group = "none"');
 html = run('needsPage().body');
-assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Pinned one')); // newest first, one feed
-assert.ok(html.includes('HQ › Design') && html.includes('10m ago'));
-run("sortMode = 'urgent'");
+// Smart: pinned first, then due soon, then priority (rank 20 before 300).
+assert.ok(html.indexOf('Pinned one') < html.indexOf('Due today') && html.indexOf('Due today') < html.indexOf('Restyle the inbox'));
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Human &lt;b&gt;action&lt;/b&gt;'));
+assert.ok(html.includes('NoClick › Support')); // ungrouped rows say where they live
+run('needsState.order = "newest"');
+html = run('needsPage().body');
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Pinned one')); // newest first
+run('needsState = cleanNeeds(null, "project")');
 
 // Workstream pages count each lane for that scope only.
 run("route = parseRoute('#/p/noclick/support?lane=waiting')");
@@ -344,8 +348,11 @@ assert.ok(run('feel.show') >= 10000); // the real list is never cut short
 html = run('floatListHTML(attention(), true)');
 assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>decision</b>'));
 assert.ok(html.includes('data-item="f-new"') && html.includes('Decision') && html.includes('NoClick › Support'));
-assert.ok(html.includes('Reply failed') && html.includes('data-view="needs" aria-selected="true">Needs you<small>7</small>') && html.includes('data-more'));
-assert.ok(html.includes('data-view="agents" aria-selected="false">Agents<small>1 running</small>')); // the other list, beside it
+assert.ok(html.includes('Reply failed') && html.includes('<span class="h">Needs you</span><span class="count">7</span>') && html.includes('data-more'));
+// Agents and Not acted on sit at the foot of the view menu, since the header has no room for tabs.
+run('needsFilter().open = "view"');
+assert.ok(run('floatListHTML(attention(), true)').includes('data-view="agents"><span class="tick"></span><span class="o-text">Agents</span><span class="n">1 running</span>'));
+run('needsFilter().open = null');
 assert.ok(!html.includes('data-collapse') && !html.includes('target="_blank"')); // one menu, not a cross and an arrow
 assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
@@ -1009,5 +1016,60 @@ run(`route.item = null; dropped = dropFilesAt(null, nativeFiles(fromWindow))`);
 assert.equal(run('dropped'), false);
 assert.deepEqual(Array.from(run('toasts')), ['Open an item to attach files']);
 run(`toast = realToast; uploadFile = realUpload; setDraft('dq', {files: undefined})`);
+
+// Views + Groups: views with counts, a search inside them, four orders, five groupings, folds
+// kept per grouping, Only this, and N of M with Clear.
+const gItem = (id, fields) => ({...item({id, title: id, ...fields}), lane: 'you'});
+context.gBase = [
+  gItem('g1', {title: 'Approve the staging certificate', kind: 'blocker', project: 'lantern', project_name: 'Lantern', session_id: 'codex:a', session_name: 'Deploy watcher', minutes: 1, rank: 20, created: now - 600}),
+  gItem('g2', {title: 'Choose the launch date', kind: 'question', project: 'harbor', project_name: 'Harbor', session_id: 'claude:c', session_name: 'Release planner', minutes: 2, rank: 40, created: now - 7200, pinned: true}),
+  gItem('g3', {title: 'Check the export totals', kind: 'todo', project: 'harbor', project_name: 'Harbor', session_id: 'codex:a', session_name: 'Deploy watcher', minutes: 6, rank: 250, created: now - 3 * 86400, due: run('today()')}),
+  gItem('g4', {title: 'Pick the partner list', kind: 'question', project: 'atlas', project_name: 'Atlas', session_id: 'claude:c', session_name: 'Release planner', minutes: 3, rank: 120, created: now - 86400 * 9}),
+  {...item({id: 'g5', title: 'Reply bounced', kind: 'question', project: 'atlas', project_name: 'Atlas', session_id: 'claude:c', session_name: 'Release planner', status: 'answered', bucket: 'waiting', delivery: 'failed', minutes: 1, created: now - 300}), lane: 'agents'},
+];
+const G = (code) => run(`(() => {const f = cleanNeeds(null, 'none'); ${code}})()`);
+assert.deepEqual(Array.from(G('return needsYou(gBase).map((i) => i.id)')), ['g1', 'g2', 'g3', 'g4', 'g5']); // a failed reply needs you again
+assert.deepEqual(Array.from(G('return narrowNeeds(gBase, f).map((i) => i.id)')), ['g2', 'g3', 'g1', 'g4', 'g5']); // smart: pinned, due, then priority
+assert.deepEqual(Array.from(G("f.order = 'newest'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g5', 'g1', 'g2', 'g3', 'g4']);
+assert.deepEqual(Array.from(G("f.order = 'oldest'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g4', 'g3', 'g2', 'g1', 'g5']);
+assert.deepEqual(Array.from(G("f.order = 'quick'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g1', 'g5', 'g2', 'g4', 'g3']);
+// Views and their counts, with the search applied.
+const viewIds = (view) => Array.from(G(`f.view = '${view}'; return narrowNeeds(gBase, f).map((i) => i.id)`));
+assert.deepEqual(viewIds('decision'), ['g2', 'g4', 'g5']);
+assert.deepEqual(viewIds('failed'), ['g5']);
+assert.deepEqual(viewIds('pinned'), ['g2']);
+assert.deepEqual(viewIds('quick'), ['g2', 'g1', 'g5']);
+assert.deepEqual(viewIds('due'), ['g3']);
+assert.deepEqual(viewIds('project:harbor'), ['g2', 'g3']);
+assert.deepEqual(viewIds('agent:codex:a'), ['g3', 'g1']);
+assert.deepEqual(Array.from(G("f.q = 'deploy watcher'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g3', 'g1']); // search reaches agents and places
+assert.deepEqual(Array.from(G("f.q = 'launch harbor'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g2']); // every word must match
+let pop = G("f.open = 'view'; f.q = 'the'; return needsPopHTML(f, gBase)");
+assert.ok(pop.includes('data-v="decision" role="menuitemradio" aria-checked="false"><span class="tick"></span><span class="o-text">Decisions</span><span class="n">2</span>'));
+assert.ok(pop.includes('By project') && pop.includes('data-v="project:atlas"') && pop.includes('By agent') && pop.includes('data-v="agent:claude:c"'));
+// Groups, each in its own order, and the order holding inside each group.
+const groupsOf = (group) => JSON.parse(G(`f.group = '${group}'; return JSON.stringify(needsGroups(narrowNeeds(gBase, f), f, gBase).map((x) => [x.name, x.rows.map((i) => i.id)]))`));
+assert.deepEqual(groupsOf('project'), [['Atlas', ['g4', 'g5']], ['Harbor', ['g2', 'g3']], ['Lantern', ['g1']]]);
+assert.deepEqual(groupsOf('kind'), [['Blockers', ['g1']], ['Decisions', ['g2', 'g4', 'g5']], ['Actions', ['g3']]]);
+assert.deepEqual(groupsOf('due').map((x) => x[0]), ['Today', 'No due date']);
+assert.deepEqual(groupsOf('agent'), [['Deploy watcher', ['g3', 'g1']], ['Release planner', ['g2', 'g4', 'g5']]]);
+// Folds belong to each grouping; ⌥-click folds or opens them all; Only this narrows to one.
+html = G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'harbor'}}, {}, gBase); return needsBodyHTML(f, gBase, (i) => '<row ' + i.id + '>', () => '')`);
+assert.ok(html.includes('class="gh shut" data-g="fold" data-v="harbor"') && !html.includes('<row g2>') && html.includes('<row g4>'));
+assert.deepEqual(JSON.parse(G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'harbor'}}, {}, gBase); f.group = 'kind'; return JSON.stringify([foldsOf(f).size, f.folds.project])`)), [0, ['harbor']]);
+assert.equal(G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'atlas'}}, {altKey: true}, gBase); return foldsOf(f).size`), 3); // ⌥-click on an open group folds all
+assert.equal(G(`f.group = 'project'; needsAct(f, 'foldall', {dataset: {}}, {}, gBase); needsAct(f, 'foldall', {dataset: {}}, {}, gBase); return foldsOf(f).size`), 0); // the header toggle opens them again
+assert.deepEqual(Array.from(G(`f.group = 'kind'; needsAct(f, 'only', {dataset: {v: 'question', name: 'Decisions'}}, {}, gBase); return narrowNeeds(gBase, f).map((i) => i.id)`)), ['g2', 'g4', 'g5']);
+html = G(`f.group = 'kind'; needsAct(f, 'only', {dataset: {v: 'question', name: 'Decisions'}}, {}, gBase); return needsHeadHTML(f, gBase)`);
+assert.ok(html.includes('<b>3</b> of 5') && html.includes('Only Decisions') && html.includes('data-g="clear">Clear'));
+assert.ok(!G('return needsHeadHTML(f, gBase)').includes('g-tally')); // nothing narrowed, no tally
+assert.ok(G('return needsHeadHTML(f, gBase)').includes('<span class="h">Needs you</span><span class="count">5</span>'));
+assert.equal(G(`f.view = 'failed'; f.q = 'x'; f.only = {group: 'kind', v: 'todo', label: 'Actions'}; needsAct(f, 'clear', {dataset: {}}, {}, gBase); return JSON.stringify([f.view, f.q, f.only])`), '["all","",null]');
+// Kept per tab, without the search text; anything odd in storage starts clean.
+assert.deepEqual(JSON.parse(G(`f.q = 'secret words'; f.view = 'pinned'; return JSON.stringify(keptNeeds(f))`)), {view: 'pinned', order: 'smart', group: 'none', folds: {}, only: null});
+const cleaned = JSON.parse(run(`JSON.stringify(cleanNeeds({view: '<script>', order: 'random', group: 'colour', folds: {project: ['harbor', 42], kind: 'nope'}, only: {group: 'kind', v: 'todo'}}, 'none'))`));
+assert.deepEqual([cleaned.view, cleaned.order, cleaned.group, cleaned.folds, cleaned.only], ['all', 'smart', 'none', {project: ['harbor']}, {group: 'kind', v: 'todo', label: 'todo'}]);
+assert.equal(run("cleanNeeds({view: 'project:harbor'}).view"), 'project:harbor');
+assert.equal(run("cleanTabs({tabs: {needs: {filter: {group: 'agent', view: 'due'}}}}).tabs.needs.filter.group"), 'agent');
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');
