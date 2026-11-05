@@ -749,7 +749,7 @@ assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: ${JSON.strin
 assert.equal(new Set(Object.values(shortcut()).filter(Boolean).map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
 assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {stuck: true, items: true, agents: false, usage: true});
 html = run('shortcutsHTML()');
-assert.ok(html.includes('Open or minimize Needs you') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
+assert.ok(html.includes('Open or minimize the panel') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
 run("recording = 'toggle'; refused = ['next']");
 html = run('shortcutsHTML()');
 assert.ok(html.includes('Press keys…') && html.includes('Another app is using this'));
@@ -922,5 +922,53 @@ context.onlyFiles = {...context.sentWith, answer: listing.trim()};
 assert.ok(run('sentHTML(onlyFiles)').includes('<strong>Sent a file</strong>'));
 const thread = run(`askHTML({status: 'open', comments: [{id: 'q9', author: 'human', state: 'received', text: 'See this' + ${JSON.stringify(listing)}, attachments: [{id: 'ab', name: 'shot.png', type: 'image/png', size: 2048}]}]}, {})`);
 assert.ok(thread.includes('<p>See this</p>') && thread.includes('data-attachment="ab"') && !thread.includes('/data/attachments'));
+
+// Each tab of the panel keeps where you were, across closing it and across a restart.
+run(`realRender = render; render = () => {}; realDrop = dropNotices; dropNotices = () => {};
+  tabState = cleanTabs(null); floatOpen = false; customizing = false; route = parseRoute('#/'); listView = 'needs'; agentOpen = null; cursor = null`);
+// An agent's page survives closing and reopening the panel.
+run(`openTab('agents'); showList('agents', 'codex:r'); setOpen(false)`);
+assert.equal(run('floatOpen'), false);
+run('setOpen(true)');
+assert.equal(run('listView'), 'agents');
+assert.equal(run('agentOpen'), 'codex:r');
+// So does an open item, with its tab and draft.
+run(`showList('needs'); setRouteItem('af'); setDraft('af', {tab: 'context', text: 'half a reply'}); setOpen(false); setOpen(true)`);
+assert.equal(run('route.item'), 'af');
+assert.equal(run("draftOf('af').text"), 'half a reply');
+assert.equal(run("draftOf('af').tab"), 'context');
+// Each tab is its own: switching away and back finds each as it was.
+run(`showList('agents')`);
+assert.equal(run('route.item'), null);
+assert.equal(run('agentOpen'), 'codex:r');
+run(`showList('needs')`);
+assert.equal(run('route.item'), 'af');
+// Something answered while the panel was shut falls back to its list, on the row that took its place.
+run(`setOpen(false); tabState.tabs.needs = {...blankTab(), item: 'f1', index: 2, scroll: 120}; tabState.view = 'needs'`);
+run('setOpen(true)');
+assert.equal(run('route.item'), null);
+assert.equal(run('cursor'), 'f1');
+assert.equal(run('fallbackIndex'), 2);
+// A circle opens its own tab, as it was left; the capsule itself opens the last tab.
+assert.equal(run("pillTarget('agents')"), 'agents');
+assert.equal(run("pillTarget('needs')"), 'needs');
+assert.equal(run("pillTarget('due')"), 'needs');
+assert.equal(run("pillTarget('stuck')"), 'stuck');
+assert.equal(run("pillTarget('claude')"), null);
+assert.equal(run("pillTarget(null)"), null);
+assert.equal(run("pillTarget('needs', 'agents')"), 'agents'); // a notice about an agent opens Agents
+run(`setOpen(false); openTab('agents')`);
+assert.equal(run('agentOpen'), 'codex:r');
+// What is stored is ids and positions, never what items say.
+const stored = run('JSON.stringify(tabState)');
+assert.ok(stored.includes('"agent":"codex:r"') && !stored.includes('Pick') && !stored.includes('half a reply'));
+// A missing or corrupt entry starts clean rather than failing.
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanTabs(null))')).view, 'needs');
+assert.deepEqual(JSON.parse(run("JSON.stringify(cleanTabs('garbage'))")).tabs.agents, JSON.parse(run('JSON.stringify(blankTab())')));
+const junk = JSON.parse(run(`JSON.stringify(cleanTabs({view: 'evil', tabs: {needs: {item: 42, cursor: '${'x'.repeat(300)}', scroll: -5, index: 'x', itemTab: 'bad', all: 'yes'}, agents: 'nope'}}))`));
+assert.equal(junk.view, 'needs');
+assert.deepEqual(junk.tabs.needs, JSON.parse(run('JSON.stringify(blankTab())')));
+assert.equal(run("remember('hq-float-tabs')"), null); // no storage here at all, and nothing throws
+run('render = realRender; dropNotices = realDrop; floatOpen = false; route = parseRoute("#/"); listView = "needs"; agentOpen = null');
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

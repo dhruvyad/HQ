@@ -30,7 +30,7 @@ const BURST_WINDOW = 350, FOLD_FOR = 640, ROLL_AFTER = 260, HOLD_TICK = 100;
 const AGENT_START_HOLD = 3, AGENT_STOP_HOLD = 8;
 const CONTROL_OPTION = 6144;
 const SHORTCUTS = {
-  toggle: {name: 'Open or minimize Needs you', key: {keyCode: 4, modifiers: CONTROL_OPTION, label: '⌃⌥H'}},
+  toggle: {name: 'Open or minimize the panel', key: {keyCode: 4, modifiers: CONTROL_OPTION, label: '⌃⌥H'}},
   next: {name: 'Next item', key: {keyCode: 38, modifiers: CONTROL_OPTION, label: '⌃⌥J'}},
   previous: {name: 'Previous item', key: {keyCode: 40, modifiers: CONTROL_OPTION, label: '⌃⌥K'}},
   dashboard: {name: 'Open the dashboard', key: {keyCode: 2, modifiers: CONTROL_OPTION, label: '⌃⌥D'}},
@@ -111,7 +111,7 @@ let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = nul
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
 let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
 let lastItems = null, lastUsage = null, lastStuck = null, pending = [], notice = null;
-let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null;
+let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null, fallbackIndex = null, pendingScroll = null;
 const agentMemory = new Map();
 
 function cleanShortcuts(saved) {
@@ -497,13 +497,91 @@ function agentPageHTML(a, now) {
     ${lane('you', 'Needs you')}${lane('agents', 'With the agent')}${lane('waiting', 'Waiting on someone')}
     <button class="ghost-pill f-wide" type="button" data-agent-dashboard="${esc(a.id)}">Open in the dashboard</button></div>`;
 }
+// Each tab keeps where you were in it: what it had open, its highlight and its scroll. Closing
+// the panel keeps it, and so does a restart, since only ids and positions are stored.
+const TABS_KEY = 'hq-float-tabs', TAB_NAMES = ['needs', 'agents', 'stuck'];
+const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false});
+const idOrNull = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 200 ? v : null);
+const place = (v) => (Number.isFinite(v) && v >= 0 ? Math.min(Math.round(v), 1e6) : 0);
+function cleanTabs(saved) {
+  const tabs = Object.fromEntries(TAB_NAMES.map((name) => {
+    const t = saved?.tabs?.[name];
+    if (!t || typeof t !== 'object') return [name, blankTab()];
+    return [name, {item: idOrNull(t.item), agent: idOrNull(t.agent), cursor: idOrNull(t.cursor), index: place(t.index), scroll: place(t.scroll),
+      body: place(t.body), itemTab: ['steps', 'why', 'context', 'ask'].includes(t.itemTab) ? t.itemTab : null, all: t.all === true}];
+  }));
+  return {view: TAB_NAMES.includes(saved?.view) ? saved.view : 'needs', tabs};
+}
+let tabState = cleanTabs(remember(TABS_KEY));
+listView = tabState.view;
+// Whether what a tab had open is still there to show.
+function stillOpen(view, id, agent) {
+  const i = model?.items.find((x) => x.id === id);
+  if (!i) return false;
+  if (view === 'stuck') return isStuck(i);
+  if (view === 'agents') return i.session_id === agent && i.lane !== 'done';
+  return attention().some((x) => x.id === id);
+}
+function saveTab() {
+  const t = tabState.tabs[listView];
+  if (!t || !floatOpen || customizing) return;
+  const rows = cursorRows(), on = route.item || cursor;
+  Object.assign(t, {item: route.item || null, agent: listView === 'agents' ? agentOpen : null, cursor,
+    index: Math.max(0, rows.findIndex((r) => rowKey(r) === on)), scroll: place($('.f-rows')?.scrollTop),
+    body: route.item ? place($('.d-body')?.scrollTop) : 0, itemTab: route.item ? draftOf(route.item).tab || null : null,
+    all: listView === 'agents' && agentsAll});
+  tabState.view = listView;
+  const json = JSON.stringify(tabState);
+  if (json !== saveTab.last) {saveTab.last = json; remember(TABS_KEY, tabState);}
+}
+// Back into a tab as you left it. Something answered, closed or gone in the meantime shows
+// its list instead, on the row that took its place.
+function restoreTab(view) {
+  const t = tabState.tabs[view] || blankTab();
+  listView = view;
+  agentOpen = view === 'agents' && t.agent && state.sessions.some((x) => x.id === t.agent) ? t.agent : null;
+  agentsAll = view === 'agents' && t.all;
+  const item = t.item && stillOpen(view, t.item, agentOpen) ? t.item : null;
+  if (item && t.itemTab && !draftOf(item).tab) setDraft(item, {tab: t.itemTab});
+  // A stale item stays the highlight; it is gone from the list, so the row now at its place lights.
+  cursor = item || t.item || t.cursor;
+  fallbackIndex = t.index;
+  pendingScroll = {list: t.scroll, body: item ? t.body : 0};
+  return item;
+}
+// The item the panel shows, changed without a navigation, so it paints once.
+function setRouteItem(item) {
+  if ((route.item || null) === (item || null)) return;
+  route = {...route, item: item || null};
+  try {history.replaceState(null, '', href(route));} catch {}
+}
+// Opening the panel goes back to a tab as you left it: the last one, or the circle's own.
+function openTab(view = tabState.view, item) {
+  dropNotices();
+  floatOpen = true;
+  customizing = false;
+  if (item !== undefined) {
+    listView = view;
+    agentOpen = null;
+    cursor = item;
+  }
+  setRouteItem(item !== undefined ? item : restoreTab(view));
+  render();
+}
+// Which tab a click on the pill means: a notice's own, a circle's own, or, for the capsule
+// itself, wherever you were.
+function pillTarget(metric, noticeGroup) {
+  if (noticeGroup) return noticeGroup === 'agents' ? 'agents' : 'needs';
+  return {needs: 'needs', decisions: 'needs', due: 'needs', agents: 'agents', stuck: 'stuck'}[metric] || null;
+}
 // The highlighted row in whichever list is open: the first on open, the item you came back from.
 const cursorRows = () => [...document.querySelectorAll('#main [data-item], #main [data-agent]')];
 const rowKey = (row) => row.dataset.item || row.dataset.agent;
 function markCursor(scroll = false) {
   const rows = cursorRows();
   if (!rows.length) return;
-  const row = rows.find((r) => rowKey(r) === cursor) || rows[0];
+  const row = rows.find((r) => rowKey(r) === cursor) || rows[Math.min(fallbackIndex ?? 0, rows.length - 1)];
+  fallbackIndex = null;
   cursor = rowKey(row);
   rows.forEach((r) => r.classList.toggle('hl', r === row));
   if (scroll) row.scrollIntoView({block: 'nearest'});
@@ -576,13 +654,18 @@ function recordPanelKey(e) {
 // Moving between lists slides the way the header reads: Agents and an agent's page sit to the right.
 function showList(view, agent = null) {
   const depth = (v, a) => (v === 'needs' ? 0 : a ? 2 : 1);  // Not acted on and Agents both sit one step in
-  const from = depth(listView, agentOpen), to = depth(view, agent);
-  listMotion = to > from ? 'push' : to < from ? 'pop' : null;
-  if (view === 'agents' && listView !== 'agents') agentsAll = false;
-  listView = view;
-  agentOpen = agent;
+  const from = depth(listView, agentOpen);
+  saveTab();
+  // Another tab comes back as you left it; within a tab, this opens an agent or steps back.
+  let item = null;
+  if (view !== listView) item = restoreTab(view);
+  else {
+    agentOpen = agent;
+    if (agent) {cursor = null; pendingScroll = {list: 0, body: 0};}
+  }
+  listMotion = depth(listView, agentOpen) > from ? 'push' : depth(listView, agentOpen) < from ? 'pop' : null;
   customizing = false;
-  if (route.item) return go({item: null});
+  setRouteItem(item);
   render();
 }
 function slideList(motion) {
@@ -629,7 +712,12 @@ function paintFloat({background = false} = {}) {
   const detail = $('#detail'), active = document.activeElement;
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
   if (!(background && detail.contains(active) && active.matches('textarea, input, select'))) renderDetail();
-  scrolls.forEach(([sel, top]) => top && document.querySelector(sel) && (document.querySelector(sel).scrollTop = top));
+  if (pendingScroll && mode !== 'pill') {
+    const rows = $('.f-rows'), body = $('.d-body');
+    if (rows) rows.scrollTop = pendingScroll.list;
+    if (body && pendingScroll.body) body.scrollTop = pendingScroll.body;
+    pendingScroll = null;
+  } else scrolls.forEach(([sel, top]) => top && document.querySelector(sel) && (document.querySelector(sel).scrollTop = top));
   document.body.dataset.mode = mode;
   // Content keeps its final width while the box springs, so it never reflows mid-motion.
   document.documentElement.style.setProperty('--f-content', `${mode === 'settings' ? LIST_WIDTH : chosenSize(sizeView(mode)).width}px`);
@@ -641,6 +729,7 @@ function paintFloat({background = false} = {}) {
   moveDeck(kind, outgoing);
   lastMode = mode;
   lastItem = route.item;
+  if (mode === 'list' || mode === 'item') saveTab();
 }
 function noteChanges(items) {
   if (!snapshotSignature) return;
@@ -903,9 +992,11 @@ function layoutSoon() {
   requestAnimationFrame(() => {layoutSoon.pending = false; layout();});
 }
 function setOpen(open) {
-  if (open) {dropNotices(); cursor = null;}
-  floatOpen = open;
-  if (!open) customizing = false;
+  if (open) return openTab();
+  // Closing keeps everything: each tab is as you left it next time.
+  saveTab();
+  floatOpen = false;
+  customizing = false;
   render();
 }
 function syncPill() {
@@ -1080,10 +1171,7 @@ function applyShortcuts() {
   native({type: 'hotkeys', hotkeys: hotkeyList(shortcuts)});
 }
 function runShortcut(action) {
-  if (action === 'toggle') {
-    if (!floatOpen) {listView = 'needs'; agentOpen = null;}
-    return setOpen(!floatOpen);
-  }
+  if (action === 'toggle') return setOpen(!floatOpen);
   if (action === 'dashboard') return native({type: 'openDashboard'});
   if (action === 'customize') {
     customizing = true;
@@ -1319,19 +1407,16 @@ function bootFloat() {
     const circle = e.target.closest('[data-circle]'), shift = e.target.closest('[data-circle-move]');
     const toggle = e.target.closest('[data-notify]'), record = e.target.closest('[data-record]');
     if (e.target.closest('#pill')) {
-      // The pill opens the list for the circle you clicked: the agents circle, or an agent's
-      // notice, opens Agents. Clicking the list that is already open closes it.
+      // A circle opens its own tab, as you left it; the capsule itself, wherever you were. A
+      // notice opens what it is about. Clicking the tab that is already open closes it.
       const item = notice?.item, rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
       const metric = e.target.closest('[data-metric]')?.dataset.metric || (spot.on ? rows[spot.index]?.dataset.metric : null);
-      const target = notice?.group === 'agents' || (!notice && metric === 'agents') ? 'agents' : !notice && metric === 'stuck' ? 'stuck' : 'needs';
-      if (floatOpen && target === listView && !agentOpen) return setOpen(false);
+      const target = pillTarget(metric, notice?.group);
+      if (floatOpen && (!target || target === listView)) return setOpen(false);
       if (floatOpen) return showList(target);
-      listView = target;
-      agentOpen = null;
-      agentsAll = false;
-      setOpen(true);
-      if (target === 'needs' && item && model.items.some((i) => i.id === item)) openItem(item);
       // An item that is no longer in Needs you, such as a stuck decision, still opens.
+      if (notice && item && model.items.some((i) => i.id === item)) return openTab('needs', item);
+      openTab(target || tabState.view);
     } else if (e.target.closest('[data-more]')) native({type: 'menu'});
     else if (toggle) {
       notify = {...notify, [toggle.dataset.notify]: !notify[toggle.dataset.notify]};
@@ -1388,6 +1473,8 @@ function bootFloat() {
   document.addEventListener('input', layoutSoon);
   // The answer folds in place; once it settles, the box may need to grow to hold it.
   $('#box').addEventListener('transitionend', (e) => {if (e.target.classList?.contains('d-fold')) layoutSoon();});
+  // Scrolling is remembered too, once it settles.
+  $('#box').addEventListener('scroll', () => {clearTimeout(saveTab.timer); saveTab.timer = setTimeout(saveTab, 250);}, true);
   document.addEventListener('toggle', layoutSoon, true);
   document.fonts?.ready.then(layoutSoon);
   window.addEventListener('resize', layoutSoon);
