@@ -281,6 +281,9 @@ function receive(message) {
   else if (message.type === 'saved') saved(message.dock, message.ok);
   else if (message.type === 'resigned') {
     if (floatOpen && !route.item && !drag && feel.away === 'collapse') setOpen(false);
+  } else if (message.type === 'hover') {
+    // A panel that is not key never gets :hover from WebKit, so the window reports it.
+    document.body.toggleAttribute('data-hover', message.on);
   } else if (message.type === 'feel' && message.key in feel) {
     feel[message.key] = message.value;
     applyFeel();

@@ -67,6 +67,7 @@ const AXES = [
     {value: 0, label: 'None', why: 'The empty state.'},
   ]},
 ];
+const LAB_SESSION = 'lab:fixtures'; // floating.py seeds it; the lab has no other conversation.
 const PRESETS = [
   {name: 'Recommended', why: 'Each axis at its starting point.', set: {}},
   {name: 'OpenFlow feel', why: 'Same drag as the flow bar, with the top left added.', set: {targets: 'flow', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5}},
@@ -91,10 +92,7 @@ function bootLab() {
   const native = (message) => window.webkit?.messageHandlers?.hq?.postMessage(message);
   const token = document.querySelector('meta[name="hq-token"]').content;
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
-  const api = async (path, body) => {
-    const response = await fetch(`/api/${path}`, {method: body ? 'POST' : 'GET', headers: {'X-HQ-Token': token, 'Content-Type': 'application/json'}, body: body && JSON.stringify(body)});
-    return response.json();
-  };
+  const api = (path, body) => fetch(`/api/${path}`, {method: 'POST', headers: {'X-HQ-Token': token, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const picked = defaults(), notes = {};
   let overall = '';
   const send = (id) => native({type: 'feel', key: id, value: picked[id]});
@@ -136,8 +134,7 @@ function bootLab() {
       }
       paint();
     } else if (e.target.closest('#lab-arrive')) {
-      const state = await api('state');
-      await api('items', {session_id: state.sessions[0].id, title: `New decision at ${new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`, kind: 'question', owner: 'human', options: ['Yes', 'No']});
+      await api('items', {session_id: LAB_SESSION, title: `New decision at ${new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`, kind: 'question', owner: 'human', options: ['Yes', 'No']});
     } else if (e.target.closest('#lab-send')) {
       native({type: 'picks', text: picksText(picked, notes, overall)});
     }

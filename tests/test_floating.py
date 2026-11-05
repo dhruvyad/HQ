@@ -21,6 +21,7 @@ import urllib.error
 from unittest.mock import Mock, patch
 
 from hq import cli, floating
+from hq import server as server_module
 from hq.server import Server
 from hq.store import Store
 
@@ -642,6 +643,42 @@ class CommandTests(FloatingCase):
             cli.launch(4310)
         browser.assert_called_once_with("http://127.0.0.1:4310")
         self.assertEqual(out.getvalue().strip(), "http://127.0.0.1:4310")
+
+
+class LabIsolationTests(unittest.TestCase):
+    """The lab's server holds fixtures only: it never learns about or delivers to a real agent."""
+
+    def workers_started(self, lab):
+        environment = {"HQ_HOME": tempfile.mkdtemp()}
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", environment["HQ_HOME"]]))
+        if lab:
+            environment["HQ_FLOAT_LAB"] = "1"
+        cleared = {key: value for key, value in os.environ.items() if key != "HQ_FLOAT_LAB"}
+        with patch.dict(os.environ, {**cleared, **environment}, clear=True), \
+                patch("hq.server.Dispatcher") as dispatcher, patch("hq.server.ClaudePresence") as presence, \
+                patch.object(Server, "serve_forever"), contextlib.redirect_stdout(io.StringIO()):
+            # Off the main thread, so serve() leaves this process's signal handlers alone.
+            thread = threading.Thread(target=server_module.serve, args=(0,))
+            thread.start()
+            thread.join(10)
+        self.assertFalse(thread.is_alive())
+        return dispatcher.call_count, presence.call_count
+
+    def test_the_lab_server_runs_neither_background_worker(self):
+        self.assertEqual(self.workers_started(lab=True), (0, 0))
+
+    def test_the_real_server_still_runs_both(self):
+        self.assertEqual(self.workers_started(lab=False), (1, 1))
+
+    def test_the_bench_adds_items_only_to_the_fixture_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "lab.sqlite3")
+            floating.seed_lab(store)
+            sessions = [session["id"] for session in store.snapshot()["sessions"]]
+        bench = (ROOT / "hq/static/float-lab.js").read_text()
+        self.assertEqual(sessions, ["lab:fixtures"])
+        self.assertIn(f"const LAB_SESSION = '{sessions[0]}'", bench)
+        self.assertNotIn("sessions[0]", bench)
 
 
 if __name__ == "__main__":

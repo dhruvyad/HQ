@@ -183,21 +183,21 @@ def serve(port=4310):
         state = home / "server.json"
         state.write_text(json.dumps({"pid": os.getpid(), "port": server.server_port, "instance": server.instance}))
         os.chmod(state, 0o600)
-        dispatcher = Dispatcher(server.store)
-        thread = threading.Thread(target=dispatcher.run, daemon=True)
-        thread.start()
-        presence = ClaudePresence(server.store)
-        presence_thread = threading.Thread(target=presence.run, daemon=True)
-        presence_thread.start()
+        # The lab's throwaway HQ holds only fixtures: nothing may discover a real
+        # conversation into it, or deliver from it.
+        workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3)]
+        threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
+        for thread in threads:
+            thread.start()
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
         print(f"HQ is running at {server.origin}", flush=True)
         try:
             server.serve_forever()
         finally:
-            dispatcher.stop.set()
-            presence.stop.set()
-            thread.join(timeout=5)
-            presence_thread.join(timeout=3)
+            for worker, _ in workers:
+                worker.stop.set()
+            for thread, (_, patience) in zip(threads, workers):
+                thread.join(timeout=patience)
             server.server_close()
             state.unlink(missing_ok=True)
