@@ -349,10 +349,14 @@ html = run('floatListHTML(attention(), true)');
 assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>decision</b>'));
 assert.ok(html.includes('data-item="f-new"') && html.includes('Decision') && html.includes('NoClick › Support'));
 assert.ok(html.includes('Reply failed') && html.includes('<span class="h">Needs you</span><span class="count">7</span>') && html.includes('data-more'));
-// Agents and Not acted on sit at the foot of the view menu, since the header has no room for tabs.
+// Agents is reached only from its circle, never from Needs you; Not acted on, a view of your own
+// decisions, is the view menu's plain last entry, and only when there is one.
 run('needsFilter().open = "view"');
-assert.ok(run('floatListHTML(attention(), true)').includes('data-view="agents"><span class="tick"></span><span class="o-text">Agents</span><span class="n">1 running</span>'));
-run('needsFilter().open = null');
+html = run('floatListHTML(attention(), true)');
+assert.ok(!html.includes('data-view="agents"') && !html.includes('>Agents<') && !html.includes('Elsewhere'));
+run('realStuck = stuckItems; stuckItems = () => [{id: "s1"}, {id: "s2"}]');
+assert.ok(run('floatListHTML(attention(), true)').includes('<div class="p-rule"></div><button class="g-opt" type="button" data-view="stuck"><span class="tick"></span><span class="o-text">Not acted on</span><span class="n">2</span></button></div>'));
+run('stuckItems = realStuck; needsFilter().open = null');
 assert.ok(!html.includes('data-collapse') && !html.includes('target="_blank"')); // one menu, not a cross and an arrow
 assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
@@ -421,7 +425,8 @@ assert.equal(run("folderName('')"), 'No folder');
 // The panel shows the same folders, and an agent's own page lists its items to open.
 run(`savedSessions = state.sessions; state.sessions = agentSessions; listView = 'agents'`);
 html = run('agentsPanelHTML(attention(), true)');
-assert.ok(html.includes('data-view="agents" aria-selected="true"') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
+assert.ok(html.includes('<span class="f-headline"><h1>Agents</h1>') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
+assert.ok(!html.includes('data-view="needs"') && !html.includes('role="tablist"')); // no way across to Needs you but the pill
 assert.ok(html.includes('Old &lt;chat&gt;') === false && html.includes('data-agents-all>1 more, in 1 folder')); // quiet ones folded
 assert.ok(!html.includes('/Users/someone'));
 run("agentOpen = 'c:done'");

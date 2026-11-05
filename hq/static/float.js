@@ -466,10 +466,11 @@ function floatListHTML(items, live = liveHealthy) {
   const quiet = stuck ? `<button class="f-quiet f-stuck" type="button" data-view="stuck">${stuckWords(stuck)}</button>` : '';
   return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows}${quiet}</div></div>`;
 }
-// The panel's other lists, at the foot of the view menu, since its header has no room for tabs.
+// Not acted on is a view of your own decisions, so it is the view menu's last entry. Agents is
+// a list of its own, reached only from its circle on the pill.
 function elsewhereHTML() {
-  const running = model.agents.filter((a) => agentState(a) === 'active').length, stuck = stuckItems().length;
-  return `<div class="p-label">Elsewhere</div><button class="g-opt" type="button" data-view="agents"><span class="tick"></span><span class="o-text">Agents</span><span class="n">${running ? `${running} running` : ''}</span></button>${stuck ? `<button class="g-opt" type="button" data-view="stuck"><span class="tick"></span><span class="o-text">Not acted on</span><span class="n">${stuck}</span></button>` : ''}`;
+  const stuck = stuckItems().length;
+  return stuck ? `<div class="p-rule"></div><button class="g-opt" type="button" data-view="stuck"><span class="tick"></span><span class="o-text">Not acted on</span><span class="n">${stuck}</span></button>` : '';
 }
 
 // Decisions an agent has not acted on, oldest first: a quiet view under Needs you.
@@ -487,10 +488,11 @@ function stuckChanges(before, after) {
     title: `${{stopped: 'An agent stopped before acting on', unheard: 'Not heard in a day', unclosed: 'Heard but never closed'}[i.followup.stuck] || 'Not acted on'}: ${i.title}`,
     sub: i.project_name, dot: 'bad'}));
 }
-// The two lists share one header: Needs you, and Agents beside it.
-function listTabs(items) {
+// Agents stands on its own: the needs circle opens Needs you and the agents circle opens this,
+// so the header is just its name and how many are running.
+function agentsTitle() {
   const running = model.agents.filter((a) => agentState(a) === 'active').length;
-  return `<div class="f-tabs" role="tablist" aria-label="Lists"><button class="f-tab" type="button" role="tab" data-view="needs" aria-selected="${listView === 'needs'}">Needs you${items.length ? `<small>${items.length}</small>` : ''}</button><button class="f-tab" type="button" role="tab" data-view="agents" aria-selected="${listView === 'agents'}">Agents${running ? `<small>${running} running</small>` : ''}</button></div>`;
+  return `<span class="f-headline"><h1>Agents</h1>${running ? `<span class="f-count">${running} running</span>` : ''}</span>`;
 }
 const offlineNote = (live) => (live ? '' : '<span class="f-off"><span class="dot err"></span>Reconnecting…</span>');
 const moreButton = `<button class="icon-btn f-push" type="button" data-more aria-label="More" title="More">${icon('more')}</button>`;
@@ -504,7 +506,7 @@ function agentsPanelHTML(items, live = liveHealthy) {
   const quiet = view.quiet.length ? (agentsAll ? view.quiet.map(folder).join('')
     : `<button class="f-quiet" type="button" data-agents-all>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}</button>`) : '';
   const body = view.groups.map(folder).join('') || '<div class="f-empty">No agent has run in the last day</div>';
-  return `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${body}${quiet}</div></div>`;
+  return `<header class="f-head">${agentsTitle()}${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${body}${quiet}</div></div>`;
 }
 // One agent: what it is doing, where, and its open items, which open as usual.
 function agentPageHTML(a, now) {

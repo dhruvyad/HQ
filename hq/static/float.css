@@ -141,12 +141,10 @@ body[data-resizing] .f-box {transition: none;}
 .f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
 .f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
 .f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
-/* The list header: Needs you, and Agents beside it. */
-.f-tabs {display: flex; align-items: baseline; gap: 14px; min-width: 0;}
-.f-tab {font: 400 20px/1 var(--display); letter-spacing: -0.01em; color: rgb(250 250 250 / 0.38); white-space: nowrap; transition: color .15s;}
-.f-tab:hover {color: rgb(250 250 250 / 0.7);}
-.f-tab[aria-selected="true"] {color: var(--foreground);}
-.f-tab small {margin-left: 6px; font: 400 12.5px/1 var(--sans); color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+/* Agents' header: its name and how many are running, set like Needs you's. */
+.f-headline {display: inline-flex; align-items: center; gap: 6px; min-width: 0;}
+.f-headline h1 {line-height: 1.15; white-space: nowrap;}
+.f-count {font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap;}
 .f-return {display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 10px 0 4px; margin-left: -6px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); transition: background .12s, color .12s;}
 .f-return:hover {color: var(--foreground); background: var(--hover);}
 .f-return .icon {width: 15px; height: 15px;}
