@@ -230,7 +230,11 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 
 /* Detail */
 .d-bar {display: flex; align-items: center; gap: 2px; height: 56px; padding: 0 12px 0 28px; flex: none;}
-.d-bar .crumbs {flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.d-bar .crumbs {display: flex; align-items: baseline; flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden;}
+/* The crumbs stay whole; the item's source, after them on the same line, gives way first. */
+.d-bar .c-path {flex: none;}
+.d-bar .c-src {min-width: 0; overflow: hidden; text-overflow: ellipsis; color: rgb(161 161 170 / 0.72);}
+.d-bar .c-src .sep {padding: 0 6px; opacity: .6;}
 .d-bar .crumbs button:hover {color: var(--foreground);}
 .icon-btn {display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; color: rgb(250 250 250 / 0.7); transition: background .15s, color .15s;}
 .icon-btn:hover {background: var(--hover); color: var(--foreground);}

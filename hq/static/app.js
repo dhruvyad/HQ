@@ -543,7 +543,7 @@ function needsPage() {
   const fresh = items.filter(isNew).length;
   const desc = items.length ? [`${items.length} items`, `${decisions} decisions`, fresh ? `${fresh} new` : '', minutes ? `about ${Math.max(1, Math.round(minutes / 60))} h of your time` : ''].filter(Boolean).join(' · ') : '';
   return {title: 'Needs you', desc: esc(desc), head: needsHeadHTML(f, items, {extra: `<span class="g-new">${newItemPill}</span>`}),
-    body: `<div class="g-list">${needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project'}), needsEmpty)}</div>`};
+    body: `<div class="g-list">${needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project', source: true}), needsEmpty)}</div>`};
 }
 function scopePage({title, crumb, items, level, desc}) {
   const lanes = LANES.map(([id, label]) => {
@@ -945,8 +945,11 @@ function whereLabel(i) {
   const lone = i.workstream === OTHER && (projectOf(i.project)?.workstreams.length || 0) <= 1;
   return lone ? i.project_name : `${i.project_name} › ${i.workstream_name}`;
 }
-function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false} = {}) {
-  const parts = [];
+// Where an item came from, as its agent wrote it ("worktree · task"), shortened only when very long.
+const SOURCE_MAX = 40;
+const sourceText = (i) => {const s = String(i.source || '').trim(); return s.length > SOURCE_MAX ? `${s.slice(0, SOURCE_MAX - 1).trimEnd()}…` : s;};
+function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false, source = false} = {}) {
+  const parts = [], from = source && sourceText(i) ? `<span class="src">${esc(sourceText(i))}</span>` : '';
   if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].join('<span class="sep">·</span>');
   if (age && i.delivery === 'failed') parts.push('<span class="overdue">Reply failed</span>');
   if (kind && i.kind === 'question') parts.push('Decision');
@@ -954,7 +957,8 @@ function metaHTML(i, {withLane = false, where = false, age = false, kind = false
   if (i.due && i.lane !== 'done') parts.push(`<span class="${daysUntil(i.due) < 0 ? 'overdue' : 'due'}">${dueLabel(i)}</span>`);
   if (withLane) parts.push(LANES.find(([id]) => id === i.lane)[1]);
   if (where) parts.push(esc(whereLabel(i)));
-  if (age) parts.push(ago(i.created));
+  // The source comes just before the time; where there is no time, it ends the line.
+  if (age) {if (from) parts.push(from); parts.push(ago(i.created));}
   else if (i.lane === 'you' && !where) {
     if (i.kind === 'question') parts.push('Decision');
     if (i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
@@ -966,6 +970,7 @@ function metaHTML(i, {withLane = false, where = false, age = false, kind = false
   } else if (i.lane === 'waiting') parts.push(`On ${esc(i.waiting_on || 'someone')}`);
   else if (i.lane === 'later') parts.push(fmtDate(i.defer_until));
   else if (i.lane === 'done') parts.push(i.skipped ? `Skipped · ${fmtDate(i.updated)}` : fmtDate(i.updated));
+  if (!age && from) parts.push(from);
   return parts.join('<span class="sep">·</span>');
 }
 function emptyHTML(lane) {
@@ -1137,7 +1142,9 @@ function detailHTML(i) {
   const crumbs = `<button data-href="${esc(href({page: 'project', project: i.project, lane: i.lane, item: null}))}">${esc(i.project_name)}</button>${lone ? '' : ` › <button data-href="${esc(href({page: 'workstream', project: i.project, workstream: i.workstream, lane: i.lane, item: null}))}">${esc(i.workstream_name)}</button>`}`;
   const draft = draftOf(i.id), tab = tabOf(i, draft);
   const tabs = tabsOf(i).map((t) => `<button class="d-tab" role="tab" id="d-tab-${t.id}" data-tab="${t.id}" aria-selected="${t.id === tab}" aria-controls="d-panel" tabindex="${t.id === tab ? 0 : -1}">${t.label}${t.n ? `<span class="n">${t.n}</span>` : ''}</button>`).join('');
-  return `<div class="d-bar"><div class="crumbs">${crumbs}</div>
+  // The source shares the crumb line: the crumbs stay whole and it gives way first.
+  const from = String(i.source || '').trim();
+  return `<div class="d-bar"><div class="crumbs"><span class="c-path">${crumbs}</span>${from ? `<span class="c-src"><span class="sep">·</span>${esc(from)}</span>` : ''}</div>
       ${i.status === 'open' ? `<button class="icon-btn" data-pin aria-pressed="${Boolean(i.pinned)}" aria-label="${i.pinned ? 'Unpin' : 'Pin'}" title="${i.pinned ? 'Unpin' : 'Pin to the top'}">${icon('pin', i.pinned ? 'filled' : '')}</button>` : ''}
       <button class="icon-btn" data-step="-1" aria-label="Previous item" ${at <= 0 ? 'disabled' : ''}>${icon('up')}</button>
       <button class="icon-btn" data-step="1" aria-label="Next item" ${at < 0 || at >= visible.length - 1 ? 'disabled' : ''}>${icon('down')}</button>

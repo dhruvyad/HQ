@@ -461,7 +461,7 @@ function panelKeysHTML() {
 function floatListHTML(items, live = liveHealthy) {
   const f = needsFilter(), stuck = stuckItems().length;
   const head = needsHeadHTML(f, items, {extra: offlineNote(live), more: moreButton, elsewhere: elsewhereHTML()});
-  const rows = needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project', age: true, kind: true}),
+  const rows = needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project', age: true, kind: true, source: true}),
     (narrowed) => (narrowed ? needsEmpty(true) : `<div class="f-empty">${EMPTY.you[0]}</div>`));
   const quiet = stuck ? `<button class="f-quiet f-stuck" type="button" data-view="stuck">${stuckWords(stuck)}</button>` : '';
   return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows}${quiet}</div></div>`;
@@ -987,7 +987,13 @@ function runningHTML(now = Date.now() / 1000) {
     const last = agents.filter((a) => a.last).sort((a, b) => b.last - a.last)[0];
     return last ? `<span class="f-spot-sum">${esc(last.name)} finished ${ago(last.last)}</span>` : '';
   }
-  const row = (a) => `<span class="f-spot-agent"><span class="dot active" aria-hidden="true"></span><span class="n">${esc(a.name)}</span><small>${esc(a.harness)} · ${a.background ? 'in the background' : a.since ? `running ${runFor(now - a.since)}` : 'running'}</small></span>`;
+  // The name takes the room; the right side stays short ("Claude · 12m", "↻" in the background),
+  // with the full words for VoiceOver.
+  const row = (a) => {
+    const time = a.since ? runFor(now - a.since) : '', tool = a.harness.replace(/ (Code|Desktop)$/, '');
+    const said = `${a.name}, ${a.harness}, ${a.background ? 'in the background' : 'running'}${time ? ` ${time}` : ''}`;
+    return `<span class="f-spot-agent" role="listitem" aria-label="${esc(said)}"><span class="dot active" aria-hidden="true"></span><span class="n" aria-hidden="true">${esc(a.name)}</span><small aria-hidden="true">${esc(tool)}${time || a.background ? ` · ${a.background ? '↻ ' : ''}${time}` : ''}</small></span>`;
+  };
   return running.slice(0, SPOT_AGENTS).map(row).join('') + (running.length > SPOT_AGENTS ? `<span class="f-spot-more">+${running.length - SPOT_AGENTS} more</span>` : '');
 }
 function spotHTML(id) {
@@ -1329,6 +1335,7 @@ function spotlight(x, y) {
     const label = el.firstElementChild;
     label.innerHTML = spotHTML(rows[index].dataset.metric);
     el.classList.toggle('log', label.children.length > 0);
+    label.querySelectorAll('.f-spot-agent').forEach((row) => {const n = row.querySelector('.n'); row.classList.toggle('two', n.scrollWidth > n.clientWidth + 0.5);});
     el.classList.toggle('instant', first);
     if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
   }

@@ -1209,9 +1209,10 @@ assert.deepEqual(tipAt({left: 600, right: 640, top: 40, bottom: 1020, width: 40,
 run(`savedSessions = state.sessions; state.sessions = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n, at) => ({id: 'r:' + n, name: 'Run ' + n, provider: at % 2 ? 'codex' : 'claude-code', cwd: '/x', last_active: ${clockNow},
   activity: {state: 'active', source: at === 2 ? 'background' : 'live', since: ${clockNow} - (at + 1) * 600}})); model = derive()`);
 html = run('spotHTML("agents")');
-assert.deepEqual([...html.matchAll(/<span class="n">([^<]+)<\/span>/g)].map((m) => m[1]), ['Run a', 'Run b', 'Run c', 'Run d', 'Run e']);
+assert.deepEqual([...html.matchAll(/<span class="n" aria-hidden="true">([^<]+)<\/span>/g)].map((m) => m[1]), ['Run a', 'Run b', 'Run c', 'Run d', 'Run e']);
 assert.ok(html.startsWith('<b>7 agents running</b>') && html.includes('<span class="f-spot-more">+2 more</span>'));
-assert.ok(html.includes('<small>Claude Code · running 10m</small>') && html.includes('<small>Claude Code · in the background</small>') && html.includes('<small>Codex · running 40m</small>'));
+assert.ok(html.includes('<small aria-hidden="true">Claude · 10m</small>') && html.includes('<small aria-hidden="true">Claude · ↻ 30m</small>') && html.includes('<small aria-hidden="true">Codex · 40m</small>'));
+assert.ok(html.includes('aria-label="Run a, Claude Code, running 10m"') && html.includes('aria-label="Run c, Claude Code, in the background 30m"')); // full words for VoiceOver
 assert.ok(!html.includes('f-spot-rule')); // no history, no hairline
 run(`recordMarks([{group: 'agents', metric: 'agents', delta: 1, title: 'Run a started'}])`);
 assert.ok(run('spotHTML("agents")').includes('+2 more</span><span class="f-spot-rule" aria-hidden="true"></span><span class="f-spot-sum">1 started since'));
@@ -1236,5 +1237,23 @@ run('floatOpen = false; marks.seen = Date.now() / 1000');
 assert.ok(!run('pillHTML(attention(), true, markMap())').includes('f-mark-dot')); // seen once opened
 assert.ok(run('spotHTML("needs")').includes('<span class="f-spot-sum">1 added since') && run('spotHTML("needs")').includes('Choose the launch date')); // hover still tells
 run('marks.log = []; marks.seen = 0');
+
+// An item's source ("worktree · task"): just before the time in Needs you, at the end of the line
+// where there is no time, shortened only past 40 characters, and nothing when empty.
+const sourced = (source, extra = {}) => ({...item({id: 'src1', title: 'Sourced', created: now - 7200, source, ...extra}), lane: 'you'});
+context.srcItem = sourced('noclick5 · Airtable tests');
+assert.ok(run("metaHTML(srcItem, {where: true, age: true, kind: true, source: true})").endsWith('<span class="src">noclick5 · Airtable tests</span><span class="sep">·</span>2h ago'));
+assert.ok(run("metaHTML(srcItem, {where: true, source: true})").endsWith('<span class="sep">·</span><span class="src">noclick5 · Airtable tests</span>'));
+assert.ok(!run("metaHTML(srcItem, {where: true, age: true})").includes('src')); // only where asked for
+context.srcItem = sourced('noclick-support-worktree-seven · Reconcile the Stripe webhook retries');
+assert.equal(run("sourceText(srcItem)"), 'noclick-support-worktree-seven · Reconc…');
+assert.equal(run("sourceText(srcItem)").length, 40);
+context.srcItem = sourced('   ');
+assert.ok(!run("metaHTML(srcItem, {age: true, source: true})").includes('src'));
+// On the item, it shares the crumb line, after the crumbs; none, nothing.
+context.srcItem = {...sourced('noclick5 · <Airtable>'), project: 'harbor', project_name: 'Harbor', workstream: 'other', workstream_name: 'Other'};
+html = run('detailHTML(srcItem)');
+assert.ok(/<div class="crumbs"><span class="c-path">.*Harbor<\/button><\/span><span class="c-src"><span class="sep">·<\/span>noclick5 · &lt;Airtable&gt;<\/span><\/div>/.test(html));
+assert.ok(!run("detailHTML({...srcItem, source: ''})").includes('c-src'));
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

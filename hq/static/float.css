@@ -42,6 +42,10 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot-agent .dot {flex: none; width: 6px; height: 6px; transform: translateY(-1px); box-shadow: none;}
 .f-spot-agent .n {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgb(250 250 250 / 0.9);}
 .f-spot-agent small {flex: none; margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--muted-foreground); white-space: nowrap;}
+/* Still too long at the label's width: the name gets its own line, its tool and time under it. */
+.f-spot-agent.two {flex-wrap: wrap;}
+.f-spot-agent.two .n {flex: 1 1 calc(100% - 13px);}
+.f-spot-agent.two small {flex-basis: 100%; margin-left: 13px; padding-left: 0;}
 .f-spot-more {font-size: 11.5px; color: var(--muted-foreground);}
 .f-spot-rule {height: 1px; margin: 5px 0 4px; background: var(--hairline);}
 /* The panel's own tooltip, above everything: macOS draws native ones below the panel's window. */
