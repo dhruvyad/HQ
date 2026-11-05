@@ -75,7 +75,7 @@ a {color: inherit; text-decoration: none;}
 .ws-item[aria-current="page"] {background: var(--current); color: var(--foreground);}
 .ws-item .label {flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
 .sb-foot {border-top: 1px solid var(--hairline); padding: 8px; display: flex; flex-direction: column; gap: 2px;}
-.live {display: flex; align-items: center; gap: 8px; padding: 6px 12px 4px; font-size: 12.5px; color: var(--muted-foreground);}
+.sb-live {display: flex; align-items: center; gap: 8px; padding: 6px 12px 4px; font-size: 12.5px; color: var(--muted-foreground);}
 
 /* Activity */
 .dot {display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none;}
@@ -237,14 +237,14 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .send:disabled {background: rgb(250 250 250 / 0.08); color: rgb(250 250 250 / 0.3); cursor: default;}
 /* Big buttons: the wide primary that sends, and a ghost pill beside it. */
 .go-row {display: flex; gap: 8px;}
-.wide {display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 8px; min-width: 0; height: 44px; padding: 0 18px; border-radius: 999px; background: #fafafa; color: #18181b; font-size: 14.5px; font-weight: 500; transition: background .15s, transform .2s;}
-.wide > span {overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
-.wide:hover {background: rgb(250 250 250 / 0.9);}
-.wide:active {transform: scale(.985);}
+.go-wide {display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 8px; min-width: 0; height: 44px; padding: 0 18px; border-radius: 999px; background: #fafafa; color: #18181b; font-size: 14.5px; font-weight: 500; transition: background .15s, transform .2s;}
+.go-wide > span {overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+.go-wide:hover {background: rgb(250 250 250 / 0.9);}
+.go-wide:active {transform: scale(.985);}
 .ghost-pill {display: inline-flex; flex: none; align-items: center; gap: 6px; height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 14px; font-weight: 500; color: var(--foreground); white-space: nowrap; transition: background .12s;}
 .ghost-pill:hover {background: var(--hover);}
 .ghost-pill .icon {width: 14px; height: 14px; stroke-width: 2.2;}
-.send:focus-visible, .wide:focus-visible, .ghost-pill:focus-visible {border-radius: 999px;}
+.send:focus-visible, .go-wide:focus-visible, .ghost-pill:focus-visible {border-radius: 999px;}
 /* Folds: the composer collapses as the send row rises in, and back. */
 .respond {display: flex; flex-direction: column;}
 .d-fold.open + .d-fold.open {margin-top: 8px;}

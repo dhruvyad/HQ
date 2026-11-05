@@ -129,6 +129,14 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-head .icon {width: 18px; height: 18px;}
 .f-rows {flex: 1; min-height: 0;}
 .f-rows-in {padding: 0 8px 8px;}
+/* The panel is narrow on any screen. Its window covers the whole display, so the dashboard's
+   small-screen rules, which go by the window's width, no longer reach it: repeat them here. */
+:where(html.float) .row {padding: 10px 8px; gap: 10px; align-items: flex-start; flex-direction: column;}
+:where(html.float) .row .title {white-space: normal;}
+:where(html.float) .row .meta {font-size: 12.5px;}
+:where(html.float) .row .new {left: -8px;}
+:where(html.float) .group-head {padding: 0 8px;}
+:where(html.float) .agent-row {flex-direction: row; align-items: center;}
 .f-rows .row {gap: 2px; min-height: 0; padding: 9px 8px; border-radius: 10px;}
 .f-rows .row .title {font-size: 14.5px;}
 .f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}

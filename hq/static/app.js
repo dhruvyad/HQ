@@ -259,7 +259,7 @@ function sidebarHTML() {
     </div>
     <div class="sb-foot">
       <button class="sb-item" id="connect">${icon('plug')}<span class="label">Connect agents</span></button>
-      <div class="live"><span class="dot ${liveHealthy ? 'active' : 'err'}"></span>${liveHealthy ? 'Live' : 'Reconnecting…'}</div>
+      <div class="sb-live"><span class="dot ${liveHealthy ? 'active' : 'err'}"></span>${liveHealthy ? 'Live' : 'Reconnecting…'}</div>
     </div>`;
 }
 function projectNavHTML(p) {
@@ -635,7 +635,7 @@ function dockHTML(i, draft) {
 }
 function sentHTML(i) {
   const failed = i.delivery === 'failed';
-  const retry = failed ? '<div class="go-row"><button class="wide" type="button" data-retry><span>Retry delivery</span></button></div>' : '';
+  const retry = failed ? '<div class="go-row"><button class="go-wide" type="button" data-retry><span>Retry delivery</span></button></div>' : '';
   if (i.skipped) return `<div class="win skipped ${failed ? 'failed' : ''}">${icon('x', 'sm')}<span><strong>You skipped this</strong> · ${esc(i.delivery === 'received' ? 'the agent knows to drop it' : failed ? `couldn't tell the agent${i.delivery_error ? `: ${i.delivery_error}` : ''}` : 'the agent will be told when it next checks in')}</span></div>${retry}`;
   if (i.answer) return `<div class="win ${failed ? 'failed' : ''}">${icon(failed ? 'x' : 'check', 'sm')}<span><strong>${esc(i.answer)}</strong> · ${esc(failed ? `${deliveryText(i)}${i.delivery_error ? `: ${i.delivery_error}` : ''}` : deliveryText(i))}</span></div>${retry}`;
   return '';
@@ -647,7 +647,7 @@ function answerHTML(i, draft) {
 function respondHTML(i, draft) {
   const options = optionsOf(i), state = answerState(i, draft), text = draft.text ?? '';
   const rows = options.map((o, n) => `<button type="button" class="choice" role="radio" data-choice="${esc(o.label)}" aria-checked="${draft.choice === o.label}"><span class="key">${n + 1}</span><span><span class="c-label">${esc(o.label)}</span>${o.recommended ? '<span class="c-rec">Recommended</span>' : ''}${o.note ? `<span class="c-note">${esc(o.note)}</span>` : ''}</span></button>`).join('');
-  const go = `<div class="go-row"><button type="button" class="ghost-pill" data-note aria-pressed="${state === 'note'}">${state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`}</button><button type="submit" class="wide" data-wide><span>${esc(wideLabel(draft.choice, state === 'note' && text.trim()))}</span></button></div>`;
+  const go = `<div class="go-row"><button type="button" class="ghost-pill" data-note aria-pressed="${state === 'note'}">${state === 'note' ? 'Remove note' : `${icon('plus', 'sm')}Note`}</button><button type="submit" class="go-wide" data-wide><span>${esc(wideLabel(draft.choice, state === 'note' && text.trim()))}</span></button></div>`;
   return `<form class="respond" id="respond" data-state="${state}">
     ${options.length ? `<div class="choices" role="radiogroup" aria-label="Options">${rows}</div>` : ''}
     ${foldHTML('note', state !== 'picked', composeHTML({id: 'reply', draft: 'text', value: text, placeholder: replyPlaceholder(i, draft, state), label: state === 'note' ? 'Note' : 'Reply', send: 'Send', ready: Boolean(text.trim())}))}
@@ -664,7 +664,7 @@ function missedText(i, draft) {
 function reportHTML(i, draft) {
   const checks = checksOf(i), ticks = draft.checks || [];
   const ticked = checks.filter((c) => ticks.includes(c.key)).length;
-  if (openMove !== 'off') return `<div class="respond" data-state="report"><div class="go-row"><button type="button" class="ghost-pill" data-report="off">Something was off</button><button type="button" class="wide" data-report="ok"><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div></div>`;
+  if (openMove !== 'off') return `<div class="respond" data-state="report"><div class="go-row"><button type="button" class="ghost-pill" data-report="off">Something was off</button><button type="button" class="go-wide" data-report="ok"><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div></div>`;
   const text = draft.text ?? missedText(i, draft);
   return `<form class="respond" id="respond" data-state="off">
     ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'What was off?', label: 'What was off', send: 'Send', ready: Boolean(text.trim())})}

@@ -251,7 +251,7 @@ assert.ok(!html.includes('data-fold="go"'));
 assert.ok(html.includes('data-done>Mark done') && !pane('dq').includes('data-done')); // decisions are answered or skipped
 // A reply that failed to deliver offers the wide Retry.
 html = pane('fd');
-assert.ok(html.includes('<button class="wide" type="button" data-retry><span>Retry delivery</span>') && html.includes('Codex is not running'));
+assert.ok(html.includes('<button class="go-wide" type="button" data-retry><span>Retry delivery</span>') && html.includes('Codex is not running'));
 assert.ok(!html.includes('id="respond"'));
 
 // The floating panel shares this state and reuses the item pane.
@@ -696,5 +696,15 @@ assert.ok(picks.includes('How long does it glide into place? 180 ms (changed). N
 assert.ok(picks.includes('Which way does the pill run? Depends where it sits\n'));
 assert.ok(picks.endsWith('Overall: more contrast'));
 assert.ok(!picks.includes('how many items')); // sample size is not a decision
+
+// The panel loads style.css too, so the dashboard must never style, on its own, a class the
+// pill puts on its circles. A bare .wide once stretched a 3-digit count into a blob.
+const dashboardCss = fs.readFileSync('hq/static/style.css', 'utf8');
+for (const name of ['wide', 'loud', 'live', 'low', 'none', 'gauge', 'stale', 'dim', 'hot', 'noting', 'instant', 'flying']) {
+  assert.ok(!new RegExp(`(^|[\\s,{}>+~(])\\.${name}(?![\\w-])`).test(dashboardCss), `style.css styles .${name}, which the pill also uses`);
+}
+// The panel's window covers the whole display, so its rows stay narrow without a width query.
+const panelCss = fs.readFileSync('hq/static/float.css', 'utf8');
+assert.ok(/:where\(html\.float\) \.row \{[^}]*flex-direction: column/.test(panelCss));
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');
