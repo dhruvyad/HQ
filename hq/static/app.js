@@ -722,12 +722,12 @@ function heldSheetHTML(a, list, {closing = null, note = ''} = {}) {
   const order = [...list].sort((x, y) => (Boolean(y.followup.stuck) - Boolean(x.followup.stuck)) || (decidedAt(x) - decidedAt(y)));
   const item = (i) => {
     const id = esc(i.id);
-    const give = i.handoff ? `<span class="held-note">Offered to the next agent in ${esc(i.project_name)}</span>`
+    const give = i.handoff ? `<span class="held-note" data-tip="Offered to the next agent in ${esc(i.project_name)}">Offered to the next agent</span>`
       : i.project !== OTHER ? `<button class="ghost-pill sm" type="button" data-held-handoff="${id}">Give to another agent</button>` : '';
     const acts = closing === i.id
       ? `<div class="held-close"><input id="held-note" class="held-input" type="text" maxlength="2000" value="${esc(note)}" placeholder="A note for the record (optional)" aria-label="A note for the record (optional)">
           <div class="held-acts"><button class="pill sm" type="button" data-held-confirm="${id}">Close it</button><button class="ghost-pill sm" type="button" data-held-cancel="${id}">Cancel</button></div><p class="form-error" aria-live="polite"></p></div>`
-      : `<div class="held-acts"><button class="ghost-pill sm" type="button" data-held-open="${id}">Open item</button>${give}<button class="ghost-pill sm" type="button" data-held-close="${id}">Close it myself</button></div>`;
+      : `<div class="held-acts"><button class="ghost-pill sm" type="button" data-held-open="${id}">Open item</button>${give}<button class="held-quiet" type="button" data-held-close="${id}">Close it myself</button></div>`;
     return `<div class="held-item" data-held-item="${id}"><div class="t">${esc(i.title)}</div><div class="you">You: ${esc(i.answer || settleLabel(i) || 'your reply')}</div><div class="m">${heldStage(i)}</div>${acts}</div>`;
   };
   const more = order.length > HELD_SHOWN ? `<div class="held-more">…and ${order.length - HELD_SHOWN} more on <button type="button" class="held-link" data-held-page="${esc(a.id)}">the agent's page</button></div>` : '';

@@ -493,7 +493,7 @@ assert.ok(html.includes('role="dialog" aria-modal="true" aria-labelledby="held-t
 assert.deepEqual([...html.matchAll(/data-held-item="(h\d)"/g)].map((m) => m[1]), ['h4', 'h1', 'h2', 'h3']);
 assert.ok(html.includes('<div class="you">You: Answer to Drop the &lt;duplicates&gt;</div>') && !html.includes('<duplicates>'));
 assert.ok(html.includes('data-held-open="h1"') && html.includes('data-held-handoff="h1"') && html.includes('data-held-close="h1"'));
-assert.ok(html.includes('Offered to the next agent in Harbor') && !html.includes('data-held-handoff="h3"')); // offered already
+assert.ok(html.includes('data-tip="Offered to the next agent in Harbor">Offered to the next agent</span>') && !html.includes('data-held-handoff="h3"')); // offered already
 run(`heldClosing = 'h2'; heldNote = 'Did it <by hand>'`);
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(html.includes('<input id="held-note" class="held-input" type="text" maxlength="2000" value="Did it &lt;by hand&gt;"') && html.includes('data-held-confirm="h2"') && !html.includes('data-held-close="h2"'));
@@ -1195,6 +1195,30 @@ assert.equal(run('JSON.stringify(markHistory(marks.log, "needs", 1000 + 601 + 40
 run(`recordMarks([{group: 'usage', metric: 'claude', delta: -3, title: 'Claude is nearly out'}], 1500)`);
 assert.equal(JSON.parse(run('JSON.stringify(markOf(marks.log, "claude", 0, 1510))')).text, '−3%');
 assert.ok(run('markHistory(marks.log, "claude", 1510).summary').startsWith('3% used since'));
+// The panel's own tooltips: words, then a key hint after two spaces; below the control, above
+// near the bottom, beside it when neither fits, and always inside the visible area.
+assert.deepEqual(JSON.parse(run(`JSON.stringify(tipParts('Fold all groups  ⌥←'))`)), {label: 'Fold all groups', key: '⌥←'});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(tipParts('Done'))`)), {label: 'Done', key: ''});
+const tipArea = {x: 0, y: 33, width: 1728, height: 994};
+const tipAt = (r) => JSON.parse(run(`JSON.stringify(placeTip(${JSON.stringify(r)}, {width: 120, height: 26}, ${JSON.stringify(tipArea)}))`));
+assert.deepEqual(tipAt({left: 600, right: 632, top: 300, bottom: 332, width: 32, height: 32}), {x: 556, y: 338}); // centred below
+assert.deepEqual(tipAt({left: 600, right: 632, top: 990, bottom: 1022, width: 32, height: 32}), {x: 556, y: 958}); // no room below: above
+assert.deepEqual(tipAt({left: 1690, right: 1722, top: 300, bottom: 332, width: 32, height: 32}), {x: 1604, y: 338}); // kept off the right edge
+assert.deepEqual(tipAt({left: 600, right: 640, top: 40, bottom: 1020, width: 40, height: 980}), {x: 646, y: 517}); // neither: beside it
+// The agents circle: who is running, newest first, five at most and "+N more"; none, the last to finish.
+run(`savedSessions = state.sessions; state.sessions = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n, at) => ({id: 'r:' + n, name: 'Run ' + n, provider: at % 2 ? 'codex' : 'claude-code', cwd: '/x', last_active: ${clockNow},
+  activity: {state: 'active', source: at === 2 ? 'background' : 'live', since: ${clockNow} - (at + 1) * 600}})); model = derive()`);
+html = run('spotHTML("agents")');
+assert.deepEqual([...html.matchAll(/<span class="n">([^<]+)<\/span>/g)].map((m) => m[1]), ['Run a', 'Run b', 'Run c', 'Run d', 'Run e']);
+assert.ok(html.startsWith('<b>7 agents running</b>') && html.includes('<span class="f-spot-more">+2 more</span>'));
+assert.ok(html.includes('<small>Claude Code · running 10m</small>') && html.includes('<small>Claude Code · in the background</small>') && html.includes('<small>Codex · running 40m</small>'));
+assert.ok(!html.includes('f-spot-rule')); // no history, no hairline
+run(`recordMarks([{group: 'agents', metric: 'agents', delta: 1, title: 'Run a started'}])`);
+assert.ok(run('spotHTML("agents")').includes('+2 more</span><span class="f-spot-rule" aria-hidden="true"></span><span class="f-spot-sum">1 started since'));
+run(`marks.log = []; state.sessions = state.sessions.map((s, at) => ({...s, last_active: ${clockNow} - (at + 1) * 3600, activity: {state: 'idle'}})); model = derive()`);
+html = run('spotHTML("agents")');
+assert.ok(html.startsWith('<b>No agents running</b><span class="f-spot-sum">Run a finished 1h ago</span>'), html);
+run('state.sessions = savedSessions; model = derive()');
 // The dot sits inside the circle, before the number, so the number still rolls and the capsule keeps its size.
 html = run("circleHTML({value: 164}, 'attention', {kind: 'dot', tone: 'more'})");
 assert.ok(html.includes('<span class="f-mark-dot more"></span><span>164</span></span>') && html.includes('wide'));

@@ -759,7 +759,6 @@ function paintFloat({background = false} = {}) {
   setHTML($('#rail'), pillHTML(items, live, markMap()));
   rollChanged(items);
   pill.setAttribute('aria-label', pillLabel(items, live));
-  pill.title = 'Click to open. Drag to move. Right-click for more.';
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
   const finding = document.activeElement?.matches?.('[data-g-q]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const sheet = keepSheet();
@@ -977,11 +976,27 @@ function tickMarks() {
   placeMarks(map);
 }
 // What hovering a circle says: its label, and what changed lately.
+// The agents circle also says who is running, most recently started first, five at most; with
+// none, the last one to finish. Its change history follows under a hairline.
+const SPOT_AGENTS = 5;
+const runFor = (s) => {const m = Math.max(1, Math.floor(s / 60)); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;};
+function runningHTML(now = Date.now() / 1000) {
+  const agents = state.sessions.map((s) => agentOf(s, model.items));
+  const running = agents.filter((a) => a.state === 'active').sort((a, b) => (b.since || 0) - (a.since || 0));
+  if (!running.length) {
+    const last = agents.filter((a) => a.last).sort((a, b) => b.last - a.last)[0];
+    return last ? `<span class="f-spot-sum">${esc(last.name)} finished ${ago(last.last)}</span>` : '';
+  }
+  const row = (a) => `<span class="f-spot-agent"><span class="dot active" aria-hidden="true"></span><span class="n">${esc(a.name)}</span><small>${esc(a.harness)} · ${a.background ? 'in the background' : a.since ? `running ${runFor(now - a.since)}` : 'running'}</small></span>`;
+  return running.slice(0, SPOT_AGENTS).map(row).join('') + (running.length > SPOT_AGENTS ? `<span class="f-spot-more">+${running.length - SPOT_AGENTS} more</span>` : '');
+}
 function spotHTML(id) {
-  const tag = esc(METRICS[id].read(attention()).tag), changed = markHistory(marks.log, id, Date.now() / 1000);
-  if (!changed) return tag;
-  const rows = changed.list.map((e) => `<span class="f-spot-row"><em class="${e.tone}">${esc(e.text)}</em><span>${esc(e.label)}</span><small>${esc(e.at)}</small></span>`).join('');
-  return `<b>${tag}</b><span class="f-spot-sum">${esc(changed.summary)}</span>${rows}`;
+  const none = id === 'agents' && !model.agents.some((a) => agentState(a) === 'active');
+  const tag = esc(none ? 'No agents running' : METRICS[id].read(attention()).tag), changed = markHistory(marks.log, id, Date.now() / 1000);
+  const extra = id === 'agents' ? runningHTML() : '';
+  const history = changed ? `<span class="f-spot-sum">${esc(changed.summary)}</span>${changed.list.map((e) => `<span class="f-spot-row"><em class="${e.tone}">${esc(e.text)}</em><span>${esc(e.label)}</span><small>${esc(e.at)}</small></span>`).join('')}` : '';
+  if (!extra && !history) return tag;
+  return `<b>${tag}</b>${extra}${extra && history ? '<span class="f-spot-rule" aria-hidden="true"></span>' : ''}${history}`;
 }
 
 // Window
@@ -1289,8 +1304,12 @@ function placeSpot() {
   if (!row) return;
   const c = row.querySelector('.f-circle').getBoundingClientRect(), p = $('#pill').getBoundingClientRect();
   const side = spotSide(dock), w = el.offsetWidth, h = el.offsetHeight;
-  const x = side === 'right' ? p.right + 6 : side === 'left' ? p.left - 6 - w : c.left + c.width / 2 - w / 2;
-  const y = side === 'above' ? p.top - 6 - h : side === 'below' ? p.bottom + 6 : c.top + c.height / 2 - h / 2;
+  const area = display?.visible || {x: 0, y: 0, width: innerWidth, height: innerHeight};
+  // Beside the pill and never over it; a tall label slides along that side to stay on screen.
+  let x = side === 'right' ? p.right + 6 : side === 'left' ? p.left - 6 - w : c.left + c.width / 2 - w / 2;
+  let y = side === 'above' ? p.top - 6 - h : side === 'below' ? p.bottom + 6 : c.top + c.height / 2 - h / 2;
+  if (side === 'left' || side === 'right') y = clamp(y, area.y + 4, area.y + area.height - 4 - h);
+  else x = clamp(x, area.x + 4, area.x + area.width - 4 - w);
   el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
 function spotlight(x, y) {
@@ -1309,7 +1328,7 @@ function spotlight(x, y) {
     spot.index = index;
     const label = el.firstElementChild;
     label.innerHTML = spotHTML(rows[index].dataset.metric);
-    el.classList.toggle('log', Boolean(label.querySelector('.f-spot-sum')));
+    el.classList.toggle('log', label.children.length > 0);
     el.classList.toggle('instant', first);
     if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
   }
@@ -1329,6 +1348,70 @@ function hideSpot() {
   $('#spot').classList.remove('on');
   markSpot();
   placeMarks();
+}
+
+// Tooltips. macOS draws a page's native title tooltips in a window of its own, below the
+// panel's, so they would show behind it; the panel draws its own. A title becomes data-tip the
+// moment the pointer reaches it, before the native one could appear. Two spaces separate the
+// words from a key hint: "Fold all groups  ⌥←".
+const TIP_DELAY = 400, TIP_WARM = 900;
+const tip = {target: null, timer: null, shown: false, hiddenAt: -Infinity};
+function tipParts(text) {
+  const [label, key = ''] = String(text || '').split(/\s{2,}|\t/);
+  return {label: label.trim(), key: key.trim()};
+}
+function tipTarget(el) {
+  const target = el?.closest?.('[data-tip], [title]');
+  if (!target || target.closest('#pill, #tip')) return null;
+  if (target.hasAttribute('title')) {
+    const text = target.getAttribute('title');
+    target.removeAttribute('title');
+    target.dataset.tip = text;
+    // A control named only by its tooltip keeps that name for VoiceOver.
+    if (!target.hasAttribute('aria-label') && !target.textContent.trim()) target.setAttribute('aria-label', tipParts(text).label);
+  }
+  return target.dataset.tip ? target : null;
+}
+// Below the control; above it when there is no room below; beside it when neither fits; always
+// inside the visible area, which the panel's window covers, so it may reach past the box.
+function placeTip(r, size, area, gap = 6) {
+  const inside = (y) => y >= area.y + 4 && y + size.height <= area.y + area.height - 4;
+  let x = r.left + r.width / 2 - size.width / 2, y = r.bottom + gap;
+  if (!inside(y)) y = r.top - gap - size.height;
+  if (!inside(y)) {
+    y = r.top + r.height / 2 - size.height / 2;
+    x = r.right + gap + size.width <= area.x + area.width - 4 ? r.right + gap : r.left - gap - size.width;
+  }
+  return {x: Math.round(clamp(x, area.x + 4, area.x + area.width - 4 - size.width)), y: Math.round(clamp(y, area.y + 4, area.y + area.height - 4 - size.height))};
+}
+function tipHover(el) {
+  const target = tipTarget(el);
+  if (target === tip.target) return;
+  hideTip();
+  if (!target) return;
+  tip.target = target;
+  // macOS-style: once one has shown, the next comes at once.
+  tip.timer = setTimeout(showTip, performance.now() - tip.hiddenAt < TIP_WARM ? 0 : TIP_DELAY);
+}
+function showTip() {
+  const target = tip.target, el = $('#tip');
+  if (!el || !target?.isConnected || drag) return hideTip();
+  const {label, key} = tipParts(target.dataset.tip);
+  el.innerHTML = `<span>${esc(label)}</span>${key ? `<kbd>${esc(key)}</kbd>` : ''}`;
+  el.hidden = false;
+  const area = display?.visible || {x: 0, y: 0, width: innerWidth, height: innerHeight};
+  const at = placeTip(target.getBoundingClientRect(), {width: el.offsetWidth, height: el.offsetHeight}, area);
+  el.style.transform = `translate(${at.x}px, ${at.y}px)`;
+  el.classList.add('on');
+  tip.shown = true;
+}
+function hideTip() {
+  clearTimeout(tip.timer);
+  if (tip.shown) tip.hiddenAt = performance.now();
+  tip.shown = false;
+  tip.target = null;
+  const el = $('#tip');
+  if (el && !el.hidden) {el.classList.remove('on'); el.hidden = true;}
 }
 function saveSettings() {
   native({type: 'settings', settings: {circles, notify, shortcuts, panelKeys, sizes, pillSize: feel.size}});
@@ -1532,10 +1615,11 @@ function receive(message) {
     // A panel that is not key never gets :hover or mouse moves from WebKit, so the window reports both.
     document.body.toggleAttribute('data-hover', message.on);
     hovering = message.on;
-    if (!message.on) {hideSpot(); sendCursor('default');}
+    if (!message.on) {hideSpot(); hideTip(); sendCursor('default');}
   } else if (message.type === 'pointer') {
     if (hovering) spotlight(message.x, message.y);
     cursorAt(message.x, message.y);
+    tipHover(document.elementFromPoint(message.x, message.y));
   } else if (message.type === 'feel' && message.key in feel) {
     feel[message.key] = message.value;
     applyFeel();
@@ -1643,7 +1727,9 @@ function bootFloat() {
   document.addEventListener('keydown', recordPanelKey, true);
   document.addEventListener('pointerdown', startResize, true);
   document.addEventListener('pointermove', moveResize);
-  document.addEventListener('mousemove', (e) => {delete document.body.dataset.keys; cursorAt(e.clientX, e.clientY);});
+  document.addEventListener('mousemove', (e) => {delete document.body.dataset.keys; cursorAt(e.clientX, e.clientY); tipHover(e.target);});
+  // A tooltip goes as soon as you act or move the content under it.
+  for (const type of ['pointerdown', 'keydown', 'scroll', 'wheel']) document.addEventListener(type, hideTip, true);
   document.addEventListener('pointerup', endResize);
   document.addEventListener('pointercancel', endResize);
   document.addEventListener('dblclick', resetSize);
