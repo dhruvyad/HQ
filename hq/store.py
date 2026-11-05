@@ -105,6 +105,13 @@ class Store:
                     state TEXT NOT NULL, observed REAL NOT NULL, expires REAL NOT NULL,
                     priority INTEGER NOT NULL, since REAL, last_active REAL, PRIMARY KEY(session_id,source)
                 );
+                -- Claude and Codex accounts you added. Never a secret: logins live only in the Keychain.
+                CREATE TABLE IF NOT EXISTS accounts (
+                    tool TEXT NOT NULL, key TEXT NOT NULL, identity TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
+                    plan TEXT NOT NULL DEFAULT '', org TEXT NOT NULL DEFAULT '', added REAL NOT NULL, last_used REAL,
+                    expires REAL, refresh_expires REAL, stale INTEGER NOT NULL DEFAULT 0,
+                    usage TEXT, usage_as_of REAL, PRIMARY KEY(tool, key)
+                );
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
             db.execute("BEGIN IMMEDIATE")
@@ -137,7 +144,7 @@ class Store:
             for table in ("replies", "comments"):
                 if "attachments" not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
-            db.execute("PRAGMA user_version=8")
+            db.execute("PRAGMA user_version=9")
         os.chmod(self.path, 0o600)
 
     @contextmanager

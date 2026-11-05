@@ -103,6 +103,23 @@ def parse_codex(result):
                     for slot in slots if isinstance(slot, dict)])
 
 
+def parse_codex_usage(payload):
+    """ChatGPT's usage endpoint, which Codex itself reads: `rate_limit` with a primary and a
+    secondary window, each `used_percent`, `limit_window_seconds` and `reset_at`."""
+    limit = payload.get("rate_limit") if isinstance(payload, dict) else None
+    if not isinstance(limit, dict):
+        return None
+    slots = [limit.get(slot) for slot in ("primary_window", "secondary_window")]
+    windows = []
+    for slot in slots:
+        if not isinstance(slot, dict):
+            continue
+        seconds = slot.get("limit_window_seconds")
+        minutes = seconds // 60 if isinstance(seconds, int) and not isinstance(seconds, bool) else None
+        windows.append(window(codex_window_name(minutes), slot.get("used_percent"), slot.get("reset_at")))
+    return reading(windows)
+
+
 def parse_claude(payload):
     limits = payload.get("rate_limits") if isinstance(payload, dict) else None
     if not isinstance(limits, dict):
@@ -416,6 +433,17 @@ class UsageWorker:
                 age = max(0, now() - kept["as_of"])
                 if age < CLAUDE_POLL:
                     self.next_login = clock() + CLAUDE_POLL - age
+
+    def forget(self, tool):
+        """Another account is signed in now: its numbers are not the last one's."""
+        if tool == "claude":
+            self.login.token, self.login.expires, self.from_login = None, 0, None
+            if self.cache:
+                Path(self.cache).unlink(missing_ok=True)
+            self.next_login, self.backoff = self.clock(), CLAUDE_RETRY
+        elif tool == "codex":
+            self.next_codex = self.clock()
+        self.usage.record(tool, None)
 
     def keep(self, value):
         if not self.cache:
