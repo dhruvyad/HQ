@@ -3,15 +3,22 @@
 // changes now, so drag, focus and always-on-top are never simulated. Every pick and note
 // goes back as one batch. To run a new round, edit AXES and the matching `feel` in float.js.
 const AXES = [
-  {id: 'pill', ask: 'What should the pill show?', options: [
-    {value: 'count', label: 'HQ and a count', why: 'Compact. You open it to see what is waiting.', default: true},
-    {value: 'title', label: 'Count and latest title', why: 'Says what is new without a click, but takes up more of the screen.'},
-    {value: 'number', label: 'Just the count', why: 'Smallest, and easiest to overlook.'},
+  {id: 'layout', ask: 'Which way does the pill run?', options: [
+    {value: 'vertical', label: 'Up and down', why: 'Your sketch. Narrow, and sits well at a screen edge.', default: true},
+    {value: 'horizontal', label: 'Side to side', why: 'Fits along a title bar, but has no room for labels.'},
   ]},
-  {id: 'size', ask: 'How tall is the pill?', options: [
-    {value: 28, label: '28', why: 'Fits inside a title bar.'},
-    {value: 32, label: '32', why: 'Easy to grab, still quiet.', default: true},
-    {value: 36, label: '36', why: 'Easiest target, most present.'},
+  {id: 'size', ask: 'How big are the circles?', options: [
+    {value: 24, label: '24', why: 'Quietest. Three digits get tight.'},
+    {value: 28, label: '28', why: 'Readable at a glance, still narrow.', default: true},
+    {value: 32, label: '32', why: 'Easiest to read and grab, most present.'},
+  ]},
+  {id: 'style', ask: 'How do the circles look?', options: [
+    {value: 'attention', label: 'White when something needs you', why: 'The count you act on stands out from the rest.', default: true},
+    {value: 'outline', label: 'All outlines', why: 'Closest to your sketch, and calmest. Nothing pulls your eye.'},
+  ]},
+  {id: 'labels', ask: 'How do you tell the circles apart?', options: [
+    {value: 'hover', label: 'Labels on hover', why: 'Hover and each circle says what it is. Not available on a centered pill.', default: true},
+    {value: 'none', label: 'No labels', why: 'You know your own order, so nothing ever changes size.'},
   ]},
   {id: 'targets', ask: 'Where can you drop it?', options: [
     {value: 'all', label: 'Eight places', why: 'Corners, edge centers, top and bottom.', default: true},
@@ -71,8 +78,8 @@ const LAB_SESSION = 'lab:fixtures'; // floating.py seeds it; the lab has no othe
 const PRESETS = [
   {name: 'Recommended', why: 'Each axis at its starting point.', set: {}},
   {name: 'OpenFlow feel', why: 'Same drag as the flow bar, with the top left added.', set: {targets: 'flow', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5}},
-  {name: 'Quiet', why: 'Least on your screen, least motion.', set: {pill: 'number', size: 28, targets: 'corners', backdrop: 'none', glide: 180, arrival: 'count'}},
-  {name: 'Fast triage', why: 'Tells you what is new and keeps you moving.', set: {pill: 'title', order: 'newest', after: 'next', arrival: 'title', width: 420}},
+  {name: 'Quiet', why: 'Least on your screen, least motion.', set: {size: 24, style: 'outline', labels: 'none', targets: 'corners', backdrop: 'none', glide: 180, arrival: 'count'}},
+  {name: 'Fast triage', why: 'Tells you what is new and keeps you moving.', set: {order: 'newest', after: 'next', arrival: 'title', width: 420}},
 ];
 
 const defaults = () => Object.fromEntries(AXES.map((a) => [a.id, a.options.find((o) => o.default).value]));

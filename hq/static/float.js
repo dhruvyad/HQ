@@ -4,7 +4,7 @@
 const native = (message) => window.webkit?.messageHandlers?.hq?.postMessage(message);
 
 // Every open design decision, so `hq float lab` can flip each one live (float-lab.js).
-const feel = {pill: 'count', size: 32, targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', arrival: 'pulse', width: 480, show: 100000};
+const feel = {layout: 'vertical', size: 28, style: 'attention', labels: 'hover', targets: 'all', ghost: 'pill', backdrop: 'dim', glide: 300, threshold: 5, order: 'lead', away: 'collapse', after: 'next', arrival: 'pulse', width: 480, show: 100000};
 
 // Where the pill can live: [across, down], each the start, center or end of the free screen.
 const DOCKS = {
@@ -18,10 +18,62 @@ const EDGE = 10;
 // A maximized window keeps its close, minimize and zoom buttons in this corner.
 const TRAFFIC_LIGHTS = 74;
 const LIST_WIDTH = 380, LIST_MAX = 520, ITEM_MIN = 240, ITEM_MAX = 760;
-const PEEK_FOR = 5000, BUMP_FOR = 700, CONTROLS = 'button, a, input, textarea, select, summary';
+const PEEK_FOR = 5000, BUMP_FOR = 700, LABEL_AFTER = 180, CONTROLS = 'button, a, input, textarea, select, summary';
+const USAGE_LOW = 10, USAGE_STALE = 3600;
+ICONS.more = '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>';
+
+// What a circle can show. Usage comes from the server and stays empty until a real
+// source exists: a circle never guesses.
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function readUsage(name, title) {
+  const usage = state.usage?.[name];
+  const windows = (usage?.windows || []).filter((w) => Number.isFinite(w.left));
+  if (!windows.length) return {value: null, gauge: true, tag: `${title} usage not connected`};
+  const tight = windows.reduce((a, b) => (b.left < a.left ? b : a));
+  const stale = Date.now() / 1000 - usage.as_of > USAGE_STALE;
+  const resets = tight.resets_at ? `, resets ${tight.resets_at - Date.now() / 1000 > 86400 ? fmtDate(tight.resets_at) : new Date(tight.resets_at * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` : '';
+  return {value: tight.left, gauge: true, low: tight.left <= USAGE_LOW, stale,
+    tag: `${tight.left}% of ${title}'s ${tight.name} limit left${resets}${stale ? ` (as of ${ago(usage.as_of)})` : ''}`};
+}
+const METRICS = {
+  needs: {name: 'Items that need you', read: (items) => ({value: items.length, loud: items.length > 0, tag: `${items.length} ${items.length === 1 ? 'needs' : 'need'} you`})},
+  decisions: {name: 'Decisions waiting', read: (items) => {
+    const n = items.filter((i) => i.kind === 'question' && i.lane === 'you').length;
+    return {value: n, tag: plural(n, 'decision waiting', 'decisions waiting')};
+  }},
+  due: {name: 'Due soon', read: (items) => {
+    const n = items.filter(dueSoon).length;
+    return {value: n, tag: `${n} due soon`};
+  }},
+  agents: {name: 'Agents running', read: () => {
+    const n = model.agents.filter((a) => agentState(a) === 'active').length;
+    return {value: n, live: n > 0, tag: plural(n, 'agent running', 'agents running')};
+  }},
+  claude: {name: 'Claude usage left', read: () => readUsage('claude', 'Claude')},
+  codex: {name: 'Codex usage left', read: () => readUsage('codex', 'Codex')},
+};
+const DEFAULT_CIRCLES = ['needs', 'agents', 'codex'];
+// A saved list can name a metric from another version, so keep only what still exists.
+function cleanCircles(saved) {
+  const known = (Array.isArray(saved) ? saved : []).filter((id, n, all) => METRICS[id] && all.indexOf(id) === n);
+  return known.length ? known : [...DEFAULT_CIRCLES];
+}
+// The pill always keeps one circle, or there would be nothing to grab.
+function toggleCircle(list, id) {
+  if (!list.includes(id)) return [...list, id];
+  return list.length > 1 ? list.filter((other) => other !== id) : list;
+}
+function moveCircle(list, id, delta) {
+  const from = list.indexOf(id), to = from + delta;
+  if (from < 0 || to < 0 || to >= list.length) return list;
+  const next = [...list];
+  next.splice(from, 1);
+  next.splice(to, 0, id);
+  return next;
+}
 
 let floatOpen = false, dock = DEFAULT_DOCK, display = null, drag = null, placed = '';
-let known = null, peek = null, swallowClick = false;
+let known = null, peek = null, swallowClick = false, customizing = false, hovering = false, circles = [...DEFAULT_CIRCLES];
 
 // Geometry, in display-local points with the origin at the display's top-left.
 function dockRect(requested, size, area) {
@@ -59,33 +111,50 @@ function attention(items = model.items) {
   return items.filter((i) => i.lane === 'you' || failed(i)).sort((a, b) => failed(b) - failed(a) || order(a, b)).slice(0, feel.show);
 }
 function arrivals(items, seenIds) {return seenIds ? items.filter((i) => !seenIds.has(i.id)) : [];}
-const surfaceMode = (open, item) => (open ? (item ? 'item' : 'list') : 'pill');
+const surfaceMode = (open, item, customize = false) => (!open ? 'pill' : customize ? 'settings' : item ? 'item' : 'list');
+// Labels open away from the screen edge, so the circles under your cursor never move.
+// A centered pill would shift as it grew, and a sideways one has no room for them.
+const labelSide = (name, layout = feel.layout) => {
+  if (layout !== 'vertical') return 'none';
+  return {start: 'right', center: 'none', end: 'left'}[(DOCKS[name] || DOCKS[DEFAULT_DOCK])[0]];
+};
 // Where to go after acting on an item: null is the list, undefined means stay.
 function afterAct(after, next, replied) {
   if (after === 'stay' && replied) return undefined;
   return after === 'list' ? null : next;
 }
 
+function shortCount(n) {return n > 999 ? '1k+' : String(n);}
+function circleHTML(r, style = feel.style) {
+  const empty = r.value === null, text = empty ? '–' : shortCount(r.value);
+  const classes = ['f-circle', r.gauge && !empty ? 'gauge' : '', empty ? 'none' : '', r.loud && style === 'attention' ? 'loud' : '',
+    r.live ? 'live' : '', r.low ? 'low' : '', r.stale ? 'stale' : '', text.length > 2 ? 'wide' : ''].filter(Boolean).join(' ');
+  const ring = r.gauge && !empty ? `<svg viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="16" pathLength="100"/><circle class="fill" cx="18" cy="18" r="16" pathLength="100" stroke-dasharray="${Number(r.value)} 100"/></svg>` : '';
+  return `<span class="${classes}">${ring}<span>${esc(text)}</span></span>`;
+}
 function pillHTML(items, live = liveHealthy) {
-  const count = items.length;
-  const label = esc(peek || items[0]?.title || '');
-  const mark = '<span class="wordmark">HQ</span>';
-  const badge = count ? `<span class="badge">${count}</span>` : '';
-  const off = live ? '' : '<span class="dot err"></span>';
-  if (peek) return `${off}${badge || mark}<span class="f-peek">${label}</span>`;
-  if (feel.pill === 'number') return `${off}${badge || mark}`;
-  if (feel.pill === 'title' && count) return `${off}${badge}<span class="f-peek">${label}</span>`;
-  return `${off}${mark}${badge}`;
+  const rows = circles.map((id, n) => {
+    const r = METRICS[id].read(items);
+    return `<span class="f-row" data-metric="${id}">${circleHTML(r)}<span class="f-tag">${esc(n === 0 && peek ? peek : r.tag)}</span></span>`;
+  }).join('');
+  return `${live ? '' : '<span class="f-row f-offline"><span class="dot err"></span><span class="f-tag">Reconnecting…</span></span>'}${rows}`;
 }
 function pillLabel(items, live = liveHealthy) {
-  const n = items.length;
-  const needs = n ? `${n} ${n === 1 ? 'item needs' : 'items need'} you` : 'Nothing needs you';
-  return `HQ. ${needs}.${live ? '' : ' Reconnecting.'}`;
+  return `HQ. ${circles.map((id) => METRICS[id].read(items).tag).join('. ')}.${live ? '' : ' Reconnecting.'}`;
+}
+function settingsHTML(items) {
+  const rows = [...circles, ...Object.keys(METRICS).filter((id) => !circles.includes(id))].map((id) => {
+    const on = circles.includes(id), at = circles.indexOf(id), r = METRICS[id].read(items);
+    const now = r.value === null ? 'Not connected' : r.gauge ? `${r.value}% left` : `${r.value} now`;
+    const moves = on ? `<span class="f-moves"><button class="icon-btn" type="button" data-circle-move="-1" data-id="${id}" aria-label="Move ${esc(METRICS[id].name)} up" ${at === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="icon-btn" type="button" data-circle-move="1" data-id="${id}" aria-label="Move ${esc(METRICS[id].name)} down" ${at === circles.length - 1 ? 'disabled' : ''}>${icon('down')}</button></span>` : '';
+    return `<div class="f-set"><button type="button" class="check" role="checkbox" data-circle="${id}" aria-checked="${on}" ${on && circles.length === 1 ? 'disabled' : ''}><span class="box">${icon('check')}</span><span>${esc(METRICS[id].name)}<small>${esc(now)}</small></span></button>${moves}</div>`;
+  }).join('');
+  return `<header class="f-head"><h1>Pill</h1><button class="icon-btn f-push" type="button" data-customized aria-label="Done" title="Done">${icon('check')}</button></header>
+    <div class="f-rows scroll"><div class="f-rows-in f-settings"><div class="f-capsule f-preview" aria-hidden="true">${pillHTML(items, true)}</div><div class="f-set-list">${rows}</div></div></div>`;
 }
 function floatListHTML(items, live = liveHealthy) {
   const head = `<header class="f-head"><h1>Needs you</h1>${items.length ? `<span class="f-count">${items.length}</span>` : ''}${live ? '' : '<span class="f-off"><span class="dot err"></span>Reconnecting…</span>'}
-      <a class="icon-btn" href="/" target="_blank" rel="noreferrer" aria-label="Open the dashboard" title="Open the dashboard">${icon('out')}</a>
-      <button class="icon-btn" type="button" data-collapse aria-label="Collapse" title="Collapse">${icon('x')}</button></header>`;
+      <button class="icon-btn f-push" type="button" data-more aria-label="More" title="More">${icon('more')}</button></header>`;
   const rows = items.map((i) => rowHTML(i, {where: true, age: true, kind: true})).join('');
   return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows || `<div class="f-empty">${EMPTY.you[0]}</div>`}</div></div>`;
 }
@@ -105,14 +174,15 @@ function paintFloat({background = false} = {}) {
   const pill = $('#pill');
   setHTML(pill, pillHTML(items, live));
   pill.setAttribute('aria-label', pillLabel(items, live));
-  pill.title = 'Click to open. Drag to move.';
-  setHTML($('#main'), floatListHTML(items, live));
+  pill.title = 'Click to open. Drag to move. Right-click for more.';
+  setHTML($('#main'), customizing ? settingsHTML(items) : floatListHTML(items, live));
   const detail = $('#detail'), active = document.activeElement;
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
   if (!(background && detail.contains(active) && active.matches('textarea, input, select'))) renderDetail();
   scrolls.forEach(([sel, top]) => top && document.querySelector(sel) && (document.querySelector(sel).scrollTop = top));
-  document.body.dataset.mode = surfaceMode(floatOpen, route.item);
-  document.documentElement.style.setProperty('--f-width', `${route.item ? feel.width : LIST_WIDTH}px`);
+  document.body.dataset.mode = surfaceMode(floatOpen, route.item, customizing);
+  document.documentElement.style.setProperty('--f-width', `${route.item && !customizing ? feel.width : LIST_WIDTH}px`);
+  syncLabels();
   if (route.item && !detail.hidden) bindDetail(detail);
   layout();
 }
@@ -139,7 +209,7 @@ function pillSize() {
 function surfaceSize() {
   const mode = document.body.dataset.mode;
   if (mode === 'pill') return pillSize();
-  if (mode === 'list') {
+  if (mode === 'list' || mode === 'settings') {
     const head = $('.f-head')?.offsetHeight || 0, rows = $('.f-rows-in')?.offsetHeight || 0;
     return {width: LIST_WIDTH, height: Math.min(LIST_MAX, head + rows + 2)};
   }
@@ -165,6 +235,18 @@ function layoutSoon() {
 }
 function setOpen(open) {
   floatOpen = open;
+  if (!open) customizing = false;
+  render();
+}
+function syncLabels() {
+  const wanted = (hovering && feel.labels === 'hover') || Boolean(peek);
+  const show = wanted && !drag && document.body.dataset.mode === 'pill' && labelSide(dock) !== 'none';
+  document.body.toggleAttribute('data-labels', show);
+  document.body.dataset.side = labelSide(dock);
+}
+function setCircles(next) {
+  circles = next;
+  native({type: 'settings', settings: {circles}});
   render();
 }
 
@@ -188,12 +270,14 @@ function armDrag(e) {
   document.addEventListener('mouseup', stop);
 }
 function beginDrag(e) {
+  // Measure the circles alone: the labels are not part of where the pill lands.
+  document.body.removeAttribute('data-labels');
   drag = {phase: 'dragging', size: pillSize(), target: dock, rects: {}};
   swallowClick = true;
   document.body.dataset.drag = 'on';
   $('#drag').hidden = false;
   const ghost = $('#ghost');
-  ghost.className = `f-ghost ${feel.ghost === 'outline' ? 'outline' : ''}`;
+  ghost.className = `f-ghost f-capsule ${feel.ghost === 'outline' ? 'outline' : ''}`;
   ghost.innerHTML = $('#pill').innerHTML;
   native({type: 'drag', on: true});
   document.addEventListener('mousemove', dragMoved);
@@ -265,6 +349,7 @@ function endDrag() {
   $('#drag').hidden = true;
   $('#ghost').classList.remove('gliding');
   native({type: 'drag', on: false});
+  syncLabels();
   layout();
 }
 
@@ -272,7 +357,8 @@ function endDrag() {
 function receive(message) {
   if (message.type === 'start') {
     if (DOCKS[message.dock]) dock = message.dock;
-    layout();
+    circles = cleanCircles(message.settings?.circles);
+    render();
   } else if (message.type === 'display') {
     display = message;
     if (drag?.phase === 'dragging') coverDisplay();
@@ -281,9 +367,18 @@ function receive(message) {
   else if (message.type === 'saved') saved(message.dock, message.ok);
   else if (message.type === 'resigned') {
     if (floatOpen && !route.item && !drag && feel.away === 'collapse') setOpen(false);
+  } else if (message.type === 'customize') {
+    customizing = true;
+    floatOpen = true;
+    if (route.item) go({item: null});
+    else render();
   } else if (message.type === 'hover') {
     // A panel that is not key never gets :hover from WebKit, so the window reports it.
     document.body.toggleAttribute('data-hover', message.on);
+    hovering = message.on;
+    clearTimeout(receive.label);
+    if (message.on) receive.label = setTimeout(syncLabels, LABEL_AFTER);
+    else syncLabels();
   } else if (message.type === 'feel' && message.key in feel) {
     feel[message.key] = message.value;
     applyFeel();
@@ -295,6 +390,7 @@ function applyFeel() {
   root.style.setProperty('--f-size', `${feel.size}px`);
   root.style.setProperty('--f-glide', `${feel.glide}ms`);
   document.body.dataset.backdrop = feel.backdrop;
+  document.body.dataset.layout = feel.layout;
 }
 // Links in the item pane point at the dashboard's routes, which live in the browser.
 function openDashboard(hash) {window.open(`/${hash}`, '_blank', 'noreferrer');}
@@ -321,8 +417,12 @@ function bootFloat() {
     }
     const row = e.target.closest('#main [data-item]');
     const inner = e.target.closest('[data-href], #detail a[href^="#"]');
+    const circle = e.target.closest('[data-circle]'), shift = e.target.closest('[data-circle-move]');
     if (e.target.closest('#pill')) setOpen(true);
-    else if (e.target.closest('[data-collapse]')) setOpen(false);
+    else if (e.target.closest('[data-more]')) native({type: 'menu'});
+    else if (e.target.closest('[data-customized]')) setOpen(false);
+    else if (circle && !circle.disabled) setCircles(toggleCircle(circles, circle.dataset.circle));
+    else if (shift && !shift.disabled) setCircles(moveCircle(circles, shift.dataset.id, Number(shift.dataset.circleMove)));
     else if (row) openItem(row.dataset.item);
     else if (inner) {
       e.preventDefault();
@@ -332,6 +432,7 @@ function bootFloat() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (drag) endDrag();
+    else if (customizing) {customizing = false; render();}
     else if (floatOpen && !route.item) setOpen(false);
     else return;
     e.stopImmediatePropagation();

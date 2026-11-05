@@ -232,27 +232,104 @@ assert.ok(run('feel.show') >= 10000); // the real list is never cut short
 html = run('floatListHTML(attention(), true)');
 assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>decision</b>'));
 assert.ok(html.includes('data-item="f-new"') && html.includes('Decision') && html.includes('NoClick › Support'));
-assert.ok(html.includes('Reply failed') && html.includes('<span class="f-count">7</span>') && html.includes('data-collapse'));
+assert.ok(html.includes('Reply failed') && html.includes('<span class="f-count">7</span>') && html.includes('data-more'));
+assert.ok(!html.includes('data-collapse') && !html.includes('target="_blank"')); // one menu, not a cross and an arrow
 assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
 assert.ok(run('floatListHTML([], true)').includes('Nothing needs you'));
 
-// The pill: its forms, its count, and an honest offline state.
-assert.ok(run("pillHTML(attention(), true)").includes('<span class="badge">7</span>') && run("pillHTML(attention(), true)").includes('wordmark'));
-assert.ok(!run('pillHTML([], true)').includes('badge') && run('pillHTML([], true)').includes('wordmark'));
-assert.ok(run('pillHTML(attention(), false)').includes('dot err'));
-assert.equal(run('pillLabel(attention(), true)'), 'HQ. 7 items need you.');
-assert.equal(run('pillLabel(attention().slice(0, 1), true)'), 'HQ. 1 item needs you.');
-assert.equal(run('pillLabel([], false)'), 'HQ. Nothing needs you. Reconnecting.');
-run("feel.pill = 'title'; feel.order = 'newest'");
-html = run("pillHTML(attention().filter(i => i.id === 'f-new'), true)");
-assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>'));
-run("feel.pill = 'number'");
-assert.ok(!run('pillHTML(attention(), true)').includes('wordmark'));
-assert.ok(run('pillHTML([], true)').includes('wordmark')); // zero still says what it is
-run("feel.pill = 'count'; feel.order = 'lead'; peek = 'Fresh <i>item</i>'");
+// The pill: a black capsule of circles you choose, with no wordmark.
+run("circles = ['needs', 'agents', 'claude']");
+html = run('pillHTML(attention(), true)');
+assert.equal((html.match(/class="f-circle/g) || []).length, 3);
+assert.ok(!html.includes('wordmark') && !html.includes('>HQ<'));
+assert.ok(html.indexOf('data-metric="needs"') < html.indexOf('data-metric="agents"'));
+assert.ok(html.includes('<span class="f-circle loud"><span>7</span></span>'));
+assert.ok(html.includes('7 need you'));
+run("circles = ['agents', 'needs']");
+assert.ok(run('pillHTML(attention(), true)').indexOf('data-metric="agents"') < run('pillHTML(attention(), true)').indexOf('data-metric="needs"')); // your order
+run("feel.style = 'outline'");
+assert.ok(!run('pillHTML(attention(), true)').includes('loud'));
+run("feel.style = 'attention'; circles = ['needs']");
+assert.ok(!run('pillHTML([], true)').includes('loud') && run('pillHTML([], true)').includes('<span>0</span>')); // nothing to act on
+assert.ok(run('pillHTML(attention(), false)').includes('dot err') && run('pillHTML(attention(), false)').includes('Reconnecting'));
+assert.ok(!run('pillHTML(attention(), true)').includes('dot err'));
+assert.equal(run('pillLabel(attention(), true)'), 'HQ. 7 need you.');
+assert.equal(run('pillLabel(attention().slice(0, 1), true)'), 'HQ. 1 needs you.');
+assert.equal(run('pillLabel([], false)'), 'HQ. 0 need you. Reconnecting.');
+assert.equal(run('shortCount(144)'), '144');
+assert.equal(run('shortCount(1000)'), '1k+');
+assert.ok(run("circleHTML({value: 144})").includes('wide'));
+assert.ok(!run("circleHTML({value: 14})").includes('wide'));
+run("peek = 'Fresh <i>item</i>'");
 assert.ok(run('pillHTML(attention(), true)').includes('Fresh &lt;i&gt;item&lt;/i&gt;'));
 run('peek = null');
+
+// Agents running counts only what is verifiably active.
+assert.equal(run("METRICS.agents.read([]).value"), run("model.agents.filter(a => agentState(a) === 'active').length"));
+run("setLive(false)");
+assert.equal(run("METRICS.agents.read([]).value"), 0); // offline, so nothing is verifiably running
+run("setLive(true)");
+
+// Usage is never invented: nothing connected shows an empty circle.
+run("state.usage = {claude: null}");
+assert.equal(run("METRICS.claude.read([]).value"), null);
+assert.equal(run("METRICS.codex.read([]).value"), null);
+html = run("circleHTML(METRICS.claude.read([]))");
+assert.ok(html.includes('none') && html.includes('–') && !html.includes('<svg'));
+assert.ok(run("METRICS.claude.read([]).tag").includes('not connected'));
+// The tightest limit is the one that will stop you.
+const resets = Math.round(now + 7200);
+run(`state.usage = {claude: {as_of: Date.now() / 1000, windows: [{name: 'weekly', left: 81, resets_at: null}, {name: '5-hour', left: 62, resets_at: ${resets}}]}}`);
+assert.equal(run("METRICS.claude.read([]).value"), 62);
+assert.ok(run("METRICS.claude.read([]).tag").startsWith("62% of Claude's 5-hour limit left, resets "));
+html = run("circleHTML(METRICS.claude.read([]))");
+assert.ok(html.includes('stroke-dasharray="62 100"') && html.includes('gauge') && !html.includes('low') && !html.includes('stale'));
+run("state.usage.claude.windows[1].left = 5");
+assert.ok(run("circleHTML(METRICS.claude.read([]))").includes('low'));
+run("state.usage.claude.windows[1].left = 62; state.usage.claude.as_of = Date.now() / 1000 - 7200");
+assert.ok(run("circleHTML(METRICS.claude.read([]))").includes('stale'));
+assert.ok(run("METRICS.claude.read([]).tag").includes('(as of 2h ago)'));
+run("state.usage = {claude: {as_of: 1, windows: [{name: 'weekly', left: 'lots'}]}}");
+assert.equal(run("METRICS.claude.read([]).value"), null); // a malformed number is not a number
+run("delete state.usage");
+assert.equal(run("METRICS.claude.read([]).value"), null);
+// A usage change alone has to repaint the pill.
+run("snapshotSignature = ''");
+context.queue = {...context.queue, revision: context.queue.revision + 1, usage: {codex: {as_of: 1, windows: [{name: '5-hour', left: 40}]}}};
+run('applyState(queue)');
+assert.ok(run('snapshotSignature').includes('"left":40'));
+run("state.usage = undefined");
+
+// Choosing circles: one always stays, order is yours, and old saved names cannot break it.
+const list = (code) => Array.from(run(code));
+assert.deepEqual(list("cleanCircles(['needs', 'gone-metric', 'needs', 'codex'])"), ['needs', 'codex']);
+assert.deepEqual(list('cleanCircles(undefined)'), list('DEFAULT_CIRCLES'));
+assert.deepEqual(list("cleanCircles('needs')"), list('DEFAULT_CIRCLES'));
+assert.deepEqual(list("cleanCircles([])"), list('DEFAULT_CIRCLES'));
+assert.deepEqual(list("toggleCircle(['needs'], 'agents')"), ['needs', 'agents']);
+assert.deepEqual(list("toggleCircle(['needs', 'agents'], 'needs')"), ['agents']);
+assert.deepEqual(list("toggleCircle(['needs'], 'needs')"), ['needs']);
+assert.deepEqual(list("moveCircle(['a', 'b', 'c'], 'c', -1)"), ['a', 'c', 'b']);
+assert.deepEqual(list("moveCircle(['a', 'b', 'c'], 'a', -1)"), ['a', 'b', 'c']);
+assert.deepEqual(list("moveCircle(['a', 'b', 'c'], 'c', 1)"), ['a', 'b', 'c']);
+assert.deepEqual(list("moveCircle(['a'], 'gone', 1)"), ['a']);
+run("circles = ['agents']");
+html = run('settingsHTML(attention())');
+for (const metric of ['needs', 'decisions', 'due', 'agents', 'claude', 'codex']) assert.ok(html.includes(`data-circle="${metric}"`), metric);
+assert.ok(html.indexOf('data-circle="agents"') < html.indexOf('data-circle="needs"')); // what you chose comes first
+assert.ok(/data-circle="agents" aria-checked="true" disabled/.test(html)); // the last circle cannot be removed
+assert.ok(html.includes('Not connected') && html.includes('f-preview'));
+run("circles = ['agents', 'needs']");
+assert.ok(!/data-circle="agents" aria-checked="true" disabled/.test(run('settingsHTML(attention())')));
+run("circles = ['needs', 'agents', 'codex']");
+// Labels open away from the screen edge, and only where the circles would stay put.
+assert.equal(run("labelSide('top-left')"), 'right');
+assert.equal(run("labelSide('bottom-right')"), 'left');
+assert.equal(run("labelSide('top')"), 'none');
+assert.equal(run("labelSide('top-left', 'horizontal')"), 'none');
+assert.equal(run("surfaceMode(true, null, true)"), 'settings');
+assert.equal(run("surfaceMode(false, null, true)"), 'pill');
 
 // Only something new counts as an arrival, never the first snapshot.
 const arrived = (ids, seenIds) => Array.from(run(`arrivals(${JSON.stringify(ids.map((id) => ({id})))}, ${seenIds ? `new Set(${JSON.stringify(seenIds)})` : 'null'}).map(i => i.id)`));
@@ -288,9 +365,9 @@ for (const preset of JSON.parse(lab('JSON.stringify(PRESETS)'))) {
     assert.ok(axis?.options.some((o) => o.value === value), `${preset.name}: ${key}`);
   }
 }
-const picks = lab(`picksText({...defaults(), glide: 180, show: 3}, {glide: 'feels right', pill: '  '}, ' more contrast ')`);
+const picks = lab(`picksText({...defaults(), glide: 180, show: 3}, {glide: 'feels right', layout: '  '}, ' more contrast ')`);
 assert.ok(picks.includes('How long does it glide into place? 180 ms (changed). Note: feels right'));
-assert.ok(picks.includes('What should the pill show? HQ and a count\n'));
+assert.ok(picks.includes('Which way does the pill run? Up and down\n'));
 assert.ok(picks.endsWith('Overall: more contrast'));
 assert.ok(!picks.includes('how many items')); // sample size is not a decision
 

@@ -587,7 +587,7 @@ function applyState(next) {
     seenInstances.add(next.instance);
   }
   setLive(true);
-  const signature = JSON.stringify({items: next.items, sessions: next.sessions.map((s) => [s.id, s.name, s.provider, s.connection, s.route, s.activity?.state, s.activity?.source])});
+  const signature = JSON.stringify({items: next.items, usage: next.usage, sessions: next.sessions.map((s) => [s.id, s.name, s.provider, s.connection, s.route, s.activity?.state, s.activity?.source])});
   state = next;
   if (signature !== snapshotSignature) {
     snapshotSignature = signature;

@@ -2,15 +2,35 @@
    item pane; this file adds only what a small floating window needs. See DESIGN.md. */
 html.float, html.float body {height: 100%; background: transparent; overflow: hidden; overscroll-behavior: none;}
 
-/* Pill */
-.f-pill {position: absolute; top: 0; left: 0; display: inline-flex; align-items: center; gap: 8px; width: max-content; height: var(--f-size, 32px); padding: 0 11px; border-radius: 999px; background: var(--card); border: 1px solid rgb(250 250 250 / 0.14); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none; transition: background .15s;}
-body[data-hover] .f-pill {background: var(--accent);}
-.f-pill:focus-visible {outline-offset: -3px; border-radius: 999px;}
-.f-pill .wordmark {font-size: 15px;}
-.f-pill .badge {height: 18px; min-width: 18px; padding: 0 5px; font-size: 11.5px;}
-.f-peek {max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-size: 13px; color: rgb(250 250 250 / 0.88);}
-.f-pill.bump .badge {animation: f-bump .7s cubic-bezier(.16,1,.3,1);}
-@keyframes f-bump {30% {transform: scale(1.3);}}
+/* Pill: a black capsule of circles, each one a live number you choose. */
+.f-capsule {display: inline-flex; flex-direction: column; gap: 4px; width: max-content; padding: 4px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
+body[data-layout="horizontal"] .f-capsule {flex-direction: row;}
+.f-pill {position: absolute; top: 0; left: 0; transition: background .15s;}
+.f-pill:focus-visible {outline-offset: -3px;}
+.f-row {display: flex; align-items: center; gap: 8px; min-height: var(--f-size, 28px);}
+body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
+.f-offline {justify-content: center; min-height: 12px;}
+.f-tag {display: none; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: rgb(250 250 250 / 0.88);}
+body[data-labels] .f-pill .f-tag {display: inline;}
+body[data-labels] .f-pill .f-row {padding-inline: 0 8px;}
+body[data-labels][data-side="left"] .f-pill .f-row {padding-inline: 8px 0;}
+.f-circle {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--f-size, 28px); height: var(--f-size, 28px); border-radius: 50%; border: 1.5px solid rgb(250 250 250 / 0.3); font: 600 12px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; transition: background .15s, border-color .15s;}
+body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
+.f-circle.wide {font-size: 10px; letter-spacing: -0.03em;}
+.f-circle.loud {background: var(--primary); border-color: var(--primary); color: var(--primary-foreground);}
+body[data-hover] .f-pill .f-circle.loud {border-color: var(--primary);}
+.f-circle.live {border-color: var(--live);}
+body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
+.f-circle.none {border-style: dashed; color: var(--muted-foreground);}
+.f-circle.gauge {border: 0;}
+.f-circle.stale {opacity: 0.5;}
+.f-circle svg {position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); fill: none; stroke-width: 3; stroke-linecap: round;}
+.f-circle .track {stroke: rgb(250 250 250 / 0.16);}
+.f-circle .fill {stroke: var(--foreground);}
+.f-circle.low .fill {stroke: var(--error);}
+.f-circle.low {color: var(--error);}
+.f-pill.bump .f-row:first-of-type .f-circle {animation: f-bump .7s cubic-bezier(.16,1,.3,1);}
+@keyframes f-bump {30% {transform: scale(1.14);}}
 
 /* The box: one surface for the list and the expanded item. */
 .f-box {position: absolute; top: 0; left: 0; width: var(--f-width, 380px); height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; transform-origin: var(--f-origin, left top); animation: f-open .18s cubic-bezier(.16,1,.3,1);}
@@ -25,7 +45,7 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
 .f-count {margin-left: 8px; font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
 .f-off {display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12.5px; color: var(--muted-foreground);}
-.f-head .icon-btn:first-of-type {margin-left: auto;}
+.f-push {margin-left: auto;}
 .f-head .icon {width: 18px; height: 18px;}
 .f-rows {flex: 1; min-height: 0;}
 .f-rows-in {padding: 0 8px 8px;}
@@ -34,7 +54,20 @@ html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.floa
 .f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
 
+/* Choosing the circles: the real pill beside its options. */
+.f-settings {display: flex; align-items: flex-start; gap: 14px; padding: 2px 14px 12px 16px;}
+.f-preview {flex: none; position: sticky; top: 0;}
+.f-set-list {flex: 1; min-width: 0;}
+.f-set {display: flex; align-items: center;}
+.f-set .check {flex: 1; min-width: 0; padding: 7px 8px; font-size: 14px; line-height: 1.3;}
+.f-set .check[aria-checked="true"] {color: var(--foreground);}
+.f-set .check small {display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted-foreground);}
+.f-moves {display: flex; flex: none;}
+.f-moves .icon-btn {width: 26px; height: 26px;}
+.f-moves .icon {width: 15px; height: 15px;}
+
 /* The dashboard's item pane, filling the box instead of the browser's right edge. */
+html.float .d-bar [data-step], html.float .d-bar [data-pin] {display: none;}
 html.float .detail {position: absolute; inset: 0; width: 100%; background: var(--sunken); border: 0; box-shadow: none;}
 html.float .d-bar {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
 html.float .d-body {padding: 0 18px 24px;}
@@ -48,16 +81,15 @@ html.float #toast {bottom: 12px; max-width: calc(100vw - 24px); overflow: hidden
 .f-drag {position: fixed; inset: 0; z-index: 100; -webkit-user-select: none; user-select: none;}
 body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-dim .18s ease-out;}
 @keyframes f-dim {from {background: transparent;}}
-.f-drop {position: absolute; border-radius: 999px; border: 1.5px dashed rgb(250 250 250 / 0.42); background: rgb(0 0 0 / 0.28); transition: background .12s, border-color .12s, transform .12s;}
+.f-drop {position: absolute; border-radius: calc(var(--f-size, 28px) / 2 + 5px); border: 1.5px dashed rgb(250 250 250 / 0.42); background: rgb(0 0 0 / 0.28); transition: background .12s, border-color .12s, transform .12s;}
 .f-drop.on {border: 1.5px solid var(--foreground); background: rgb(250 250 250 / 0.2); transform: scale(1.08);}
-.f-ghost {position: absolute; top: 0; left: 0; display: inline-flex; align-items: center; gap: 8px; width: max-content; height: var(--f-size, 32px); padding: 0 11px; border-radius: 999px; background: var(--card); border: 1px solid rgb(250 250 250 / 0.2); box-shadow: 0 10px 34px rgb(0 0 0 / 0.5); transform: translate(var(--x, 0), var(--y, 0)); white-space: nowrap; pointer-events: none; will-change: transform;}
-.f-ghost .wordmark {font-size: 15px;}
-.f-ghost .badge {height: 18px; min-width: 18px; padding: 0 5px; font-size: 11.5px;}
+.f-ghost {position: absolute; top: 0; left: 0; box-shadow: 0 10px 34px rgb(0 0 0 / 0.5); transform: translate(var(--x, 0), var(--y, 0)); pointer-events: none; will-change: transform;}
 .f-ghost.outline {background: rgb(0 0 0 / 0.3); border: 1.5px solid var(--foreground); box-shadow: none;}
+.f-ghost .f-tag {display: none;}
 .f-ghost.gliding {transition: transform var(--f-glide, 300ms) cubic-bezier(.16,1,.3,1);}
 
 @media (prefers-reduced-motion: reduce) {
-  .f-box, .f-pill.bump .badge, body[data-backdrop="dim"] .f-drag {animation: none;}
+  .f-box, .f-pill.bump .f-circle, body[data-backdrop="dim"] .f-drag {animation: none;}
 }
 
 /* Lab bench */

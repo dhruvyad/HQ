@@ -84,6 +84,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
 
     private var dock: String?
     private var snoozedUntil: Double?
+    private var settings: [String: Any]?
     private var placed = false
     private var dragging = false
     private var current: NSScreen?
@@ -241,6 +242,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
               let state = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return }
         dock = state["dock"] as? String
+        settings = state["settings"] as? [String: Any]
         if let until = (state["snoozedUntil"] as? NSNumber)?.doubleValue, until > Date().timeIntervalSince1970 {
             snoozedUntil = until
         }
@@ -250,6 +252,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         var state: [String: Any] = [:]
         if let dock { state["dock"] = dock }
         if let snoozedUntil { state["snoozedUntil"] = snoozedUntil }
+        if let settings { state["settings"] = settings }
         do {
             let data = try JSONSerialization.data(withJSONObject: state)
             try data.write(to: stateURL, options: .atomic)
@@ -277,7 +280,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     private func page(_ type: String, _ body: [String: Any]) {
         switch type {
         case "ready":
-            send(["type": "start", "dock": dock ?? NSNull()])
+            send(["type": "start", "dock": dock ?? NSNull(), "settings": settings ?? NSNull()])
             lastDisplay = nil
             tick()
             for (key, value) in feel { send(["type": "feel", "key": key, "value": value]) }
@@ -287,6 +290,10 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             setDragging(body["on"] as? Bool ?? false)
         case "save":
             save(body["dock"] as? String)
+        case "settings":
+            guard let next = body["settings"] as? [String: Any], JSONSerialization.isValidJSONObject(next) else { return }
+            settings = next
+            _ = writeState(dock: dock, snoozedUntil: snoozedUntil)
         case "menu":
             showMenu()
         default:
@@ -508,6 +515,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         let menu = NSMenu()
         let items: [(String, Selector)] = [
             ("Open dashboard", #selector(openDashboard)),
+            ("Customize pill…", #selector(customize)),
             ("Hide for an hour", #selector(hideForAnHour)),
         ]
         for (title, action) in items {
@@ -517,6 +525,10 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "").target = self
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    @objc private func customize() {
+        send(["type": "customize"])
     }
 
     @objc private func openDashboard() {
