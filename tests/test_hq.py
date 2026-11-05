@@ -108,7 +108,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 8)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):

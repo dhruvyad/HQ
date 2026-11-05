@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import __version__
+from . import attachments as files
 from .adapters import Dispatcher
 from .store import Store, data_dir
 from .presence import ClaudePresence
@@ -53,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -87,6 +88,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.allowed(token=True):
                 self.events()
             return
+        if path.startswith("/api/attachments/"):
+            if self.allowed(token=True):
+                self.attachment(path.rsplit("/", 1)[1])
+            return
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
                   "/float": ("float.html", "text/html"), "/float.js": ("float.js", "text/javascript"),
@@ -103,6 +108,36 @@ class Handler(BaseHTTPRequestHandler):
         if mime == "text/html":
             body = body.replace(b"__HQ_TOKEN__", self.server.token.encode())
         self.output(200, body, mime)
+
+    def upload(self):
+        """A pasted or dropped file: raw bytes, its type, and its name in X-HQ-Filename."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= files.LIMIT:
+                return self.output(413, {"error": "Files can be at most 25 MB"})
+            from urllib.parse import unquote
+            meta = files.save(self.server.store.path.parent, self.rfile.read(length),
+                              self.headers.get("Content-Type", ""), unquote(self.headers.get("X-HQ-Filename", "")))
+            return self.output(200, meta)
+        except ValueError as error:
+            return self.output(400, {"error": str(error)})
+
+    def attachment(self, id):
+        """Serve a file back to the page, as an inert download it can only show as an image."""
+        try:
+            meta = files.find(self.server.store.path.parent, id)
+            body = Path(meta["path"]).read_bytes()
+        except (ValueError, OSError):
+            return self.output(404, {"error": "Not found"})
+        mime = meta["type"] if meta["type"].startswith("image/") or meta["type"] == "application/pdf" else "text/plain"
+        self.send_response(200)
+        self.send_header("Content-Type", mime + ("; charset=utf-8" if mime == "text/plain" else ""))
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.end_headers()
+        self.wfile.write(body)
 
     def events(self):
         self.send_response(200)
@@ -129,6 +164,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(token=True):
             return
+        if urlsplit(self.path).path == "/api/attachments":
+            return self.upload()
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 65536:
@@ -144,9 +181,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = store.add(**body)
             elif len(parts) == 4 and parts[:2] == ["api", "items"]:
                 if parts[3] == "reply":
-                    result = store.reply(parts[2], body.get("text"))
+                    result = store.reply(parts[2], body.get("text"), body.get("attachments"))
                 elif parts[3] == "ask":
-                    result = store.ask_agent(parts[2], body.get("text"))
+                    result = store.ask_agent(parts[2], body.get("text"), body.get("attachments"))
                 elif parts[3] in {"resolve", "done"}:
                     # From the dashboard this is you, not the agent. An open item is marked done
                     # and the agent told; it closes once the agent has heard. A decided one you
@@ -196,6 +233,10 @@ def serve(port=4310):
         state = home / "server.json"
         state.write_text(json.dumps({"pid": os.getpid(), "port": server.server_port, "instance": server.instance}))
         os.chmod(state, 0o600)
+        try:
+            server.store.sweep_files()
+        except OSError:
+            pass  # Leftover uploads are tidied next start.
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
         workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3),

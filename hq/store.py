@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import attachments as files
 from .workstreams import OTHER, place, project_of
 
 PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "other"}
@@ -132,7 +133,11 @@ class Store:
                     if presentation.get("skipped"):
                         presentation["settle"] = "skip"
                         db.execute("UPDATE items SET status='answered',presentation=? WHERE id=?", (json.dumps(presentation), row["id"]))
-            db.execute("PRAGMA user_version=7")
+            # Files pasted into a reply or a question, as their metadata; the text carries their paths.
+            for table in ("replies", "comments"):
+                if "attachments" not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            db.execute("PRAGMA user_version=8")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -553,11 +558,12 @@ class Store:
         data.update(presentation, steps=plan or presentation["steps"])
         data.update(place(data, data.pop("session_cwd", None)))
         data["bucket"] = Store.bucket(data)
+        data["answer_files"] = json.loads(data.get("answer_files") or "[]")
         return data
 
     def item(self, id):
         with self.db() as db:
-            row = db.execute("""SELECT i.*,s.cwd AS session_cwd,r.text AS answer,r.state AS delivery,r.error AS delivery_error
+            row = db.execute("""SELECT i.*,s.cwd AS session_cwd,r.text AS answer,r.state AS delivery,r.error AS delivery_error,r.attachments AS answer_files
                 FROM items i JOIN sessions s ON s.id=i.session_id LEFT JOIN replies r ON i.id=r.item_id WHERE i.id=?""", (id,)).fetchone()
         if not row:
             raise ValueError("Item not found")
@@ -569,7 +575,7 @@ class Store:
         with self.db() as db:
             sessions = [dict(r) for r in db.execute("SELECT * FROM sessions ORDER BY seen DESC")]
             items = [self.decode(r) for r in db.execute("""SELECT i.*,s.name AS session_name,s.provider,s.cwd AS session_cwd,
-                r.text AS answer,r.state AS delivery,r.error AS delivery_error,r.created AS replied,r.delivered AS heard
+                r.text AS answer,r.state AS delivery,r.error AS delivery_error,r.created AS replied,r.delivered AS heard,r.attachments AS answer_files
                 FROM items i JOIN sessions s ON s.id=i.session_id
                 LEFT JOIN replies r ON i.id=r.item_id ORDER BY i.created DESC""")]
         self.attach_comments(items)
@@ -585,15 +591,24 @@ class Store:
                  and (not bucket or i["bucket"] == bucket)]
         return {"sessions": sessions, "items": items}
 
-    def reply(self, id, text):
-        text, now = required(text, "answer", 20000), time.time()
+    def compose(self, text, attachments, name):
+        """Your words plus where each attached file is, which is what the agent reads."""
+        found = files.resolve(self.path.parent, attachments)
+        if not found:
+            return required(text, name, 20000), []
+        if text is not None and (not isinstance(text, str) or len(text) > 20000):
+            raise ValueError(f"{name} must be text, at most 20000 characters")
+        return "\n\n".join(part for part in ((text or "").strip(), files.describe(found)) if part), found
+
+    def reply(self, id, text, attachments=None):
+        (text, found), now = self.compose(text, attachments, "answer"), time.time()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT status,kind FROM items WHERE id=?", (id,)).fetchone()
             if not row or row["status"] != "open":
                 raise ValueError("Only open items can receive a response")
-            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)",
-                       (str(uuid.uuid4()), id, text, now))
+            db.execute("INSERT INTO replies (id,item_id,text,created,attachments) VALUES (?,?,?,?,?)",
+                       (str(uuid.uuid4()), id, text, now, json.dumps(found)))
             db.execute("UPDATE items SET status='answered',updated=? WHERE id=?", (now, id))
         return self.item(id)
 
@@ -697,20 +712,22 @@ class Store:
                 FROM comments c ORDER BY c.created,c.rowid"""):
                 comment = dict(row)
                 comment["answered"] = bool(comment["answered"])
+                comment["attachments"] = json.loads(comment.get("attachments") or "[]")
                 threads.setdefault(comment["item_id"], []).append(comment)
         for item in items:
             item["comments"] = threads.get(item["id"], [])
             item["asking"] = any(c["author"] == "human" and not c["answered"] and c["state"] != "cancelled" for c in item["comments"])
             item["bucket"] = self.bucket(item)
 
-    def ask_agent(self, item_id, text):
-        text, now, comment_id = required(text, "question", 20000), time.time(), str(uuid.uuid4())
+    def ask_agent(self, item_id, text, attachments=None):
+        (text, found), now, comment_id = self.compose(text, attachments, "question"), time.time(), str(uuid.uuid4())
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             item = db.execute("SELECT status FROM items WHERE id=?", (item_id,)).fetchone()
             if not item or item["status"] == "done":
                 raise ValueError("Ask for clarification on an unfinished item")
-            db.execute("INSERT INTO comments (id,item_id,author,text,created) VALUES (?,?,'human',?,?)", (comment_id, item_id, text, now))
+            db.execute("INSERT INTO comments (id,item_id,author,text,created,attachments) VALUES (?,?,'human',?,?,?)",
+                       (comment_id, item_id, text, now, json.dumps(found)))
             db.execute("UPDATE items SET updated=? WHERE id=?", (now, item_id))
         return self.comment(comment_id)
 
@@ -723,6 +740,7 @@ class Store:
             raise ValueError("Comment not found")
         result = dict(row)
         result["answered"] = bool(result["answered"])
+        result["attachments"] = json.loads(result.get("attachments") or "[]")
         return result
 
     def comments(self, session_id, item_id=None, pending=False):
@@ -734,7 +752,7 @@ class Store:
                 EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=c.id) AS answered
                 FROM comments c JOIN items i ON i.id=c.item_id WHERE i.session_id=?
                 AND (? IS NULL OR c.item_id=?) ORDER BY c.created,c.rowid""", (session_id, item_id, item_id))
-            result = [{**dict(row), "answered": bool(row["answered"])} for row in rows]
+            result = [{**dict(row), "answered": bool(row["answered"]), "attachments": json.loads(row["attachments"] or "[]")} for row in rows]
         return [c for c in result if not pending or (c["author"] == "human" and not c["answered"] and c["state"] != "cancelled")]
 
     def respond(self, comment_id, session_id, text):
@@ -872,6 +890,14 @@ class Store:
                 db.execute("UPDATE items SET presentation=? WHERE id=?", (json.dumps(presentation), row["id"]))
                 due.append({"item_id": row["id"], "title": row["title"], "answer": row["text"], "heard": row["delivered"]})
         return due
+
+    def sweep_files(self):
+        """Delete files uploaded a day ago or more that no reply or question ever used."""
+        with self.db() as db:
+            used = {a["id"] for table in ("replies", "comments")
+                    for row in db.execute(f"SELECT attachments FROM {table} WHERE attachments!='[]'")
+                    for a in json.loads(row[0])}
+        return files.sweep(self.path.parent, used)
 
     def has_waiter(self, item_id):
         with self.db() as db:
