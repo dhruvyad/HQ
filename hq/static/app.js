@@ -8,6 +8,7 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   plug: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
+  back: '<path d="m15 18-6-6 6-6"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
@@ -331,23 +332,79 @@ function workstreamPage() {
   const items = scopeItems();
   return scopePage({title: workstreamName(route.project, route.workstream), crumb: {label: projectName(route.project), href: href({page: 'project', project: route.project, lane: route.lane})}, items, level: 'none', desc: agentsDesc(items)});
 }
-function agentsPage() {
-  const order = ['active', 'waiting', 'idle', 'unknown', 'offline'];
-  const open = (a) => a.items.filter((i) => i.lane !== 'done').length;
-  const agents = [...model.agents].sort((a, b) => order.indexOf(agentState(a)) - order.indexOf(agentState(b)) || open(b) - open(a));
-  const quiet = agents.filter((a) => !open(a) && agentState(a) !== 'active');
-  const sections = [['Working', (a) => ['active', 'waiting'].includes(agentState(a))], ['Idle', (a) => ['idle', 'unknown'].includes(agentState(a)) && open(a)], ['Offline with open work', (a) => agentState(a) === 'offline' && open(a)]];
-  const lists = sections.map(([label, keep]) => [label, agents.filter(keep)]).filter(([, list]) => list.length);
-  const body = lists.map(([label, list]) => `<section class="group"><div class="group-head">${label}<span class="n">${list.length}</span></div>${list.map(agentRowHTML).join('')}</section>`).join('')
-    + (quiet.length ? `<section class="group">${showQuiet ? `<div class="group-head">Idle, nothing reported<span class="n">${quiet.length}</span></div>${quiet.map(agentRowHTML).join('')}` : `<button class="fold" data-quiet>${quiet.length} more idle ${quiet.length === 1 ? 'agent' : 'agents'} with nothing reported${icon('chev', 'sm')}</button>`}</section>` : '');
-  return {title: 'Agents', desc: esc(lists.map(([label, list]) => `${list.length} ${label.split(' ')[0].toLowerCase()}`).join(' · ')), body: body || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`};
+// Agents by the folder they work in: running first, then waiting on you, then finished
+// within the last day. Anything quieter folds away. A conversation is one agent, however
+// many agents it runs in the background.
+const AGENT_WINDOW = 24 * 3600;
+// The folder's own name only, never the path to it.
+const folderName = (cwd) => String(cwd || '').replace(/\/+$/, '').split('/').pop() || 'No folder';
+// How long something has been going, as a clock: 4m 05s, then 1h 12m.
+function ranFor(seconds) {
+  const s = Math.max(0, Math.floor(seconds)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`;
 }
-function agentRowHTML(a) {
-  const open = a.items.filter((i) => i.lane !== 'done');
-  const streams = [...new Set(open.map((i) => i.workstream_name))];
-  const on = streams.length ? `${streams.slice(0, 3).join(', ')}${streams.length > 3 ? ` +${streams.length - 3}` : ''}` : '';
-  const you = count(open, 'you');
-  return `<a class="row agent-row" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" data-session="${esc(a.id)}"><span class="title"><span class="dot ${agentState(a)}"></span><span class="name">${esc(a.name)}</span>${on ? `<span class="on">${esc(on)}</span>` : ''}</span><span class="meta">${you ? `${you} for you` : open.length ? `${open.length} open` : ''}</span></a>`;
+function agentFolders(sessions, items, now = Date.now() / 1000) {
+  const all = sessions.map((s) => {
+    const mine = items.filter((i) => i.session_id === s.id && i.lane !== 'done'), st = agentState(s);
+    return {id: s.id, name: s.name, harness: harness(s.provider), folder: s.cwd || '', state: st,
+      since: s.activity?.since || null, last: s.last_active || null,
+      background: st === 'active' && s.activity?.source === 'background',
+      you: mine.filter((i) => i.lane === 'you').length, open: mine.length};
+  });
+  const recent = (a) => Boolean(a.last) && now - a.last < AGENT_WINDOW;
+  const newest = (key) => (x, y) => (y[key] || 0) - (x[key] || 0);
+  const running = all.filter((a) => a.state === 'active').sort(newest('since'));
+  const waiting = all.filter((a) => a.state === 'waiting').sort(newest('since'));
+  const finished = all.filter((a) => ['idle', 'offline'].includes(a.state) && recent(a)).sort(newest('last'));
+  // No live signal is never shown as finished: only that it was seen running lately.
+  const unsure = all.filter((a) => a.state === 'unknown' && recent(a)).sort(newest('last'));
+  const shown = [...running, ...waiting, ...finished, ...unsure];
+  const quiet = all.filter((a) => !shown.includes(a)).sort(newest('last'));
+  // Folders keep the order of their first agent, so the folder with work running leads.
+  const group = (list) => {
+    const folders = new Map();
+    for (const a of list) {
+      if (!folders.has(a.folder)) folders.set(a.folder, {key: a.folder, name: folderName(a.folder), agents: [], running: false});
+      const f = folders.get(a.folder);
+      f.agents.push(a);
+      f.running ||= a.state === 'active';
+    }
+    return [...folders.values()];
+  };
+  return {all, groups: group(shown), quiet: group(quiet), running: running.length, finished: finished.length, quietCount: quiet.length};
+}
+const sinceTick = (a, now) => (a.since ? `<span class="tick" data-since="${a.since}">${ranFor(now - a.since)}</span>` : '');
+// The line under an agent's name.
+function agentMeta(a, now = Date.now() / 1000) {
+  if (a.state === 'active') return `running${a.since ? ` ${sinceTick(a, now)}` : ''}${a.background ? ' · in the background' : ''}`;
+  if (a.state === 'waiting') return 'waiting on you';
+  if (a.state === 'unknown') return a.last ? `no live signal · seen running ${ago(a.last)}` : 'no live signal';
+  if (a.state === 'offline') return a.last ? `offline · finished ${ago(a.last)}` : 'offline';
+  return a.last ? `finished ${ago(a.last)}` : 'idle';
+}
+// The same, said in full, at the top of one agent's page.
+function agentStateLine(a, now = Date.now() / 1000) {
+  if (a.state === 'active') return `${a.background ? 'Agents running in the background' : 'Running'}${a.since ? ` for ${sinceTick(a, now)}` : ''}`;
+  if (a.state === 'waiting') return `Waiting on you${a.since ? ` for ${sinceTick(a, now)}` : ''}`;
+  if (a.state === 'unknown') return a.last ? `No live signal · last seen running ${ago(a.last)}` : 'No live signal';
+  if (a.state === 'offline') return a.last ? `Offline · finished ${ago(a.last)}` : 'Offline';
+  return a.last ? `Finished ${ago(a.last)}` : 'Idle';
+}
+const agentSide = (a) => (a.you ? `<b>${a.you}</b> for you` : a.open ? `${a.open} open` : '');
+const agentDot = (a) => `<span class="dot ${a.state}${a.state === 'active' ? ' pulse' : ''}" aria-hidden="true"></span>`;
+function tickTimes(root = document) {
+  const now = Date.now() / 1000;
+  root.querySelectorAll('.tick[data-since]').forEach((el) => {el.textContent = ranFor(now - Number(el.dataset.since));});
+}
+function agentsPage() {
+  const view = agentFolders(state.sessions, model.items), now = Date.now() / 1000;
+  const row = (a) => `<a class="row agent-row" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" data-session="${esc(a.id)}">${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${esc(a.harness)} · ${agentMeta(a, now)}</span></span><span class="a-side">${agentSide(a)}</span></a>`;
+  const folder = (f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="n">running</span>' : ''}</div>${f.agents.map(row).join('')}</section>`;
+  const fold = view.quiet.length ? (showQuiet ? view.quiet.map(folder).join('')
+    : `<button class="fold" data-quiet>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}${icon('chev', 'sm')}</button>`) : '';
+  const desc = [view.running ? `${view.running} running` : '', view.finished ? `${view.finished} finished in the last day` : ''].filter(Boolean).join(' · ');
+  const body = view.groups.map(folder).join('') + fold;
+  return {title: 'Agents', desc: esc(desc), body: body || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`};
 }
 function agentPage() {
   const a = model.agents.find((s) => s.id === route.agent);
@@ -1089,6 +1146,7 @@ function boot() {
   refresh();
   watchState();
   setInterval(() => {if (Date.now() - lastLive > 5000) {setLive(false); streamController?.abort(); refresh();}}, 1000);
+  setInterval(() => tickTimes(), 1000);
   document.addEventListener('visibilitychange', () => {if (!document.hidden) {streamController?.abort(); refresh();}});
   window.addEventListener('offline', () => {streamController?.abort(); setLive(false);});
   window.addEventListener('online', () => {streamController?.abort(); refresh();});

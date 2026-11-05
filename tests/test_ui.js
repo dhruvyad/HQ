@@ -78,7 +78,7 @@ run("route = parseRoute('#/agents/codex%3Ab'); model = derive()");
 assert.deepEqual(Array.from(run('scopeItems().map(i => i.id)')), ['b1']);
 html = run('agentsPage().body');
 assert.ok(html.includes('data-session="codex:a"') && html.includes('Shared &lt;project&gt;'));
-assert.ok(html.indexOf('Working') < html.indexOf('data-session="codex:a"'));
+assert.ok(html.includes('class="f-name">No folder<') && html.indexOf('f-name') < html.indexOf('data-session="codex:a"')); // grouped by folder
 // The selected conversation stays visible when its last open item completes.
 context.queue = {...context.queue, revision: 6, items: context.queue.items.map(i => i.session_id === 'codex:b' ? {...i, status: 'done', bucket: 'done'} : i),
   sessions: context.queue.sessions.map(s => s.id === 'codex:b' ? {...s, activity: {state: 'offline'}} : s)};
@@ -334,7 +334,8 @@ assert.ok(run('feel.show') >= 10000); // the real list is never cut short
 html = run('floatListHTML(attention(), true)');
 assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>decision</b>'));
 assert.ok(html.includes('data-item="f-new"') && html.includes('Decision') && html.includes('NoClick › Support'));
-assert.ok(html.includes('Reply failed') && html.includes('<span class="f-count">7</span>') && html.includes('data-more'));
+assert.ok(html.includes('Reply failed') && html.includes('data-view="needs" aria-selected="true">Needs you<small>7</small>') && html.includes('data-more'));
+assert.ok(html.includes('data-view="agents" aria-selected="false">Agents<small>1 running</small>')); // the other list, beside it
 assert.ok(!html.includes('data-collapse') && !html.includes('target="_blank"')); // one menu, not a cross and an arrow
 assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
@@ -357,6 +358,61 @@ assert.equal(run(`overPill(${JSON.stringify(pillRect)}, ${JSON.stringify({...box
 // With the box open the circle still steps forward, but its label would cover the header.
 assert.equal(run('spotLabelled(false)'), true);
 assert.equal(run('spotLabelled(true)'), false);
+
+// Agents, by folder: running first, then waiting on you, then finished in the last day.
+const clockNow = Math.floor(Date.now() / 1000); // ago() reads the real clock
+context.agentSessions = [
+  {id: 'c:old', name: 'Old <chat>', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'idle'}, last_active: clockNow - 3 * 86400},
+  {id: 'c:done', name: 'Docs pass', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'idle'}, last_active: clockNow - 2 * 3600},
+  {id: 'x:run', name: 'Release build', provider: 'codex', cwd: '/Users/someone/code/lantern/', activity: {state: 'active', source: 'codex-live', since: clockNow - 65}, last_active: clockNow},
+  {id: 'c:bg', name: 'Research with subagents', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'active', source: 'background', since: clockNow - 3725}, last_active: clockNow},
+  {id: 'c:wait', name: 'Asks you first', provider: 'claude-code', cwd: '/Users/someone/code/site', activity: {state: 'waiting', since: clockNow - 30}, last_active: clockNow - 40},
+  {id: 'c:nosig', name: 'No signal', provider: 'claude-code', cwd: '/Users/someone/code/site', activity: {state: 'unknown'}, last_active: clockNow - 600},
+  {id: 'c:nofolder', name: 'Desktop chat', provider: 'claude-desktop', activity: {state: 'idle'}, last_active: clockNow - 1200},
+];
+context.agentItems = [item({id: 'ai1', session_id: 'c:done', title: 'Check the docs'}), item({id: 'ai2', session_id: 'c:done', title: 'With it', owner: 'agent', bucket: 'pending'})].map((i) => ({...i, lane: run('laneOf')(i)}));
+const folders = JSON.parse(run(`JSON.stringify(agentFolders(agentSessions, agentItems, ${clockNow}))`));
+// Folders are named by their last part only, never the path to them, and the one with work running leads.
+assert.deepEqual(folders.groups.map((f) => f.name), ['lantern', 'harbor', 'site', 'No folder']);
+assert.ok(!JSON.stringify(folders.groups.map((f) => [f.name, f.agents.map((a) => a.name)])).includes('/Users'));
+assert.deepEqual(folders.groups.map((f) => f.running), [true, true, false, false]);
+// Within a folder, running comes before finished; anything quiet for over a day folds away.
+assert.deepEqual(folders.groups[1].agents.map((a) => a.id), ['c:bg', 'c:done']);
+assert.deepEqual(folders.quiet.map((f) => [f.name, f.agents.map((a) => a.id)]), [['harbor', ['c:old']]]);
+assert.equal(folders.running, 2);
+assert.equal(folders.finished, 2); // the docs pass and the desktop chat, not the one with no live signal
+// A conversation with agents working in the background is one running agent, and says so.
+const bg = folders.groups[1].agents[0];
+assert.equal(folders.groups.flatMap((f) => f.agents).filter((a) => a.id === 'c:bg').length, 1);
+assert.equal(bg.state, 'active');
+assert.equal(bg.background, true);
+const meta = (id) => run(`agentMeta(agentFolders(agentSessions, agentItems, ${clockNow}).all.find((a) => a.id === '${id}'), ${clockNow})`);
+assert.equal(meta('c:bg'), `running <span class="tick" data-since="${clockNow - 3725}">1h 02m</span> · in the background`);
+// Times: a running clock from when the state began, and how long ago a finished one last ran.
+assert.equal(meta('x:run'), `running <span class="tick" data-since="${clockNow - 65}">1m 05s</span>`);
+assert.equal(run('ranFor(0)'), '0m 00s');
+assert.equal(run('ranFor(7200)'), '2h 00m');
+assert.equal(meta('c:wait'), 'waiting on you');
+assert.ok(meta('c:done').startsWith('finished ') && meta('c:done').endsWith('h ago'));
+assert.ok(meta('c:nosig').startsWith('no live signal · seen running')); // never "finished"
+assert.ok(run(`agentStateLine(agentFolders(agentSessions, agentItems, ${clockNow}).all.find((a) => a.id === 'c:bg'), ${clockNow})`).startsWith('Agents running in the background for'));
+assert.equal(folders.all.find((a) => a.id === 'c:done').you, 1);
+assert.equal(run("agentSide({you: 2, open: 3})"), '<b>2</b> for you');
+assert.equal(run("agentSide({you: 0, open: 3})"), '3 open');
+assert.equal(run("folderName('/Users/someone/code/HQ/')"), 'HQ');
+assert.equal(run("folderName('')"), 'No folder');
+// The panel shows the same folders, and an agent's own page lists its items to open.
+run(`savedSessions = state.sessions; state.sessions = agentSessions; listView = 'agents'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('data-view="agents" aria-selected="true"') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
+assert.ok(html.includes('Old &lt;chat&gt;') === false && html.includes('data-agents-all>1 more, in 1 folder')); // quiet ones folded
+assert.ok(!html.includes('/Users/someone'));
+run("agentOpen = 'c:done'");
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.includes('<dt>Folder</dt><dd>harbor</dd>'));
+run("agentOpen = 'c:gone'");
+assert.ok(run('agentsPanelHTML(attention(), true)').includes('data-agent="c:bg"')); // a vanished agent falls back to the list
+run(`state.sessions = savedSessions; listView = 'needs'; agentOpen = null`);
 
 // The pill: a black capsule of circles you choose, with no wordmark.
 run("circles = ['needs', 'agents', 'claude']");

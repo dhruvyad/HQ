@@ -96,6 +96,7 @@ let swallowClick = false, customizing = false, hovering = false, circles = [...D
 let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
 let lastItems = null, lastUsage = null, pending = [], notice = null;
+let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null;
 const agentMemory = new Map();
 
 function cleanShortcuts(saved) {
@@ -352,10 +353,70 @@ function shortcutsHTML() {
   return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. While recording, Delete clears a shortcut and Escape cancels.</p>`;
 }
 function floatListHTML(items, live = liveHealthy) {
-  const head = `<header class="f-head"><h1>Needs you</h1>${items.length ? `<span class="f-count">${items.length}</span>` : ''}${live ? '' : '<span class="f-off"><span class="dot err"></span>Reconnecting…</span>'}
-      <button class="icon-btn f-push" type="button" data-more aria-label="More" title="More">${icon('more')}</button></header>`;
+  const head = `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header>`;
   const rows = items.map((i) => rowHTML(i, {where: true, age: true, kind: true})).join('');
   return `${head}<div class="f-rows scroll"><div class="f-rows-in">${rows || `<div class="f-empty">${EMPTY.you[0]}</div>`}</div></div>`;
+}
+
+// The two lists share one header: Needs you, and Agents beside it.
+function listTabs(items) {
+  const running = model.agents.filter((a) => agentState(a) === 'active').length;
+  return `<div class="f-tabs" role="tablist" aria-label="Lists"><button class="f-tab" type="button" role="tab" data-view="needs" aria-selected="${listView === 'needs'}">Needs you${items.length ? `<small>${items.length}</small>` : ''}</button><button class="f-tab" type="button" role="tab" data-view="agents" aria-selected="${listView === 'agents'}">Agents${running ? `<small>${running} running</small>` : ''}</button></div>`;
+}
+const offlineNote = (live) => (live ? '' : '<span class="f-off"><span class="dot err"></span>Reconnecting…</span>');
+const moreButton = `<button class="icon-btn f-push" type="button" data-more aria-label="More" title="More">${icon('more')}</button>`;
+// Agents, by the folder each one works in. Click one for its page.
+function agentsPanelHTML(items, live = liveHealthy) {
+  const view = agentFolders(state.sessions, model.items), now = Date.now() / 1000;
+  const shown = agentOpen && view.all.find((a) => a.id === agentOpen);
+  if (shown) return `<header class="f-head"><button class="f-return" type="button" data-back>${icon('back', 'sm')}Agents</button>${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${agentPageHTML(shown, now)}</div></div>`;
+  const agent = (a) => `<button class="f-agent" type="button" data-agent="${esc(a.id)}">${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${esc(a.harness)} · ${agentMeta(a, now)}</span></span><span class="a-side">${agentSide(a)}</span></button>`;
+  const folder = (f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="f-run">running</span>' : ''}</div>${f.agents.map(agent).join('')}</div>`;
+  const quiet = view.quiet.length ? (agentsAll ? view.quiet.map(folder).join('')
+    : `<button class="f-quiet" type="button" data-agents-all>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}</button>`) : '';
+  const body = view.groups.map(folder).join('') || '<div class="f-empty">No agent has run in the last day</div>';
+  return `<header class="f-head">${listTabs(items)}${offlineNote(live)}${moreButton}</header><div class="f-rows scroll"><div class="f-rows-in">${body}${quiet}</div></div>`;
+}
+// One agent: what it is doing, where, and its open items, which open as usual.
+function agentPageHTML(a, now) {
+  const items = sortLane(model.items.filter((i) => i.session_id === a.id && i.lane !== 'done'), 'you');
+  const lane = (key, label) => {
+    const list = items.filter((i) => i.lane === key);
+    return `<div class="f-lane"><div class="f-lane-h">${label}<span class="c">${list.length}</span></div>${list.map((i) => rowHTML(i, {age: true, kind: true})).join('') || '<div class="f-none">None</div>'}</div>`;
+  };
+  const streams = [...new Set(items.map((i) => i.workstream_name))];
+  return `<div class="f-agent-page"><h2 class="f-agent-name">${esc(a.name)}</h2><div class="f-agent-state">${agentDot(a)}<span>${agentStateLine(a, now)}</span></div>
+    <dl class="f-facts"><dt>Harness</dt><dd>${esc(a.harness)}</dd><dt>Folder</dt><dd>${esc(folderName(a.folder))}</dd>
+      ${a.state !== 'active' && a.last ? `<dt>Last running</dt><dd>${ago(a.last)}</dd>` : ''}
+      ${streams.length ? `<dt>Working on</dt><dd>${esc(streams.join(', '))}</dd>` : ''}</dl>
+    ${lane('you', 'Needs you')}${lane('agents', 'With the agent')}${lane('waiting', 'Waiting on someone')}
+    <button class="ghost-pill f-wide" type="button" data-agent-dashboard="${esc(a.id)}">Open in the dashboard</button></div>`;
+}
+// Moving between lists slides the way the header reads: Agents and an agent's page sit to the right.
+function showList(view, agent = null) {
+  const depth = (v, a) => (v === 'needs' ? 0 : a ? 2 : 1);
+  const from = depth(listView, agentOpen), to = depth(view, agent);
+  listMotion = to > from ? 'push' : to < from ? 'pop' : null;
+  if (view === 'agents' && listView !== 'agents') agentsAll = false;
+  listView = view;
+  agentOpen = agent;
+  customizing = false;
+  if (route.item) return go({item: null});
+  render();
+}
+function slideList(motion) {
+  if (!motion || calm()) return;
+  $('#main').animate([{opacity: 0, transform: `translateX(${motion === 'push' ? 24 : -24}px)`}, {opacity: 1, transform: 'none'}], {duration: 320, easing: spring('--f-soft')});
+}
+// While the list stays put, agents that move between folders glide to their new place.
+const agentTops = () => new Map([...document.querySelectorAll('#main [data-agent]')].map((el) => [el.dataset.agent, el.getBoundingClientRect().top]));
+function glideAgents(before) {
+  if (!before || calm()) return;
+  for (const el of document.querySelectorAll('#main [data-agent]')) {
+    const was = before.get(el.dataset.agent), at = el.getBoundingClientRect().top;
+    if (was === undefined) el.animate([{opacity: 0, transform: 'translateY(6px)'}, {opacity: 1, transform: 'none'}], {duration: 380, easing: spring('--f-soft')});
+    else if (Math.abs(was - at) > 1) el.animate([{transform: `translateY(${was - at}px)`}, {transform: 'none'}], {duration: 520, easing: spring('--f-soft')});
+  }
 }
 
 // Paint
@@ -380,7 +441,10 @@ function paintFloat({background = false} = {}) {
   rollChanged(items);
   pill.setAttribute('aria-label', pillLabel(items, live));
   pill.title = 'Click to open. Drag to move. Right-click for more.';
-  setHTML($('#main'), customizing ? settingsHTML(items) : floatListHTML(items, live));
+  const tops = !listMotion && listView === 'agents' ? agentTops() : null;
+  setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : floatListHTML(items, live));
+  if (mode === 'list') {slideList(listMotion); glideAgents(tops);}
+  listMotion = null;
   const detail = $('#detail'), active = document.activeElement;
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
   if (!(background && detail.contains(active) && active.matches('textarea, input, select'))) renderDetail();
@@ -743,7 +807,10 @@ function applyShortcuts() {
   native({type: 'hotkeys', hotkeys: hotkeyList(shortcuts)});
 }
 function runShortcut(action) {
-  if (action === 'toggle') return setOpen(!floatOpen);
+  if (action === 'toggle') {
+    if (!floatOpen) {listView = 'needs'; agentOpen = null;}
+    return setOpen(!floatOpen);
+  }
   if (action === 'dashboard') return native({type: 'openDashboard'});
   if (action === 'customize') {
     customizing = true;
@@ -754,6 +821,7 @@ function runShortcut(action) {
   }
   if (action === 'next' || action === 'previous') {
     customizing = false;
+    if (listView === 'agents' && !agentOpen) listView = 'needs';
     if (!floatOpen) setOpen(true);
     return step(action === 'next' ? 1 : -1);
   }
@@ -949,10 +1017,18 @@ function bootFloat() {
     const circle = e.target.closest('[data-circle]'), shift = e.target.closest('[data-circle-move]');
     const toggle = e.target.closest('[data-notify]'), record = e.target.closest('[data-record]');
     if (e.target.closest('#pill')) {
-      const item = notice?.item;
-      if (floatOpen) return setOpen(false);
+      // The pill opens the list for the circle you clicked: the agents circle, or an agent's
+      // notice, opens Agents. Clicking the list that is already open closes it.
+      const item = notice?.item, rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
+      const metric = e.target.closest('[data-metric]')?.dataset.metric || (spot.on ? rows[spot.index]?.dataset.metric : null);
+      const target = notice?.group === 'agents' || (!notice && metric === 'agents') ? 'agents' : 'needs';
+      if (floatOpen && target === listView && !agentOpen) return setOpen(false);
+      if (floatOpen) return showList(target);
+      listView = target;
+      agentOpen = null;
+      agentsAll = false;
       setOpen(true);
-      if (item && model.items.some((i) => i.id === item)) openItem(item);
+      if (target === 'needs' && item && model.items.some((i) => i.id === item)) openItem(item);
     } else if (e.target.closest('[data-more]')) native({type: 'menu'});
     else if (toggle) {
       notify = {...notify, [toggle.dataset.notify]: !notify[toggle.dataset.notify]};
@@ -966,6 +1042,11 @@ function bootFloat() {
     else if (e.target.closest('[data-customized]')) setOpen(false);
     else if (circle && !circle.disabled) setCircles(toggleCircle(circles, circle.dataset.circle));
     else if (shift && !shift.disabled) setCircles(moveCircle(circles, shift.dataset.id, Number(shift.dataset.circleMove)));
+    else if (e.target.closest('[data-view]')) showList(e.target.closest('[data-view]').dataset.view);
+    else if (e.target.closest('[data-agent]')) showList('agents', e.target.closest('[data-agent]').dataset.agent);
+    else if (e.target.closest('[data-back]')) showList('agents');
+    else if (e.target.closest('[data-agents-all]')) {agentsAll = true; render();}
+    else if (e.target.closest('[data-agent-dashboard]')) openDashboard(href({page: 'agent', agent: e.target.closest('[data-agent-dashboard]').dataset.agentDashboard, lane: 'you', item: null}));
     else if (row) openItem(row.dataset.item);
     else if (inner) {
       e.preventDefault();
@@ -976,6 +1057,7 @@ function bootFloat() {
     if (e.key !== 'Escape') return;
     if (drag) endDrag();
     else if (customizing) {customizing = false; render();}
+    else if (floatOpen && !route.item && agentOpen) showList('agents');
     else if (floatOpen && !route.item) setOpen(false);
     else return;
     e.stopImmediatePropagation();

@@ -82,7 +82,8 @@ a {color: inherit; text-decoration: none;}
 .dot.active {background: var(--live); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.14);}
 .dot.waiting {background: var(--foreground);}
 .dot.idle {border: 1.5px solid rgb(250 250 250 / 0.45);}
-.dot.offline, .dot.unknown {border: 1.5px solid rgb(250 250 250 / 0.18);}
+.dot.offline {border: 1.5px solid rgb(250 250 250 / 0.18);}
+.dot.unknown {border: 1.5px dashed rgb(250 250 250 / 0.3);}
 .dot.err {background: var(--error);}
 
 /* Page */
@@ -139,9 +140,21 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .icon-btn[aria-pressed="true"] {color: var(--foreground);}
 .detail-open .row .title {white-space: normal;}
 
-.agent-row .title {display: flex; align-items: center; gap: 10px;}
-.agent-row .name {overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
-.agent-row .on {font-size: 13px; font-weight: 400; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+/* Agents, grouped by the folder they work in. */
+.a-main {flex: 1; min-width: 0;}
+.a-name {display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; line-height: 1.35; color: rgb(250 250 250 / 0.94);}
+.a-meta {display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted-foreground);}
+.a-side {flex: none; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; text-align: right;}
+.a-side b {font-weight: 500; color: var(--foreground);}
+.tick {font-variant-numeric: tabular-nums;}
+.dot.pulse {animation: dot-pulse 2s ease-in-out infinite;}
+@keyframes dot-pulse {50% {box-shadow: 0 0 0 5px rgb(74 222 128 / 0.05);}}
+.agent-row {gap: 12px;}
+.agent-row .a-name {font-size: 15px; line-height: 1.4;}
+.agent-row .a-meta {font-size: 13px;}
+.agent-row .a-side {font-size: 13px;}
+.group.folder .group-head {height: 34px;}
+.group.folder .f-name {font: 400 21px/1.1 var(--display); letter-spacing: -0.01em; color: var(--foreground);}
 .fold {display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; font-size: 13.5px; color: var(--muted-foreground); border-radius: 12px;}
 .fold:hover {color: var(--foreground); background: rgb(250 250 250 / 0.04);}
 
@@ -311,7 +324,7 @@ dialog .close {position: absolute; top: 14px; right: 14px;}
   .d-tabs {padding: 8px 7px 0;}
   .d-body {padding: 18px 16px 28px;}
   .d-dock {padding: 12px 12px 14px;}
-  .agent-row .on {max-width: none;}
+  .agent-row {flex-direction: row; align-items: center;}
 }
 @media (prefers-reduced-motion: reduce) {* {transition: none !important;}}
 
