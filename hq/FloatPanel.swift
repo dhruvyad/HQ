@@ -160,6 +160,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // CSS, so the window sets it, and keeps setting it, while the pointer is ours.
     private var cursorKind = "default", cursorEdge = ""
     private var lastPointer: NSPoint?
+    // A file dragged from another app, such as Finder. The panel sits above macOS's drag
+    // layer, so the dragged file would pass under it; while one is in flight it steps just
+    // below that layer, and catches the mouse only over the box.
+    private var fileDragging = false
+    private var menuOpen = false
+    private var dragBoardCount = NSPasteboard(name: .drag).changeCount
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var hotKeyActions: [UInt32: String] = [:]
@@ -470,6 +476,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // reports hover and the cursor: WebKit gives a panel that is not key neither :hover
     // nor mouse moves.
     private func checkPointer() {
+        watchFileDrag()
         guard !hitRects.isEmpty, !dragging else {
             panel.ignoresMouseEvents = false
             if dragging { assertCursor() }
@@ -482,6 +489,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         // text past the edge. A drag from another app, such as a file from Finder, has to be
         // able to land on the box, so a window that was letting the mouse through starts
         // taking it as soon as the drag is over the box.
+        if fileDragging {
+            // Ours only over the box, a little generously, so a drop anywhere else reaches
+            // the app underneath.
+            panel.ignoresMouseEvents = !hitRects.contains { $0.insetBy(dx: -8, dy: -8).contains(local) }
+            return
+        }
         if NSEvent.pressedMouseButtons != 0 {
             if inside { panel.ignoresMouseEvents = false }
             // A resize that started on an edge keeps its cursor until the button comes up.
@@ -699,11 +712,39 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // Menus and dropdowns are fixed at popUpMenu level, under the panel, so it steps
     // just below them for as long as one is open.
     @objc private func menuOpened() {
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue - 1)
+        menuOpen = true
+        applyLevel()
     }
 
     @objc private func menuClosed() {
-        panel.level = .screenSaver
+        menuOpen = false
+        applyLevel()
+    }
+
+    private func applyLevel() {
+        let dragLayer = Int(CGWindowLevelForKey(.draggingWindow))
+        let level = fileDragging ? dragLayer - 1
+            : menuOpen ? NSWindow.Level.popUpMenu.rawValue - 1 : NSWindow.Level.screenSaver.rawValue
+        if panel.level.rawValue != level { panel.level = NSWindow.Level(rawValue: level) }
+    }
+
+    /// A drag that started anywhere while the button is down changes the drag pasteboard.
+    private func watchFileDrag() {
+        let board = NSPasteboard(name: .drag)
+        guard NSEvent.pressedMouseButtons != 0 else {
+            dragBoardCount = board.changeCount
+            if fileDragging {
+                fileDragging = false
+                applyLevel()
+            }
+            return
+        }
+        guard !fileDragging, board.changeCount != dragBoardCount else { return }
+        dragBoardCount = board.changeCount
+        if board.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) {
+            fileDragging = true
+            applyLevel()
+        }
     }
 
     @objc private func panelResigned() {
