@@ -298,10 +298,13 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .ghost-pill {display: inline-flex; flex: none; align-items: center; gap: 6px; height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 14px; font-weight: 500; color: var(--foreground); white-space: nowrap; transition: background .12s;}
 .ghost-pill:hover {background: var(--hover);}
 .ghost-pill .icon {width: 14px; height: 14px; stroke-width: 2.2;}
+.ghost-pill:disabled, .go-wide:disabled {opacity: .4; cursor: default;}
+.ghost-pill:disabled:hover {background: none;}
 .send:focus-visible, .go-wide:focus-visible, .ghost-pill:focus-visible {border-radius: 999px;}
 /* Folds: the composer collapses as the send row rises in, and back. */
 .respond {display: flex; flex-direction: column;}
 .d-fold.open + .d-fold.open {margin-top: 8px;}
+.respond > .compose + .go-row {margin-top: 8px;}
 .d-fold {display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), margin-top .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), opacity .16s ease, visibility 0s linear .32s;}
 .d-fold.open {grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), margin-top .32s var(--f-soft, cubic-bezier(.16,1,.3,1)), opacity .2s ease .06s, visibility 0s;}
 .d-fold-in {min-height: 0; overflow: hidden; margin: -4px; padding: 4px;} /* the padding keeps the focus ring unclipped */

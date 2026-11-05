@@ -158,7 +158,7 @@ body[data-resizing] .f-box {transition: none;}
    small-screen rules, which go by the window's width, no longer reach it: repeat them here. */
 :where(html.float) .row {padding: 10px 8px; gap: 10px; align-items: flex-start; flex-direction: column;}
 :where(html.float) .row .title {white-space: normal;}
-:where(html.float) .row .meta {font-size: 12.5px;}
+:where(html.float) .row .meta {flex-wrap: wrap; row-gap: 0; max-width: 100%; font-size: 12.5px; white-space: nowrap;} /* parts wrap whole, never mid-word */
 :where(html.float) .row .new {left: -8px;}
 :where(html.float) .group-head {padding: 0 8px;}
 :where(html.float) .agent-row {flex-direction: row; align-items: center;}
@@ -166,9 +166,17 @@ body[data-resizing] .f-box {transition: none;}
 .f-rows .row .title {font-size: 14.5px;}
 .f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}
 /* The row the keys are on: the hover look, plus a quiet mark at its left. */
-.f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.05);}
+/* The row the keys are on: a fill and a small → at its right, which is what → does. While
+   the keys drive, the other rows step back; the mouse brings them forward again. Every row
+   keeps the arrow's room, so no title ever reflows as the highlight moves. */
+.f-rows .row, .f-agent {padding-right: 34px; transition: background .12s, opacity .2s;}
+.f-rows .row::after, .f-agent::after {content: ""; position: absolute; right: 8px; top: 9px; width: 20px; height: 20px; border-radius: 50%; background: #fafafa url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2309090b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M13 6l6 6-6 6'/%3E%3C/svg%3E") center / 12px no-repeat; opacity: 0; transform: translateX(-6px); pointer-events: none; transition: opacity .15s ease, transform var(--f-snap-ms, .2s) var(--f-snap, ease-out);}
+.f-agent::after {top: calc(50% - 10px);}
+.f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.06);}
+.f-rows .row.hl .title, .f-agent.hl .a-name {color: var(--foreground);}
+.f-rows .row.hl::after, .f-agent.hl::after {opacity: 1; transform: none;}
+body[data-keys] .f-rows .row:not(.hl), body[data-keys] .f-agent:not(.hl) {opacity: .45;}
 body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
-.f-rows .row.hl::before, .f-agent.hl::before {content: ""; position: absolute; left: -5px; top: 10px; bottom: 10px; width: 2px; border-radius: 2px; background: rgb(250 250 250 / 0.7);}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
 
 /* Choosing the circles: the real pill beside its options. */
@@ -221,6 +229,7 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 
 @media (prefers-reduced-motion: reduce) {
   .f-box, .f-box.opening > :not(.f-back), body[data-backdrop="dim"] .f-drag {animation: none;}
+  .f-rows .row::after, .f-agent::after {transform: none;}
 }
 
 /* Lab bench */

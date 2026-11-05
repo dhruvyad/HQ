@@ -787,8 +787,11 @@ function showFiles(id, key) {
   box.classList.toggle('has-files', files.length > 0);
   const text = compose.querySelector('textarea').value;
   setSendable(box.querySelector('.send'), readyToSend(text, files));
-  const wide = compose.closest('form')?.querySelector('[data-wide]');
+  const wide = compose.closest('form')?.querySelector('[data-wide], [data-report="ok"]');
   if (wide) wide.disabled = uploading(files);
+  const off = compose.closest('form')?.querySelector('[data-report="off"]');
+  const item = model.items.find((x) => x.id === id);
+  if (off && item) off.disabled = !offReady(item, draftOf(id), text);
 }
 // What you sent: your words without the file list the agent reads, then the files.
 function withoutFileList(text, files) {
@@ -887,17 +890,30 @@ function missedText(i, draft) {
   const missed = checks.filter((c) => !ticks.includes(c.key)).map((c) => c.text);
   return missed.length && missed.length < checks.length ? `Didn't see: ${missed.join('; ')}` : '';
 }
+// An item with checks always has the box too, so you can just reply. Its text and files go
+// with whichever you send: Enter or the arrow, Looks right, or Something was off.
 function reportHTML(i, draft) {
   const checks = checksOf(i), ticks = draft.checks || [];
   const ticked = checks.filter((c) => ticks.includes(c.key)).length;
-  if (openMove !== 'off') return `<div class="respond" data-state="report"><div class="go-row"><button type="button" class="ghost-pill" data-report="off">Something was off</button><button type="button" class="go-wide" data-report="ok"><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div></div>`;
-  const text = draft.text ?? missedText(i, draft);
-  return `<form class="respond" id="respond" data-state="off">
-    ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'What was off?', label: 'What was off', send: 'Send', ready: readyToSend(text, filesOf(draft, 'text')), files: filesOf(draft, 'text')})}
+  const text = draft.text ?? '', files = filesOf(draft, 'text');
+  return `<form class="respond" id="respond" data-state="report">
+    ${composeHTML({id: 'reply', draft: 'text', value: text, placeholder: 'Reply, or add a note…', label: 'Reply', send: 'Send', ready: readyToSend(text, files), files})}
+    <div class="go-row"><button type="button" class="ghost-pill" data-report="off" ${offReady(i, draft, text) ? '' : 'disabled'}>Something was off</button><button type="button" class="go-wide" data-report="ok" ${uploading(files) ? 'disabled' : ''}><span>${esc(lookedRight(ticked, checks.length, true))}</span></button></div>
     <p class="form-error" aria-live="polite"></p></form>`;
 }
-// Escape leaves Something was off while the box still holds only what was filled in for you.
-const offEscape = (i, draft, typed) => !typed.trim() || typed === missedText(i, draft);
+// Something was off needs something to say: your words, a file, or checks left unticked.
+const offReady = (i, draft, typed) => !uploading(filesOf(draft, 'text'))
+  && Boolean(String(typed || '').trim() || missedText(i, draft) || readyFiles(filesOf(draft, 'text')).length);
+// What each of the three sends, with whatever is typed.
+function checksReply(kind, typed, i, draft) {
+  const note = String(typed || '').trim();
+  if (kind === 'ok') {
+    const checks = checksOf(i), ticks = draft.checks || [];
+    return [lookedRight(checks.filter((c) => ticks.includes(c.key)).length, checks.length, true), note].filter(Boolean).join(' — ');
+  }
+  if (kind === 'off') return [note, missedText(i, draft)].filter(Boolean).join(' — ');
+  return note;
+}
 // The button's words, and the reply it sends: honest about checks left unticked.
 function lookedRight(ticked, total, button = false) {
   if (ticked === total) return button ? 'Looks right' : `All ${total} looked right`;
@@ -1188,6 +1204,7 @@ function bindDetail(detail) {
       if (!('optional' in e.target.closest('.composer').dataset)) setSendable(e.target.closest('.composer').querySelector('.send'), readyToSend(e.target.value, filesOf(draftOf(id), key)));
     }
     if (key === 'text') syncRespond(respond, item());
+    if (key === 'text' && off) off.disabled = !offReady(item(), draftOf(id), e.target.value);
     if (key === 'owner') {
       const waiting = detail.querySelector('#owner-form [name="waiting_on"]');
       waiting.hidden = e.target.value !== 'external';
@@ -1211,13 +1228,6 @@ function bindDetail(detail) {
       openMove = null;
       rerender();
       detail.querySelector('[data-close-self]')?.focus();
-    } else if (e.key === 'Escape' && respond?.dataset.state === 'off' && offEscape(item(), draftOf(id), box.value)) {
-      e.preventDefault();
-      e.stopPropagation();
-      openMove = null;
-      setDraft(id, {text: undefined});
-      rerender();
-      detail.querySelector('[data-report="off"]')?.focus();
     }
   }));
   // ⌘Enter sends from anywhere in the pane: the question if you are asking, else the answer.
@@ -1257,14 +1267,14 @@ function bindDetail(detail) {
     syncRespond(respond, item());
     if (!open) reply.focus({preventScroll: true});
   };
-  if (respond) respond.onsubmit = async (e) => {
-    e.preventDefault();
+  // One way to send a reply, with the box's files.
+  const sendReply = async (text) => {
     const files = filesOf(draftOf(id), 'text');
     if (uploading(files)) return;
-    const text = replyText(item(), draftOf(id), reply?.value || ''), attachments = readyFiles(files).map((f) => f.id);
+    const attachments = readyFiles(files).map((f) => f.id);
     if (!text && !attachments.length) return;
     const next = nextVisible(id);
-    if (await act(api(`items/${id}/reply`, attachments.length ? {text, attachments} : {text}), 'Reply saved for the agent', respond.querySelector('.form-error'))) {
+    if (await act(api(`items/${id}/reply`, attachments.length ? {text, attachments} : {text}), 'Reply saved for the agent', respond?.querySelector('.form-error'))) {
       clearFiles(id, 'text');
       setDraft(id, {text: undefined, choice: undefined, note: undefined});
       openMove = null;
@@ -1273,24 +1283,14 @@ function bindDetail(detail) {
       moveOn(next, true);
     }
   };
+  if (respond) respond.onsubmit = (e) => {
+    e.preventDefault();
+    sendReply(replyText(item(), draftOf(id), reply?.value || ''));
+  };
   const ok = detail.querySelector('[data-report="ok"]');
-  if (ok) ok.onclick = async () => {
-    const next = nextVisible(id), checks = checksOf(item()), ticks = draftOf(id).checks || [];
-    const text = lookedRight(checks.filter((c) => ticks.includes(c.key)).length, checks.length);
-    if (await act(api(`items/${id}/reply`, {text}), 'Reply saved for the agent')) {
-      openMove = null;
-      if (route.item === id) rerender();
-      moveOn(next, true);
-    }
-  };
+  if (ok) ok.onclick = () => sendReply(checksReply('ok', reply?.value, item(), draftOf(id)));
   const off = detail.querySelector('[data-report="off"]');
-  // Something was off puts the cursor at the end of what you missed, so Enter sends it.
-  if (off) off.onclick = () => {
-    openMove = 'off';
-    rerender();
-    const box = detail.querySelector('#reply');
-    if (box) {box.focus({preventScroll: true}); box.setSelectionRange(box.value.length, box.value.length);}
-  };
+  if (off) off.onclick = () => {if (offReady(item(), draftOf(id), reply?.value)) sendReply(checksReply('off', reply?.value, item(), draftOf(id)));};
   detail.querySelectorAll('[data-done]').forEach((el) => (el.onclick = async () => {
     const next = nextVisible(id);
     if (await act(api(`items/${id}/done`, {}), 'Marked done · tells the agent')) moveOn(next, false);
@@ -1361,11 +1361,8 @@ function bindDetail(detail) {
     if (!key) return;
     e.preventDefault();
     const files = [...e.dataTransfer.files];
-    // A drop on the dock opens its box first, if picking an option or the checks folded it away.
-    if (key === 'text' && !detail.querySelector('.compose[data-attach="text"]')) {
-      if (respond?.dataset.state === 'picked') {setDraft(id, {note: true}); syncRespond(respond, item());}
-      else {openMove = 'off'; rerender();}
-    }
+    // A drop on the dock opens its box first, if picking an option folded it away.
+    if (key === 'text' && respond?.dataset.state === 'picked') {setDraft(id, {note: true}); syncRespond(respond, item());}
     addFiles(id, key, files);
   };
   const closeSelf = detail.querySelector('[data-close-self]');

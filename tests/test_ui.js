@@ -145,10 +145,11 @@ run('applyState(queue); model = derive()');
 html = run("detailHTML(model.items.find(i => i.id === 'r'))");
 assert.ok(html.includes('1 of 2') && html.includes('data-check="2:0" aria-checked="true"'));
 assert.ok(html.includes('value="2026-11-02"'));
-assert.ok(html.includes('Looks right') && !html.includes('id="reply"')); // the reply box waits for Something was off
+assert.ok(html.includes('Looks right') && html.includes('placeholder="Reply, or add a note…"')); // you can always just reply
 // Checks end in a wide Looks right, honest about what is still unticked.
 assert.ok(html.includes('data-report="ok"') && html.includes('Looks right (1 of 2 ticked)'));
-assert.ok(html.includes('class="ghost-pill" data-report="off">Something was off'));
+assert.ok(html.includes('class="ghost-pill" data-report="off" >Something was off')); // a check is unticked, so it has something to say
+assert.ok(html.indexOf('id="reply"') < html.indexOf('data-report="off"')); // the box sits above the two buttons
 assert.equal(run('lookedRight(1, 2)'), 'Looked right (1 of 2 ticked)');
 assert.equal(run('lookedRight(2, 2)'), 'All 2 looked right');
 assert.equal(run('lookedRight(2, 2, true)'), 'Looks right');
@@ -158,17 +159,25 @@ run("setDraft('r', {tab: 'context'})");
 html = run("detailHTML(model.items.find(i => i.id === 'r'))");
 assert.ok(html.includes('Original paragraph') && html.includes('Hard to read?'));
 assert.ok(html.includes('data-tab="context" aria-selected="true"'));
-run("setDraft('r', {tab: 'ask'}); openMove = 'off'");
+run("setDraft('r', {tab: 'ask'})");
 html = run("detailHTML(model.items.find(i => i.id === 'r'))");
 assert.ok(html.includes('Unsent question'));
-assert.ok(html.includes("Didn&#39;t see: Second")); // what wasn't ticked, ready to send
-// Something was off swaps the row for the box; Escape brings the row back until you change it.
-assert.ok(!html.includes('data-report=') && html.includes('placeholder="What was off?"') && html.includes('data-state="off"'));
-const offEsc = (typed) => run(`offEscape(model.items.find(i => i.id === 'r'), draftOf('r'), ${JSON.stringify(typed)})`);
-assert.equal(offEsc("Didn't see: Second"), true);
-assert.equal(offEsc(''), true);
-assert.equal(offEsc("Didn't see: Second, and the preview was blank"), false);
-run("setDraft('r', {tab: undefined}); openMove = null");
+// The three sends on an item with checks: a plain reply, Looks right, and Something was off.
+const checksSend = (kind, typed, draft) => run(`checksReply(${JSON.stringify(kind)}, ${JSON.stringify(typed)}, model.items.find(i => i.id === 'r'), ${JSON.stringify(draft)})`);
+assert.equal(checksSend('reply', '  Picked the second one ', {checks: ['2:0']}), 'Picked the second one');
+assert.equal(checksSend('ok', '', {checks: ['2:0', '2:1']}), 'Looks right');
+assert.equal(checksSend('ok', 'fast too', {checks: ['2:0', '2:1']}), 'Looks right — fast too');
+assert.equal(checksSend('ok', '', {checks: ['2:0']}), 'Looks right (1 of 2 ticked)'); // honest about what was left unticked
+assert.equal(checksSend('off', 'the preview was blank', {checks: ['2:0']}), "the preview was blank — Didn't see: Second");
+assert.equal(checksSend('off', 'the preview was blank', {checks: ['2:0', '2:1']}), 'the preview was blank');
+assert.equal(checksSend('off', '', {checks: ['2:0']}), "Didn't see: Second");
+const offOk = (typed, draft) => run(`offReady(model.items.find(i => i.id === 'r'), ${JSON.stringify(draft)}, ${JSON.stringify(typed)})`);
+assert.equal(offOk('', {checks: ['2:0', '2:1']}), false); // all ticked and nothing typed: nothing was off
+assert.equal(offOk('blank preview', {checks: ['2:0', '2:1']}), true);
+assert.equal(offOk('', {checks: ['2:0']}), true);
+assert.equal(offOk('', {checks: ['2:0', '2:1'], files: {text: [{status: 'ready', id: 'x'}]}}), true); // a screenshot says it
+assert.equal(offOk('blank', {checks: ['2:0'], files: {text: [{status: 'uploading'}]}}), false);
+run("setDraft('r', {tab: undefined})");
 html = run("detailHTML(model.items.find(i => i.id === 'a2'))");
 assert.ok(!html.includes('Hard to read?')); // agents' own work isn't sent back to them
 // Skip sits with the other not-now choices and reads as its own outcome once taken.
