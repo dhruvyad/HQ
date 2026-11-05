@@ -14,6 +14,7 @@ Discovery reads metadata only. Never expose the dashboard to the network.
 Keep all personal session data, responses, credentials, and databases out of Git.
 
 Follow pull requests through CI on their latest head commit and fix failures.
+Write plain commit messages: never add Co-Authored-By or any other co-author trailer.
 
 When reporting work to HQ, follow `hq/AGENT_GUIDE.md`: action-first titles,
 brief context/unlocks, recommendations, ordered steps, direct links, and copy
