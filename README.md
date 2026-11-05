@@ -52,6 +52,57 @@ All items and responses live at `~/.local/share/hq/hq.sqlite3`. Set `HQ_HOME`
 to use a separate inbox. Back up that directory with the service stopped.
 The browser is a view onto SQLite, not the source of truth.
 
+## Floating window
+
+```sh
+hq float
+```
+
+A small black pill floats over every app, Space and fullscreen window without taking
+focus away from what you are doing. It starts at the top left, clear of a maximized
+window's close, minimize and zoom buttons. It is a capsule of circles, each one a live
+number: what needs you, decisions waiting, due soon, agents running, or the Claude and
+Codex usage you have left.
+
+- **Hover** it: each circle says what it is.
+- **Drag** it: drop targets appear, the nearest lights up, and it glides into place.
+  Escape cancels. It remembers where you put it and follows your cursor between displays.
+- **Click** it: the list of what needs you. Click elsewhere and the list closes.
+- **Click a row**: the box expands into the full item, the same pane as the dashboard
+  (steps, options, checks, replies, snooze, skip). Your draft survives if you look away.
+- **Right-click** it, or use `…` in the list: choose which circles show and in what order,
+  open the dashboard, hide it for an hour, or quit.
+
+Usage comes only from what each tool itself reports, and a circle with no source stays
+empty rather than guessing. Codex works with nothing to set up. Claude Code reports its
+limits only to a status line, so turn that on with `hq usage install` (`hq usage uninstall`
+undoes it). While any status line is set, Claude Code hides most of its footer hints.
+
+`hq float stop` quits it, `hq float status` reports on it, and `hq float install` starts it
+at login (`hq float uninstall` undoes that). It needs macOS and Xcode's command line tools
+(`xcode-select --install`), because it compiles one small Swift file the first time it runs.
+That file only moves the window; the panel is an ordinary local page at `/float`, inside
+the same localhost, origin and token boundary as the dashboard.
+
+### Design lab
+
+```sh
+hq float lab
+hq float lab --item <item-id>
+```
+
+Refine the panel in batches rather than one change at a time. This opens the real panel
+beside a bench of presets and design axes (how the circles look, where it can dock, how far
+before a click becomes a drag, what happens after you answer, and so on). Flipping an axis
+changes the real window immediately, so drag, focus and always-on-top are never simulated.
+Leave a note on anything, then **Send picks** returns the whole round at once: it prints
+them, saves them to `float-lab-picks.json` in HQ's data folder, and with `--item` replies to that
+item so they reach the owning agent.
+
+The lab runs on throwaway sample data with its own temporary server, so nothing you click
+reaches a real agent or your real inbox. For the next round, edit `AXES` in
+`hq/static/float-lab.js` and the matching `feel` default in `hq/static/float.js`.
+
 ## Agent CLI
 
 Use a stable id for the exact conversation, rather than one id shared by an agent
@@ -404,7 +455,10 @@ rendered as text, never executable HTML.
 ```sh
 python3 -m unittest discover -s tests -v
 node --check hq/static/app.js
+node --check hq/static/float.js
+node --check hq/static/float-lab.js
 node tests/test_ui.js
+swiftc -typecheck hq/FloatPanel.swift  # macOS only
 ```
 
 Tests cover SQLite persistence and migration, multiple independent items per

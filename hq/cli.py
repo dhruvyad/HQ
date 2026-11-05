@@ -18,8 +18,10 @@ from .mcp import AGENT_INSTRUCTIONS, run as run_mcp, with_notes
 from .server import serve
 from . import workstreams
 from .store import Store, data_dir
-from .connections import connect_chatgpt, connect_codex, install_hooks, launch as launch_agent
+from .connections import (connect_chatgpt, connect_codex, install_hooks, install_statusline, launch as launch_agent,
+                          statusline_state, uninstall_statusline)
 from .hooks import run as run_hook
+from . import usage as subscription_usage
 
 
 def output(value):
@@ -231,12 +233,24 @@ def parser():
     desktop = commands.add_parser("desktop", help="Install, verify, or remove the Codex + HQ launcher")
     desktop.add_argument("action", choices=["install", "status", "uninstall"])
     desktop.add_argument("--app", help="Codex desktop .app installation")
+    plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line")
+    plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall"])
+    commands.add_parser("statusline", help="Record Claude Code's rate limits from its status line; Claude Code runs this")
     panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
     panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
                        help="install starts it at login; lab tries designs on throwaway data; run is for launchd")
     panel.add_argument("--port", type=int, default=4310)
     panel.add_argument("--item", help="lab: reply to this HQ item with your picks")
     return root
+
+
+def usage_command(action):
+    if action == "install":
+        return install_statusline()
+    if action == "uninstall":
+        return uninstall_statusline()
+    return {"claude": subscription_usage.fresh(subscription_usage.read_claude()),
+            "codex": subscription_usage.read_codex(), "claude_status_line": statusline_state()}
 
 
 def float_panel(args):
@@ -288,6 +302,10 @@ def main():
             return output(install_launcher(args.app) if args.action == "install" else desktop_status(args.app))
         if args.command == "float":
             return output(float_panel(args))
+        if args.command == "statusline":
+            return subscription_usage.statusline()
+        if args.command == "usage":
+            return output(usage_command(args.action))
         store = Store()
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)

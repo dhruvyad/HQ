@@ -10,12 +10,15 @@ def signature(snapshot):
     sessions = [{k: s.get(k) for k in ("id", "name", "provider", "route", "connection", "endpoint")}
                 | {"activity": {k: s["activity"].get(k) for k in ("state", "source")}}
                 for s in snapshot["sessions"]]
-    return json.dumps({"items": snapshot["items"], "sessions": sorted(sessions, key=lambda s: s["id"])}, sort_keys=True)
+    # The numbers, not when they were read: a newer as_of alone is not news.
+    usage = {name: reading and reading["windows"] for name, reading in (snapshot.get("usage") or {}).items()}
+    return json.dumps({"items": snapshot["items"], "sessions": sorted(sessions, key=lambda s: s["id"]), "usage": usage}, sort_keys=True)
 
 
 class StateFeed:
-    def __init__(self, store):
+    def __init__(self, store, usage=None):
         self.store, self.stop = store, threading.Event()
+        self.usage = usage
         self.condition = threading.Condition()
         self.publish_lock = threading.Lock()
         self.instance = str(uuid.uuid4())
@@ -28,6 +31,8 @@ class StateFeed:
     def publish(self):
         with self.publish_lock:
             snapshot = self.store.snapshot()
+            # Memory only: the worker does the reading, because this runs constantly.
+            snapshot["usage"] = self.usage.current() if self.usage else {"claude": None, "codex": None}
             self.last_success = time.monotonic()
             current = signature(snapshot)
             with self.condition:
@@ -41,6 +46,8 @@ class StateFeed:
                     self.condition.notify_all()
 
     def current(self):
+        if self.usage:
+            self.usage.watched()
         self.publish()
         with self.condition:
             return self.payload
@@ -64,6 +71,8 @@ class StateFeed:
             db.close()
 
     def wait(self, previous, timeout=2):
+        if self.usage:
+            self.usage.watched()
         with self.condition:
             self.condition.wait_for(lambda: self.version != previous or self.stop.is_set(), timeout)
             return self.version, self.payload

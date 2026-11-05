@@ -20,6 +20,19 @@ def hq_command():
     return [sys.executable, str(source)] if source.exists() else [sys.executable, "-m", "hq"]
 
 
+def write_config(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_name(path.name + ".hq-backup-" + str(time.time_ns()))
+        shutil.copy2(path, backup)
+        os.chmod(backup, 0o600)
+    # Atomic replacement keeps client reloads from reading a partial config.
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as temp:
+        json.dump(data, temp, indent=2)
+        temp.write("\n")
+    os.replace(temp.name, path)
+
+
 def install_hooks(provider):
     home = Path.home()
     path = home / (".codex/hooks.json" if provider == "codex" else ".claude/settings.json")
@@ -34,19 +47,63 @@ def install_hooks(provider):
         groups.append({"hooks": [{"type": "command", "command": command, "timeout": 5}]})
         changed = True
     if changed:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            backup = path.with_name(path.name + ".hq-backup-" + str(time.time_ns()))
-            shutil.copy2(path, backup)
-            os.chmod(backup, 0o600)
-        # Atomic replacement keeps client reloads from reading a partial config.
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as temp:
-            json.dump(data, temp, indent=2)
-            temp.write("\n")
-        os.replace(temp.name, path)
+        write_config(path, data)
     return {"hooks": "configured" if changed else "already configured", "path": str(path),
             "next_step": "Review and trust HQ hooks in Codex /hooks, then resume the conversation." if provider == "codex"
                 else "Restart or resume Claude Code to load HQ hooks."}
+
+
+def claude_settings():
+    path = Path.home() / ".claude/settings.json"
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except ValueError:
+        raise ValueError(f"{path} is not valid JSON; fix it first, HQ will not overwrite it") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a settings object; HQ will not overwrite it")
+    return path, data
+
+
+def statusline_command():
+    return shlex.join(hq_command() + ["statusline"])
+
+
+def statusline_state():
+    # Which status line is set, by comparing commands: a moved checkout still counts as HQ's.
+    line = claude_settings()[1].get("statusLine")
+    if not line:
+        return "none"
+    command = line.get("command") if isinstance(line, dict) else None
+    return "hq" if isinstance(command, str) and command.endswith(("/bin/hq statusline", "-m hq statusline")) else "other"
+
+
+def install_statusline():
+    """Claude Code gives its rate limits only to a status line, so opting in means setting one."""
+    path, data = claude_settings()
+    state = statusline_state()
+    if state == "hq":
+        return {"status_line": "already configured", "path": str(path)}
+    if state == "other":
+        return {"status_line": "kept yours", "path": str(path),
+                "next_step": f"Yours stays as it is. To also report usage to HQ, pipe its input to: {statusline_command()}"}
+    data["statusLine"] = {"type": "command", "command": statusline_command()}
+    write_config(path, data)
+    return {"status_line": "configured", "path": str(path),
+            "next_step": "Claude Code reports usage after each session's first response.",
+            "note": "While any status line is set, Claude Code hides most footer hints, such as esc to interrupt. "
+                    "hq usage uninstall brings them back."}
+
+
+def uninstall_statusline():
+    path, data = claude_settings()
+    state = statusline_state()
+    if state == "none":
+        return {"status_line": "not configured", "path": str(path)}
+    if state == "other":
+        return {"status_line": "kept yours", "path": str(path)}
+    del data["statusLine"]
+    write_config(path, data)
+    return {"status_line": "removed", "path": str(path)}
 
 
 def connect_codex(store, endpoint=None):

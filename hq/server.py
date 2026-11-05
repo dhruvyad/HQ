@@ -15,6 +15,7 @@ from .adapters import Dispatcher
 from .store import Store, data_dir
 from .presence import ClaudePresence
 from .stream import StateFeed
+from .usage import SampleUsage, Usage, UsageWorker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -28,9 +29,10 @@ class Server(ThreadingHTTPServer):
         self.instance = str(uuid.uuid4())
         # The design lab's pages exist only on the throwaway HQ that `hq float lab` starts.
         self.lab = os.environ.get("HQ_FLOAT_LAB") == "1"
+        self.usage = SampleUsage() if self.lab else Usage()
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
-        self.feed = StateFeed(self.store)
+        self.feed = StateFeed(self.store, self.usage)
 
     def server_close(self):
         self.feed.close()
@@ -185,7 +187,8 @@ def serve(port=4310):
         os.chmod(state, 0o600)
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
-        workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3)]
+        workers = [] if server.lab else [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3),
+                                         (UsageWorker(server.usage), 3)]
         threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
         for thread in threads:
             thread.start()

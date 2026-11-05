@@ -77,6 +77,33 @@ a sheet and the pane fills the screen.
   rows, no tag pills in lists, no global statistics beyond the Needs you line.
 - Respect reduced motion; keyboard focus is always visible; errors carry text.
 
+## Floating panel
+
+A native window around the local page `/float`, in three sizes of one surface. The window
+always hugs its content, so nothing transparent sits over what you are working on.
+
+- **Pill** a pure black capsule of 28px circles stacked vertically, each a live number you
+  choose and order. No wordmark. The count you act on is white when it is above zero, an
+  active agent is the only green, and usage is a ring showing the tightest limit, red at
+  10% or less. A circle with no source is dashed and shows a dash. Hover reveals labels,
+  opening away from the screen edge so the circles under the cursor stay put. It never
+  takes keyboard focus. New items pulse the first circle once.
+- **List** 380px wide, hugging its rows up to 520px: a serif "Needs you" and one-line-title
+  rows that say what kind of thing each is, where it lives and its age. Pinned and due-soon
+  items lead, then newest. A reply that failed to deliver appears here too.
+- **Item** 480px wide, hugging its content up to 760px: the dashboard's item pane, reused and
+  never re-implemented. Answering moves on to the next item, and the toast says the reply was
+  saved rather than received, since only an agent acknowledgement can claim that.
+- **Drag** follows OpenFlow's flow bar: a 5px threshold separates a click from a drag, then
+  the window covers the display, the screen dims, dashed targets appear, the nearest fills in,
+  a ghost capsule follows the cursor and glides 300ms into the drop. The list and item headers
+  drag the same way. Escape cancels. Eight targets; the top-left one stays 74px clear of a
+  maximized window's traffic lights. The box always grows away from its dock.
+- Sunken surface, 16px radius, a native shadow, and a 14% hairline, so it reads on any wallpaper.
+
+These are the starting points of `hq float lab`, which flips each one live on the real
+window. Settle a round there, then update this section with the picks.
+
 ## Validation boundary
 
 Source, HTTP assets, pure rendering logic, and existing task lifecycles are
