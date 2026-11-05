@@ -241,7 +241,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual((skipped["status"], skipped["bucket"], skipped["skipped"], skipped["pinned"]), ("done", "done", True, False))
         inbox = self.store.inbox("a")
         self.assertEqual(len(inbox), 1)
-        self.assertTrue(inbox[0]["text"].startswith("Skipped: Dhruv decided not to do this."))
+        self.assertTrue(inbox[0]["text"].startswith("Skipped: The user decided not to do this."))
         self.assertIn("Reason: Not a priority this month", inbox[0]["text"])
         self.assertEqual(self.store.comment(question["id"])["state"], "cancelled")
         waited = self.store.wait(item["id"], "a", 1)  # an agent blocked on the decision hears at once

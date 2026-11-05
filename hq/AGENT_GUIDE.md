@@ -32,7 +32,7 @@ before you finish.
 - **detail:** optional background, shown collapsed under More context, under
   600 characters. Never put the steps or the why here.
 - **kind/owner:** kind=question for a decision, todo for an action, blocker
-  for a blocked dependency. owner=human needs Dhruv, agent is work with the
+  for a blocked dependency. owner=human needs the user, agent is work with the
   agent, external waits on the named person/team/service in waiting_on.
   defer_until=YYYY-MM-DD hides the item until that local date; empty clears it.
 - **workstream:** the ongoing line of work this belongs to (Coordinator,
@@ -121,7 +121,7 @@ owning server or use a verified app relay. Permission approvals still need
 the client's normal approval. A hook being configured is not proof of trust,
 receipt, or a live push connection. Keep any unfinished setup in HQ.
 
-A reply that starts with "Skipped:" means Dhruv decided not to do the item.
+A reply that starts with "Skipped:" means the user decided not to do the item.
 The item is already closed: acknowledge it, stop work that depends on it, and
 don't report it again unless something new makes it worth his time.
 
@@ -129,7 +129,7 @@ Before starting, when resuming, and before finishing, check hq_inbox for your
 session. Act on the relevant response, acknowledge after reading, and close the
 loop with hq_resolve and a one-line note describing what you did. A received
 answer does not mean the requested work is finished. New follow-ups get new
-items. Anything newly needed from Dhruv must be its own question/action, not
+items. Anything newly needed from the user must be its own question/action, not
 buried in context or a completion note. Never claim delivery without receipt.
 
 End user-facing work reports with one short HQ line and the item that matters

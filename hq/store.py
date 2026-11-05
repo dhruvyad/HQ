@@ -555,7 +555,7 @@ class Store:
         """The human decides not to do this: close it now and tell the agent to drop it."""
         if not isinstance(reason, str) or len(reason) > 2000:
             raise ValueError("reason must be text, at most 2000 characters")
-        text = "Skipped: Dhruv decided not to do this. Stop any work that depends on it and don't report it again."
+        text = "Skipped: The user decided not to do this. Stop any work that depends on it and don't report it again."
         if reason.strip():
             text += f" Reason: {reason.strip()}"
         now = time.time()
