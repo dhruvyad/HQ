@@ -20,7 +20,10 @@ before you finish.
   carries what it needs instead of describing it: `link` {label, url} to open,
   `copy` with the exact text to paste, `checks` listing what to look for (the
   human ticks them, and the item ends in Looks right / Something was off).
-  Plain-text steps still work for simple actions.
+  Plain-text steps still work for simple actions. When you need a written
+  answer, such as a pick from a design lab, ask for it as a question
+  (kind=question, without options, or with options when the choices are known),
+  not as a step with checks.
 - **options:** for a decision, 2–4 human-readable choices, one recommended,
   each with a one-line trade-off in note.
 - **matters** {lead, points}: *Why it matters*. lead = what this unblocks, in
