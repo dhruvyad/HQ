@@ -39,12 +39,26 @@ Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-serve
 ## The README's pictures
 
 ```sh
-node docs/media/make/make.mjs           # all of them
-node docs/media/make/make.mjs hero drag # just these
+node docs/media/make/make.mjs              # all of them
+node docs/media/make/make.mjs hero clips   # just these
 ```
 
-They are recorded from the real UI on made-up data, in headless Chrome, so update them whenever the
-pill, the panel or the dashboard changes. Each take starts its own HQ on a throwaway inbox and a
-free port: it never touches your inbox, your screen or a real agent. It needs Google Chrome (or
-`CHROME=/path/to/chrome`) and `ffmpeg`. The fixtures are in `docs/media/make/fixtures.py`; the
-diagram, `docs/media/loop.svg`, is drawn by hand.
+Update them whenever the pill, the panel or the dashboard changes. Every picture shows the real
+UI on made-up data (`docs/media/make/fixtures.py`). Each take starts its own HQ on a throwaway
+inbox and a free port, in headless Chrome, so it never touches your inbox, your screen or a real
+agent.
+
+- **`hero.webp`, `drag.webp`**: recorded at 2x and about 60 frames a second, then evened out to 30
+  and encoded as animated WebP: the hero lossy at q95, the drag lossless, because lossy blending
+  leaves trails over its dimmed screen. The fake desktop is laid out in display points and zoomed
+  2x as a whole, since a screencast only sends frames at the page's CSS size.
+- **`glance.svg`, `notify.svg`**: the pill's own clips, drawn as animated SVG by `vector.mjs`. They
+  stay sharp at any zoom and weigh a few kilobytes. The sizes, colours and baselines in it were
+  measured from `/float`, and the motion is the panel's CSS, with its springs taken from
+  `float.js`. They are not read from the page, so a change to the pill's look or motion needs the
+  matching change there.
+- **`settings.png`, `dashboard.png`**: 2x screenshots.
+- **`loop.svg`**: drawn by hand.
+
+It needs Google Chrome (or `CHROME=/path/to/chrome`), `ffmpeg` with libwebp, and Python's
+`fonttools` with `brotli` to embed a small Inter subset in the SVGs (or `uv`, which fetches them).

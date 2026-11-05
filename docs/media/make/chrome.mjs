@@ -46,6 +46,13 @@ export async function open(url, {serveAt = null, serveBody = null, width = 1280,
     socket.send(JSON.stringify({id, method, params}));
   });
   const on = (method, fn) => listeners.set(method, [...(listeners.get(method) || []), fn]);
+  const once = (method) => new Promise((resolve) => {
+    const fn = (params) => {
+      listeners.set(method, listeners.get(method).filter((f) => f !== fn));
+      resolve(params);
+    };
+    on(method, fn);
+  });
   // Every frame's default context, newest last, so the stage can run code inside /float (CSP forbids eval there).
   const contexts = [];
   on('Runtime.executionContextCreated', (p) => p.context.auxData?.isDefault && contexts.push(p.context));
@@ -105,17 +112,20 @@ export async function open(url, {serveAt = null, serveBody = null, width = 1280,
     send('Page.screencastFrameAck', {sessionId: p.sessionId});
     if (frames) frames.list.push({t: p.metadata.timestamp, data: p.data});
   });
-  const record = async (dir) => {
+  const record = async (dir, format = 'png') => {
     mkdirSync(dir, {recursive: true});
-    frames = {dir, list: []};
-    await send('Page.startScreencast', {format: 'png', everyNthFrame: 1});
+    frames = {dir, list: [], format};
+    await send('Page.startScreencast', {format, quality: 95, everyNthFrame: 1});
   };
   const stop = async () => {
     await send('Page.stopScreencast');
     const {dir, list} = frames;
+    const format = frames.format;
     frames = null;
-    list.forEach((f, n) => writeFileSync(join(dir, `f${String(n).padStart(5, '0')}.png`), Buffer.from(f.data, 'base64')));
-    writeFileSync(join(dir, 'times.json'), JSON.stringify(list.map((f) => f.t)));
+    const ext = format === 'jpeg' ? 'jpg' : 'png';
+    list.forEach((f, n) => writeFileSync(join(dir, `f${String(n).padStart(5, '0')}.${ext}`), Buffer.from(f.data, 'base64')));
+    // Frames stop when nothing moves, so keep when recording stopped: the last frame lasts until then.
+    writeFileSync(join(dir, 'times.json'), JSON.stringify({times: list.map((f) => f.t), end: Date.now() / 1000}));
     return list.length;
   };
   const close = () => {
@@ -123,5 +133,5 @@ export async function open(url, {serveAt = null, serveBody = null, width = 1280,
     proc.kill();
     setTimeout(() => rmSync(profile, {recursive: true, force: true}), 500);
   };
-  return {send, evaluate, evaluateIn, shot, mouse, record, stop, close, errors};
+  return {send, once, evaluate, evaluateIn, shot, mouse, record, stop, close, errors};
 }

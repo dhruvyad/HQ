@@ -3,17 +3,19 @@
 <head>
 <meta charset="utf-8">
 <!-- A fake desktop for the README's pictures: the real /float page in a frame that moves the way
-     FloatPanel.swift moves its window. make.mjs serves this on HQ's own origin. -->
+     FloatPanel.swift moves its window. make.mjs serves this on HQ's own origin. Everything is laid
+     out in display points inside #display, which is scaled up whole, so frames come out at 2x. -->
 <meta name="color-scheme" content="dark">
 <style>
   html, body {margin: 0; height: 100%; overflow: hidden; background: #0e1016; color-scheme: dark;}
+  #display {position: fixed; left: 0; top: 0; overflow: hidden; zoom: var(--scale, 1);}
   /* A calm wallpaper: two soft glows on near-black, nothing anyone would recognise. */
-  #wall {position: fixed; inset: 0; background:
+  #wall {position: absolute; inset: 0; background:
     radial-gradient(60% 70% at 78% 18%, #2c3350 0%, rgb(44 51 80 / 0) 70%),
     radial-gradient(55% 65% at 18% 92%, #3b2a40 0%, rgb(59 42 64 / 0) 70%),
     linear-gradient(160deg, #161924 0%, #12131a 100%);}
   /* A faint, generic editor window, so the pill reads as floating over your work. */
-  #app {position: fixed; border-radius: 12px; background: rgb(22 23 28 / 0.92); border: 1px solid rgb(255 255 255 / 0.07);
+  #app {position: absolute; border-radius: 12px; background: rgb(22 23 28 / 0.92); border: 1px solid rgb(255 255 255 / 0.07);
     box-shadow: 0 20px 50px rgb(0 0 0 / 0.45); overflow: hidden;}
   #app .bar {height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 12px; border-bottom: 1px solid rgb(255 255 255 / 0.05);}
   #app .bar i {width: 10px; height: 10px; border-radius: 50%; background: rgb(255 255 255 / 0.13);}
@@ -21,23 +23,35 @@
   #app .lines {position: absolute; left: 172px; top: 52px; right: 24px;}
   #app .line {height: 7px; border-radius: 4px; background: rgb(255 255 255 / 0.07); margin-bottom: 15px;}
   #app .side .line {margin: 18px 16px 0; background: rgb(255 255 255 / 0.06);}
-  #room {position: fixed; left: 0; top: 0; width: 0; height: 0; border: 0; background: transparent; color-scheme: dark;}
-  #cursor {position: fixed; left: 0; top: 0; width: 22px; height: 22px; z-index: 10; pointer-events: none;
+  #room {position: absolute; left: 0; top: 0; width: 0; height: 0; border: 0; background: transparent; color-scheme: dark;}
+  #cursor {position: absolute; left: 0; top: 0; width: 22px; height: 22px; z-index: 10; pointer-events: none;
     transform: translate(-100px, -100px); filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.5));}
   #cursor svg {transition: transform .12s ease; transform-origin: 3px 2px;}
   #cursor.down svg {transform: scale(.86);}
+  /* Changes every frame, so the screencast sends every frame, compositor-only motion included. */
+  #tick {position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; opacity: 0.01;}
 </style>
 </head>
 <body>
+<div id="display">
 <div id="wall"></div>
 <div id="app"><div class="bar"><i></i><i></i><i></i></div><div class="side"></div><div class="lines"></div></div>
 <iframe id="room" allowtransparency="true"></iframe>
 <div id="cursor"><svg width="22" height="22" viewBox="0 0 22 22"><path d="M3 2 L3 17.5 L7 13.8 L9.8 20 L12.6 18.8 L9.9 12.7 L15.2 12.7 Z" fill="#000" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
+</div>
+<i id="tick"></i>
 <script>
 const frame = document.getElementById('room');
 const stage = {sent: [], dock: 'top-left', display: null, cursor: {x: -100, y: -100}};
-// Where this viewport sits on the (headless) screen: the page reads the pointer in screen points.
-addEventListener('mousemove', (e) => {stage.offset = {x: e.screenX - e.clientX, y: e.screenY - e.clientY};});
+let ticks = 0;
+(function tick() {
+  document.getElementById('tick').style.background = ticks++ % 2 ? '#000' : '#010101';
+  requestAnimationFrame(tick);
+})();
+function setup(width, height, scale) {
+  document.documentElement.style.setProperty('--scale', scale);
+  Object.assign(document.getElementById('display').style, {width: width + 'px', height: height + 'px'});
+}
 function fillApp(rect) {
   const app = document.getElementById('app');
   Object.assign(app.style, {left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: rect.height + 'px'});
@@ -86,20 +100,27 @@ function cursorDown(down) {document.getElementById('cursor').classList.toggle('d
 function pointerAt(x, y) {
   const p = stage.place;
   if (!p) return;
-  // Only the pill. The native window reports the open box too, which lights the spotlight while
-  // you work in the box; that is for the product to fix, not for the README to show.
-  const inside = (p.hits || []).slice(0, 1).some((h) => x >= p.x + h.x && x <= p.x + h.x + h.width && y >= p.y + h.y && y <= p.y + h.y + h.height);
+  const inside = (p.hits || []).some((h) => x >= p.x + h.x && x <= p.x + h.x + h.width && y >= p.y + h.y && y <= p.y + h.y + h.height);
   if (inside !== stage.hover) {
     stage.hover = inside;
     toPage({type: 'hover', on: inside});
   }
   if (inside) toPage({type: 'pointer', x: x - p.x, y: y - p.y});
 }
+// In display points, whatever the scale.
 function rectOf(selector) {
-  const el = frame.contentDocument.querySelector(selector);
-  if (!el) return null;
-  const r = el.getBoundingClientRect(), f = frame.getBoundingClientRect();
-  return {x: f.left + r.left, y: f.top + r.top, width: r.width, height: r.height};
+  const el = frame.contentDocument.querySelector(selector), p = stage.place;
+  if (!el || !p) return null;
+  const r = el.getBoundingClientRect();
+  return {x: p.x + r.left, y: p.y + r.top, width: r.width, height: r.height};
+}
+// A mouse event in display points, for the drag: the panel reads it in screen points, which a
+// scaled stage would otherwise double.
+function synth(type, x, y, buttons) {
+  const p = stage.place, w = frame.contentWindow, local = {x: x - p.x, y: y - p.y};
+  const target = frame.contentDocument.elementFromPoint(local.x, local.y) || frame.contentDocument.body;
+  target.dispatchEvent(new w.MouseEvent(type, {bubbles: true, cancelable: true, composed: true, view: w, button: 0, buttons,
+    clientX: local.x, clientY: local.y, screenX: x + stage.display.x, screenY: y + stage.display.y}));
 }
 </script>
 </body>

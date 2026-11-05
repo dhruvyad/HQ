@@ -2,7 +2,7 @@
 
 **One inbox for everything your AI agents need from you, with a pill that floats over every app.**
 
-<p align="center"><img src="docs/media/hero.gif" width="800" alt="A new decision arrives on the pill. One click opens it, one more answers it, and the item flies back into the count."></p>
+<p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. One click opens it, one more answers it, and the item flies back into the count."></p>
 
 Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
 in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
@@ -22,21 +22,21 @@ It installs the `hq` command, then `hq setup` connects the agents you use, puts 
 
 ### See it at a glance
 
-<img src="docs/media/glance.gif" width="480" alt="Hovering each circle on the pill names it: 6 need you, 2 agents running, Claude and Codex usage left.">
+<img src="docs/media/glance.svg" width="480" alt="Hovering each circle on the pill names it: 6 need you, 2 agents running, Claude and Codex usage left.">
 
 Each circle is a live number: what needs you, agents running, and the Claude and Codex usage you
 have left. Hover to see which is which.
 
 ### Hear what changed
 
-<img src="docs/media/notify.gif" width="420" alt="The pill opens into a card for a new decision, folds back, then does the same when an agent finishes an item.">
+<img src="docs/media/notify.svg" width="420" alt="The pill opens into a card for a new decision, folds back, then does the same when an agent finishes an item.">
 
 New asks, finished items, agents starting or stopping, usage running low. The pill opens into a
 card, then folds back, and never takes your keyboard.
 
 ### Put it anywhere
 
-<img src="docs/media/drag.gif" width="800" alt="Dragging the pill shows drop targets around the screen. Along the bottom it lies flat; dropped back in the corner it stands up again.">
+<img src="docs/media/drag.webp" width="800" alt="Dragging the pill shows drop targets around the screen. Along the bottom it lies flat; dropped back in the corner it stands up again.">
 
 Drag it to any edge or corner and it glides into place. Along the top or bottom it lies flat. It
 shows over fullscreen apps too.
