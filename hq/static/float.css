@@ -192,7 +192,12 @@ html.float .f-head .icon-btn, html.float .d-bar .icon-btn {width: 32px; height: 
 .f-away-all, .f-back {padding: 2px 8px; border-radius: 7px; font-size: 12px; color: var(--muted-foreground); white-space: nowrap; transition: opacity .15s, color .15s, background .15s;}
 .f-away-all {opacity: 0;}
 .f-top:hover .f-away-all, .f-away-all:focus-visible {opacity: 1;}
-.f-away-one {display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--muted-foreground); opacity: 0; transition: opacity .15s, color .15s, background .15s;}
+.f-away-one {display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--muted-foreground); opacity: 0; transition: opacity .15s, color .15s, background .15s, margin var(--f-snap-ms, .2s) var(--f-snap, ease-out);}
+/* The row keeps room on its right for the arrow, which shows only on the highlighted row. Until it
+   does, archive and restore sit in that room instead of leaving a gap, and step aside for it. */
+.f-agent .f-away-one {margin-right: -28px;}
+.f-agent .f-back {margin-right: -26px; transition: color .15s, background .15s, margin var(--f-snap-ms, .2s) var(--f-snap, ease-out);}
+.f-agent.hl .f-away-one, .f-agent.hl .f-back {margin-right: 0;}
 .f-away-one .icon {width: 15px; height: 15px;}
 .f-agent .f-away-one, .f-agent .f-back {position: relative; z-index: 1; pointer-events: auto;}
 .f-agent:hover .f-away-one, .f-agent.hl .f-away-one, .f-away-one:focus-visible {opacity: 1;}
