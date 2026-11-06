@@ -12,7 +12,7 @@ macOS, with Claude Code or Codex. It installs the `hq` command, then `hq setup` 
 use, puts the pill on screen and opens the dashboard. It shows each change before making it, and
 `hq setup --undo` reverses it.
 
-<p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. One click opens it, one more answers it, and the item flies back into the count."></p>
+<p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. The arrow keys pick it from the list, one click answers it, and it flies back into the count."></p>
 
 Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
 in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
@@ -22,17 +22,26 @@ The agent picks up your reply.
 
 ### See it at a glance
 
-<img src="docs/media/glance.svg" width="480" alt="Hovering each circle on the pill names it: 6 need you, 2 agents running, Claude and Codex usage left.">
+<img src="docs/media/glance.svg" width="480" alt="Hovering each circle on the pill names it: 6 need you, then the two agents running and for how long, then the Claude and Codex usage left.">
 
 Each circle is a live number: what needs you, agents running, and the Claude and Codex usage you
-have left. Hover to see which is which.
+have left. Hover for more, such as who is running and for how long.
 
 ### Hear what changed
 
-<img src="docs/media/notify.svg" width="420" alt="The pill opens into a card for a new decision, folds back, then does the same when an agent finishes an item.">
+<img src="docs/media/notify.svg" width="440" alt="Three new decisions: the pill opens into a card and folds back, leaving an amber +3 beside the count, later a dot; hovering lists what changed and when.">
 
 New asks, finished items, agents starting or stopping, usage running low. The pill opens into a
-card, then folds back, and never takes your keyboard.
+card and folds back, leaving the change beside the circle; hover it to see what changed and when.
+
+### Track and switch accounts
+
+<img src="docs/media/usage-accounts.svg" width="400" alt="Usage lists each Claude account with rings for what is left and when each limit resets, then each Codex account."> <img src="docs/media/usage-switch.svg" width="400" alt="One tap on Use switches Claude to another account; a notice says every Claude session moves to it.">
+<img src="docs/media/usage-add.svg" width="400" alt="Adding a Codex account: sign in with the browser while Usage waits, then it is added, with a button to switch to it.">
+
+Keep several Claude and Codex accounts, each with its usage left and when it resets. One tap
+switches: every open Claude session moves to the new account, and Codex asks you to restart its
+open sessions.
 
 ### Put it anywhere
 

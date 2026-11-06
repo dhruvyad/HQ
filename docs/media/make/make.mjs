@@ -15,25 +15,35 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {open, sleep} from './chrome.mjs';
-import {drawAll} from './vector.mjs';
+import {capturePill, drawAll} from './vector.mjs';
+import {usageClips} from './usage.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url)), ROOT = resolve(HERE, '../../..'), OUT = resolve(HERE, '..');
 const CIRCLES = ['needs', 'agents', 'claude', 'codex'];
 const FPS = 30, SCALE = Number(process.env.HQ_MEDIA_SCALE || 2);
 
-// A throwaway HQ: its own inbox, seeded with fixtures.py, on a free port, with no live workers.
-export async function startHQ() {
-  const home = mkdtempSync(join(tmpdir(), 'hq-media-'));
-  const env = {...process.env, HQ_HOME: home, HQ_FLOAT_LAB: '1'};
-  const fixtures = (...args) => execFileSync('python3', [join(HERE, 'fixtures.py'), ...args], {env});
+// A throwaway HQ: its own inbox, seeded with fixtures.py, on a free port. By default it runs in
+// lab mode, with no live workers and sample usage. With accounts, it runs as HQ really does, so
+// Usage reads who is signed in; it then gets a throwaway HOME with fake logins (fixtures.py) and a
+// PATH without claude or codex, so it can never see a real login or session. The writes Usage
+// makes (switch, add, remove) are answered inside the page instead (answerAccounts), since against
+// the server they would reach the Keychain.
+const PYTHON = process.env.PYTHON || execFileSync('/bin/sh', ['-c', 'command -v python3']).toString().trim();
+export async function startHQ({accounts = false} = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'hq-media-')), fake = accounts ? mkdtempSync(join(tmpdir(), 'hq-media-home-')) : null;
+  const env = accounts
+    ? {HOME: fake, CLAUDE_CONFIG_DIR: join(fake, '.claude'), CODEX_HOME: join(fake, '.codex'), PATH: '/usr/bin:/bin', HQ_HOME: home}
+    : {...process.env, HQ_HOME: home, HQ_FLOAT_LAB: '1'};
+  const fixtures = (...args) => execFileSync(PYTHON, [join(HERE, 'fixtures.py'), ...args], {env});
   fixtures('seed');
+  if (accounts) fixtures('accounts', fake);
   const port = await new Promise((done) => {
     const probe = createServer().listen(0, '127.0.0.1', () => {
       const {port: free} = probe.address();
       probe.close(() => done(free));
     });
   });
-  const server = spawn('python3', [join(ROOT, 'bin/hq'), 'serve', '--port', String(port)], {env, stdio: 'ignore'});
+  const server = spawn(PYTHON, [join(ROOT, 'bin/hq'), 'serve', '--port', String(port)], {env, stdio: 'ignore'});
   const origin = `http://127.0.0.1:${port}`;
   for (let n = 0; ; n += 1) {
     try {
@@ -45,6 +55,7 @@ export async function startHQ() {
   const stop = () => {
     server.kill();
     rmSync(home, {recursive: true, force: true});
+    if (fake) rmSync(fake, {recursive: true, force: true});
   };
   return {origin, fixtures, stop};
 }
@@ -107,6 +118,12 @@ export async function stage(hq, {width, height, app, dock = 'top-left'}) {
     await s.press();
     await sleep(90);
     await s.release();
+  };
+  const KEYS = {ArrowDown: 40, ArrowUp: 38, Enter: 13, Escape: 27};
+  s.key = async (key) => {
+    const code = KEYS[key], text = key === 'Enter' ? '\r' : undefined;
+    await page.send('Input.dispatchKeyEvent', {type: 'keyDown', key, code: key, windowsVirtualKeyCode: code, ...(text ? {text} : {})});
+    await page.send('Input.dispatchKeyEvent', {type: 'keyUp', key, code: key, windowsVirtualKeyCode: code});
   };
   s.rect = (selector) => page.evaluate(`rectOf(${JSON.stringify(selector)})`);
   // Waits for it to stop moving, since clicking mid-spring lands somewhere else.
@@ -199,12 +216,16 @@ const TAKES = {
     await s.glideTo('#pill', 700, 0, -40);
     await s.click();
     await s.until(`document.body.dataset.mode === 'list'`);
-    // Move off the pill at once, or its label sits over the list's header.
-    await s.glide(s.at.x + 40, s.at.y + 70, 250);
+    // Off the panel, so the keys drive: down to the new decision, its row lit with an arrow.
+    await s.glide(700, 420, 500);
+    await s.wait(500);
     const row = await s.inFrame(`[...document.querySelectorAll('#main [data-item]')].find((r) => r.textContent.includes('Name the new')).dataset.item`);
-    await s.glideTo(`#main [data-item="${row}"]`, 650, -60);
-    await s.wait(150);
-    await s.click();
+    for (let n = 0; n < 12 && !(await s.inFrame(`Boolean(document.querySelector('#main .hl[data-item="${row}"]'))`)); n += 1) {
+      await s.key('ArrowDown');
+      await s.wait(380);
+    }
+    await s.wait(500);
+    await s.key('Enter');
     await s.until(`document.body.dataset.mode === 'item'`);
     await s.wait(900);
     await s.glideTo('#detail [data-choice="Reports"]', 650, -40);
@@ -224,7 +245,10 @@ const TAKES = {
   }, 'hero.webp'),
 
   // The pill's own clips, hover and notifications, drawn as animated SVG (vector.mjs).
-  clips: async () => console.log(drawAll().join(', ')),
+  clips: async () => console.log((await drawAll(() => capturePill({startHQ, stage}))).join(', ')),
+
+  // Several accounts, switching and adding, drawn from the real Usage view (usage.mjs).
+  usage: async () => console.log((await usageClips({startHQ, stage})).join(', ')),
 
   // Drag it to the bottom, where it lies flat, and back to the corner.
   drag: () => take('drag', {width: 800, height: 500, app: {x: 150, y: 40, width: 600, height: 420}}, async (s, hq, record) => {
