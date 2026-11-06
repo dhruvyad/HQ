@@ -85,3 +85,7 @@ have their own routes, each with its limits; see [Connections](docs/connections.
 - [Privacy and local boundaries](docs/privacy.md)
 - [Development](docs/development.md): run from a clone, tests, regenerate these pictures
 - [Design guidelines](DESIGN.md)
+
+## License
+
+[MIT](LICENSE)
