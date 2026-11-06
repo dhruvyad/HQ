@@ -938,8 +938,10 @@ function groupHeadHTML(g, level) {
   const label = level === 'project' ? esc(name) : `<span class="of">${esc(projectName(g.project))}</span>${lone ? '' : `<span class="of">›</span>${esc(name)}`}`;
   return `<div class="group-head"><button data-href="${esc(target)}">${label}</button><span class="n">${g.items.length}</span></div>`;
 }
+// Where a row shows an age, it gets a column of its own on the right, so ages line up row to row.
 function rowHTML(i, opts = {}) {
-  return `<button class="row" data-item="${esc(i.id)}" aria-current="${route.item === i.id}">${isNew(i) ? '<span class="new" title="New in the last day"></span>' : ''}<span class="title">${esc(i.title)}</span><span class="meta">${metaHTML(i, opts)}</span></button>`;
+  const age = opts.age ? ago(i.created) : opts.stuck ? ago(i.followup?.replied || i.updated) : '';
+  return `<button class="row ${age ? 'aged' : ''}" data-item="${esc(i.id)}" aria-current="${route.item === i.id}">${isNew(i) ? '<span class="new" title="New in the last day"></span>' : ''}<span class="title">${esc(i.title)}</span><span class="meta">${metaHTML(i, {...opts, apart: Boolean(age)})}</span>${age ? `<span class="age">${esc(age)}</span>` : ''}</button>`;
 }
 function whereLabel(i) {
   const lone = i.workstream === OTHER && (projectOf(i.project)?.workstreams.length || 0) <= 1;
@@ -948,9 +950,9 @@ function whereLabel(i) {
 // Where an item came from, as its agent wrote it ("worktree · task"), shortened only when very long.
 const SOURCE_MAX = 40;
 const sourceText = (i) => {const s = String(i.source || '').trim(); return s.length > SOURCE_MAX ? `${s.slice(0, SOURCE_MAX - 1).trimEnd()}…` : s;};
-function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false, source = false} = {}) {
+function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false, source = false, apart = false} = {}) {
   const parts = [], from = source && sourceText(i) ? `<span class="src">${esc(sourceText(i))}</span>` : '';
-  if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].join('<span class="sep">·</span>');
+  if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, apart ? '' : `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].filter(Boolean).join('<span class="sep">·</span>');
   if (age && i.delivery === 'failed') parts.push('<span class="overdue">Reply failed</span>');
   if (kind && i.kind === 'question') parts.push('Decision');
   if (kind && i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
@@ -958,7 +960,7 @@ function metaHTML(i, {withLane = false, where = false, age = false, kind = false
   if (withLane) parts.push(LANES.find(([id]) => id === i.lane)[1]);
   if (where) parts.push(esc(whereLabel(i)));
   // The source comes just before the time; where there is no time, it ends the line.
-  if (age) {if (from) parts.push(from); parts.push(ago(i.created));}
+  if (age) {if (from) parts.push(from); if (!apart) parts.push(ago(i.created));}
   else if (i.lane === 'you' && !where) {
     if (i.kind === 'question') parts.push('Decision');
     if (i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');

@@ -134,6 +134,8 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .row .title {flex: 1; min-width: 0; font-size: 15px; line-height: 1.4; color: rgb(250 250 250 / 0.92); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
 .row .meta {display: inline-flex; align-items: center; gap: 8px; flex: none; font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
 .row .meta .sep {opacity: .5;}
+/* An age in its own column at the row's end, as wide as "23d ago", so ages line up. */
+.row .age {flex: none; width: 64px; text-align: right; font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap;}
 .row .blocker, .row .due {color: rgb(250 250 250 / 0.9);}
 .overdue {color: var(--error);}
 .row .new {position: absolute; left: -7px; top: 19px; width: 6px; height: 6px; border-radius: 50%; background: var(--foreground);}

@@ -1301,4 +1301,14 @@ assert.ok(/<span class="f-chip bad"><button type="button" class="f-cap " data-re
 assert.ok(html.includes('<small class="f-key-bad">⌃⌥J is in use by another app</small>') && !/f-chip bad"><button[^>]*data-index="0"/.test(html));
 run(`refused = []; shortcuts = savedShortcuts; keyConflict = null; recording = null; delete globalThis.window`);
 
+// The age has its own column on the right, so ages line up; the meta line no longer carries it.
+context.agedItem = {...item({id: 'ag1', title: 'Aged', created: now - 7200, source: 'noclick5 · Airtable tests'}), lane: 'you'};
+html = run("rowHTML(agedItem, {where: true, age: true, kind: true, source: true})");
+assert.ok(html.startsWith('<button class="row aged"') && html.endsWith('<span class="age">2h ago</span></button>'));
+assert.ok(/<span class="meta">[^]*noclick5 · Airtable tests<\/span><\/span><span class="age">/.test(html) && !/ ago<\/span><span class="age">/.test(html)); // the source ends the meta now
+assert.ok(!run("rowHTML(agedItem, {where: true})").includes('class="age"')); // no age shown, no column
+context.agedItem = {...context.agedItem, status: 'answered', followup: {stage: 'delivering', stuck: 'stopped', replied: now - 3 * 86400}};
+html = run("rowHTML(agedItem, {stuck: true})");
+assert.ok(html.includes('<span class="age">3d ago</span>') && !html.includes('decided'));
+
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

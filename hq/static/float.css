@@ -233,6 +233,12 @@ html.float .g-empty {padding: 24px 8px;}
 .f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.06);}
 .f-rows .row.hl .title, .f-agent.hl .a-name {color: var(--foreground);}
 .f-rows .row.hl::after, .f-agent.hl::after {opacity: 1; transform: none;}
+/* In the panel the age has a column on the right: on the title's first line, lined up row to row,
+   with the highlight's arrow below it on the meta line. Both are reserved on every row, so
+   highlighting moves nothing and the age always stays in view. */
+.f-rows .row.aged {padding-right: 70px;}
+:where(html.float) .row.aged .age {position: absolute; right: 8px; top: 9px; width: 54px; font-size: 12.5px; line-height: calc(14.5px * 1.4); pointer-events: none;}
+.f-rows .row.aged::after {top: auto; bottom: 8px;}
 body[data-keys] .f-rows .row:not(.hl), body[data-keys] .f-agent:not(.hl) {opacity: .45;}
 body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
@@ -249,9 +255,11 @@ body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):h
 /* A row of keys: the action on the left, its key chips on the right, wrapping to a second line
    rather than overflowing; a chip's × shows on hover or focus, and a round + records another. */
 .f-key {display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px; min-height: 36px; padding: 4px 8px; font-size: 14px; line-height: 1.3;}
-.f-key-name {flex: 1; min-width: 0; padding-top: 5px;}
+/* The label keeps its width; when it and the keys don't fit on one line, the keys take their own
+   line under it, right-aligned, rather than squeezing the label onto several lines. */
+.f-key-name {flex: 1 0 auto; max-width: 100%; padding-top: 5px;}
 .f-key-name .f-reset {margin-left: 8px; font-size: 12px;}
-.f-chips {display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 70%;}
+.f-chips {display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 100%; margin-left: auto;}
 .f-chip {position: relative; display: inline-flex; flex-direction: column; align-items: flex-end;}
 .f-chip-x {position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #3f3f46; color: var(--foreground); box-shadow: 0 0 0 2px var(--sunken); opacity: 0; pointer-events: none; transition: opacity .12s;}
 .f-chip-x .icon {width: 9px; height: 9px; stroke-width: 2.6;}
