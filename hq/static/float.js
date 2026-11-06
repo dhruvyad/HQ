@@ -1718,7 +1718,6 @@ function spotlight(x, y) {
     const label = el.firstElementChild;
     label.innerHTML = spotHTML(rows[index].dataset.metric);
     el.classList.toggle('log', label.children.length > 0);
-    label.querySelectorAll('.f-spot-agent').forEach((row) => {const n = row.querySelector('.n'); row.classList.toggle('two', n.scrollWidth > n.clientWidth + 0.5);});
     el.classList.toggle('instant', first);
     if (!first) label.animate([{opacity: 0, transform: 'translateY(5px)'}, {opacity: 1, transform: 'none'}], {duration: 240, easing: 'ease-out'});
   }
