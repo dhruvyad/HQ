@@ -72,6 +72,25 @@ class AttachmentTests(unittest.TestCase):
         self.assertTrue(Path(used["path"]).exists())
         self.assertFalse(Path(unused["path"]).exists())
 
+    def test_files_go_thirty_days_after_their_item_is_done(self):
+        from hq.store import KEEP_FILES
+        old = time.time() - 60 * 86400
+        kept = {}
+        for name, done_ago in (("open", None), ("recent", 29 * 86400), ("long done", 31 * 86400)):
+            shot = files.save(self.base, PNG, "image/png", f"{name}.png")
+            os.utime(Path(shot["path"]).with_suffix(".json"), (old, old))
+            item = self.store.add("a", name, kind="question")
+            self.store.reply(item["id"], "see", [shot["id"]])
+            if done_ago is not None:  # heard, acted on and closed that long ago
+                with self.store.db() as db:
+                    db.execute("UPDATE items SET status='done',updated=? WHERE id=?", (time.time() - done_ago, item["id"]))
+            kept[name] = shot
+        self.assertEqual(KEEP_FILES, 30 * 86400)
+        self.assertEqual(self.store.sweep_files(), 1)
+        self.assertTrue(Path(kept["open"]["path"]).exists())     # still being worked on
+        self.assertTrue(Path(kept["recent"]["path"]).exists())   # done 29 days ago
+        self.assertFalse(Path(kept["long done"]["path"]).exists())  # done 31 days ago
+
 
 class AttachmentHTTPTests(unittest.TestCase):
     def setUp(self):

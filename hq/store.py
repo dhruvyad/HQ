@@ -23,6 +23,7 @@ STOPPED_AFTER = 300          # offline this long: the agent stopped before actin
 OFFLINE_FOR = 3600           # a session gone from a live inventory stays offline this long unless seen again
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
+KEEP_FILES = 30 * 86400      # files on an item are deleted this long after it is done
 SCHEMA = 9                   # PRAGMA user_version once every migration below has run
 
 
@@ -920,13 +921,16 @@ class Store:
                 due.append({"item_id": row["id"], "title": row["title"], "answer": row["text"], "heard": row["delivered"]})
         return due
 
-    def sweep_files(self):
-        """Delete files uploaded a day ago or more that no reply or question ever used."""
+    def sweep_files(self, now=None):
+        """Delete each file once nothing needs it: a day after upload when no reply or question used
+        it, and KEEP_FILES after its item was done, long after the agent read it."""
+        now = now or time.time()
         with self.db() as db:
             used = {a["id"] for table in ("replies", "comments")
-                    for row in db.execute(f"SELECT attachments FROM {table} WHERE attachments!='[]'")
+                    for row in db.execute(f"""SELECT t.attachments FROM {table} t JOIN items i ON i.id=t.item_id
+                        WHERE t.attachments!='[]' AND (i.status!='done' OR i.updated>?)""", (now - KEEP_FILES,))
                     for a in json.loads(row[0])}
-        return files.sweep(self.path.parent, used)
+        return files.sweep(self.path.parent, used, now=now)
 
     def has_waiter(self, item_id):
         with self.db() as db:

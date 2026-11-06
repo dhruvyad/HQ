@@ -3,6 +3,7 @@ import json
 import os
 import secrets
 import signal
+import sqlite3
 import threading
 import time
 import uuid
@@ -260,6 +261,22 @@ class Handler(BaseHTTPRequestHandler):
             self.output(400, {"error": str(error)})
 
 
+class FileSweeper:
+    """Deletes attachments nothing needs any more (see Store.sweep_files) every few hours, so a
+    server left running for weeks keeps the 30-day promise too."""
+    EVERY = 6 * 3600
+
+    def __init__(self, store):
+        self.store, self.stop = store, threading.Event()
+
+    def run(self):
+        while not self.stop.wait(self.EVERY):
+            try:
+                self.store.sweep_files()
+            except (OSError, sqlite3.Error):
+                pass  # tried again next time
+
+
 def serve(port=4310):
     home = data_dir()
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -287,7 +304,7 @@ def serve(port=4310):
             # A switch, by HQ or by /login, makes the last account's numbers wrong for the new one.
             server.accounts.on_switch = usage.forget
             workers = [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3), (usage, 3),
-                       (AccountsWorker(server.accounts, server.usage), 3)]
+                       (AccountsWorker(server.accounts, server.usage), 3), (FileSweeper(server.store), 3)]
         threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
         for thread in threads:
             thread.start()
