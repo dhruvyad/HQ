@@ -1,7 +1,11 @@
 """Supported lifecycle context, without transcript scanning or idle push claims."""
+from contextlib import closing
 import json
+import os
 from pathlib import Path
+import re
 import shlex
+import sqlite3
 import sys
 
 from .store import Store, required
@@ -21,7 +25,34 @@ def agents_working(payload):
     return isinstance(tasks, list) and any(isinstance(task, dict) and task.get("type") in AGENT_WORK for task in tasks)
 
 
-def handle(provider, payload, store, emit):
+# Codex names a conversation after its first message, so by the prompt or the end of a turn it has one.
+NAMED = {"SessionStart", "UserPromptSubmit", "Stop"}
+
+
+def codex_title(thread_id, home=None):
+    """The name Codex shows for one of its conversations, read-only from its own metadata (as
+    hq discover does): the name ChatGPT gave it, else its first line. None when it has none yet."""
+    folder = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    versions = sorted(folder.glob("state_*.sqlite"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
+    if not versions:
+        return None
+    try:
+        with closing(sqlite3.connect(versions[-1].resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    for column in ("name", "title"):
+        text = row[column] if column in row.keys() else None
+        line = " ".join(str(text or "").split("\n", 1)[0].split())
+        if line:
+            return line if len(line) <= 80 else line[:79].rstrip() + "…"
+    return None
+
+
+def handle(provider, payload, store, emit, title=codex_title):
     if provider not in {"codex", "claude-code"} or not isinstance(payload, dict):
         raise ValueError("Expected a Codex or Claude Code hook event")
     event = payload.get("hook_event_name")
@@ -29,6 +60,10 @@ def handle(provider, payload, store, emit):
         raise ValueError("Unsupported HQ hook event")
     external_id = required(payload.get("session_id"), "session id", 150)
     sid = f"{provider}:{external_id}"
+    # Codex runs short helper conversations of its own (naming a chat, for one) that it never
+    # saves, so they have no transcript. They are not yours: they never become agents.
+    if provider == "codex" and "transcript_path" in payload and payload["transcript_path"] is None:
+        return
     # A subagent's events carry the parent's session id. They must never consume the
     # parent's messages, but they do show the conversation is still at work.
     if payload.get("agent_id") or event == "SubagentStop":
@@ -43,11 +78,21 @@ def handle(provider, payload, store, emit):
     cwd = payload.get("cwd")
     if cwd is not None and not isinstance(cwd, str):
         raise ValueError("cwd must be text")
+    # A conversation goes by the name its app shows, and follows it when it changes: for Codex the
+    # one ChatGPT gave it; for Claude Code a title you set (/rename, --name), which Claude Code
+    # sends with these events. Its generated title it keeps to itself.
+    if provider == "codex":
+        named = title(external_id) if event in NAMED else None
+    else:
+        named = payload.get("session_title")
+        named = " ".join(named.split())[:80] if isinstance(named, str) and named.strip() else None
     try:
         session = store.session(sid)
     except ValueError:
         label = "Codex" if provider == "codex" else "Claude Code"
-        session = store.register(sid, f"{label} · {Path(cwd).name if cwd else external_id[:8]}", provider, external_id, cwd)
+        session = store.register(sid, named or f"{label} · {Path(cwd).name if cwd else external_id[:8]}", provider, external_id, cwd)
+    if named and session["name"] != named:
+        session = store.register(sid, named, provider, external_id, cwd)
     if event == "SessionEnd":
         store.disconnect(sid, "hooks")
         store.observe_activity(sid, "offline", "hooks", lease=30, priority=50)

@@ -250,6 +250,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(404, {"error": "Not found"})
             elif parts == ["api", "sessions"]:
                 result = store.register(**body)
+            elif parts == ["api", "sessions", "archive"]:
+                if not isinstance(body.get("archived"), bool):
+                    raise ValueError("archived must be true or false")
+                result = store.archive(body.get("ids"), body["archived"])
             elif parts[:2] == ["api", "accounts"]:
                 result = self.accounts_post(parts, body)
                 if result is None:

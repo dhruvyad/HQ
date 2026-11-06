@@ -422,6 +422,42 @@ assert.equal(run("agentSide({you: 2, open: 3})"), '<b>2</b> for you');
 assert.equal(run("agentSide({you: 0, open: 3})"), '3 open');
 assert.equal(run("folderName('/Users/someone/code/HQ/')"), 'HQ');
 assert.equal(run("folderName('')"), 'No folder');
+// Within a folder, by when each last ran: running now, then the most recent, whatever its state.
+// Waiting on you counts from when it began waiting.
+const at = (minutes) => clockNow - minutes * 60;
+context.recencySessions = [
+  {id: 'r:wait', name: 'Waiting an hour', provider: 'codex', cwd: '/c/noclick', activity: {state: 'waiting', since: at(60)}, last_active: at(61)},
+  {id: 'r:done', name: 'Finished 5m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'idle'}, last_active: at(5)},
+  {id: 'r:nosig', name: 'Seen 1m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'unknown'}, last_active: at(1)},
+  {id: 'r:run', name: 'Running', provider: 'codex', cwd: '/c/noclick', activity: {state: 'active', since: at(30)}, last_active: clockNow},
+  {id: 'r:other', name: 'Elsewhere, 2m ago', provider: 'codex', cwd: '/c/harbor', activity: {state: 'idle'}, last_active: at(2)},
+  {id: 'r:ended', name: 'Ended 3m ago', provider: 'codex', cwd: '/c/ledger', activity: {state: 'offline'}, last_active: at(3)},
+];
+const recency = JSON.parse(run(`JSON.stringify(agentFolders(recencySessions, [], ${clockNow}))`));
+assert.deepEqual(recency.groups.map((f) => [f.name, f.agents.map((a) => a.id)]),
+  [['noclick', ['r:run', 'r:nosig', 'r:done', 'r:wait']], ['harbor', ['r:other']], ['ledger', ['r:ended']]]);
+// Archived: put away until it runs again, has something open, or waits on you. Only a view.
+const archivedAt = at(10);
+const shelf = (changes, items = []) => {
+  context.shelfSessions = context.recencySessions.map((s) => ({...s, archived: archivedAt, ...(changes[s.id] || {})}));
+  context.shelfItems = items.map((i) => ({...i, lane: run('laneOf')(i)}));
+  return JSON.parse(run(`JSON.stringify(agentFolders(shelfSessions, shelfItems, ${clockNow}))`));
+};
+let put = shelf({});
+// Running, waiting on you, and anything that ran after it was archived stay; the rest are put away.
+assert.deepEqual(put.groups.flatMap((f) => f.agents.map((a) => a.id)), ['r:run', 'r:nosig', 'r:done', 'r:wait', 'r:other', 'r:ended']);
+assert.equal(put.archivedCount, 0);
+put = shelf({'r:nosig': {last_active: at(20)}, 'r:done': {last_active: at(25)}, 'r:other': {last_active: at(15)}});
+assert.deepEqual(put.archived.map((f) => [f.name, f.agents.map((a) => a.id)]), [['harbor', ['r:other']], ['noclick', ['r:nosig', 'r:done']]]);
+assert.equal(put.archivedCount, 3);
+assert.ok(!put.groups.flatMap((f) => f.agents).some((a) => ['r:nosig', 'r:done', 'r:other'].includes(a.id)));
+// Something open, or a decision of yours it holds, brings it back.
+put = shelf({'r:done': {last_active: at(20)}}, [item({id: 'o1', session_id: 'r:done', title: 'Check it'})]);
+assert.ok(put.groups.flatMap((f) => f.agents).some((a) => a.id === 'r:done'));
+assert.equal(run("archivable({open: 0, held: 0, state: 'idle'})"), true);
+assert.equal(run("archivable({open: 1, held: 0, state: 'idle'})"), false);
+assert.equal(run("archivable({open: 0, held: 1, state: 'offline'})"), false);
+assert.equal(run("archivable({open: 0, held: 0, state: 'active'})"), false);
 // The panel shows the same folders, and an agent's own page lists its items to open.
 run(`savedSessions = state.sessions; state.sessions = agentSessions; listView = 'agents'`);
 html = run('agentsPanelHTML(attention(), true)');
