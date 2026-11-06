@@ -41,3 +41,7 @@ jobs:
           home="$(mktemp -d)"
           env -i HOME="$home" PATH=/usr/bin:/bin LANG=en_US.UTF-8 HQ_SOURCE="$PWD" HQ_NO_SETUP=1 sh < install.sh
           env -i HOME="$home" PATH=/usr/bin:/bin "$home/.local/bin/hq" setup --help
+          # The installed hq names the commit it was installed from.
+          version="$(env -i HOME="$home" PATH=/usr/bin:/bin "$home/.local/bin/hq" --version)"
+          echo "$version"
+          case "$version" in *"($(git rev-parse HEAD | cut -c1-7)"*) ;; *) exit 1 ;; esac

@@ -14,6 +14,22 @@ Optional installation: `python3 -m pip install .` (prefer a virtual environment)
 The source launcher can also be linked onto your PATH, and `./install.sh` from a clone installs
 that clone with `uv` instead of downloading one.
 
+## Versions and updates
+
+`hq --version` names the build, such as `hq 0.1.0 (abc1234, installed 2026-11-06)`. The
+installer finds the commit first (`git ls-remote`, or GitHub's API without git), installs the
+archive of that exact commit, and records `{commit, ref, source, dirty, installed_at, hq, env}`
+in `install.json` in HQ's data folder (`HQ_HOME` if set). From a clone it records the clone's
+commit, branch, and whether it has uncommitted changes. `./bin/hq --version` asks the clone's
+git instead, and says "build not recorded" when neither is there.
+
+`hq update` downloads the published installer for the recorded branch (`HQ_REF` picks another),
+runs it with `HQ_NO_SETUP=1`, prints the old and new commit, and restarts the server and the
+pill if they were running. It never opens the inbox. An install from a clone reinstalls that
+clone as it is now, so pull there first; `./bin/hq update` itself refuses and says to use git.
+Agent conversations already open keep the previous MCP tools until they restart.
+
+
 ## Tests
 
 ```sh
@@ -29,6 +45,8 @@ Tests cover SQLite persistence and migration, multiple independent items per
 conversation, ownership changes and deferral, concurrent answers, per-session routing,
 offline acknowledgement, timeout/cancellation, native steering decisions,
 the HTTP origin boundary, bundled font delivery, and an end-to-end MCP human response.
+The installer runs piped to `sh` against fake `uv`, `git` and `curl` in an empty home, so the
+tests never download or install anything; `hq update` runs on a temporary home.
 
 Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-server),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),
