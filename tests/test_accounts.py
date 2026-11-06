@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import sqlite3
 import stat
 import tempfile
 import threading
@@ -467,6 +468,32 @@ class AddTests(Home):
         self.spawn_effect = lambda argv, env: FakeProcess(code=1)
         job = self.finish(self.accounts.add("codex"))
         self.assertEqual((job["state"], job["message"]), ("failed", "The sign-in stopped before it finished"))
+
+    def test_an_inbox_from_an_early_build_of_accounts_still_saves_a_sign_in(self):
+        # The first build made the table without stale and with a profile column.
+        early = self.home / "early" / "hq.sqlite3"
+        early.parent.mkdir()
+        with sqlite3.connect(early) as db:
+            db.execute("""CREATE TABLE accounts (tool TEXT NOT NULL, key TEXT NOT NULL, identity TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '', org TEXT NOT NULL DEFAULT '',
+                profile TEXT NOT NULL DEFAULT '{}', added REAL NOT NULL, last_used REAL, expires REAL,
+                refresh_expires REAL, usage TEXT, usage_as_of REAL, PRIMARY KEY(tool, key))""")
+            db.execute("PRAGMA user_version=9")
+        self.store = Store(early)
+        self.accounts = self.make()
+        self.spawn_effect = self.claude_signs_in
+        job = self.finish(self.accounts.add("claude"))
+        self.assertEqual((job["state"], job["account"]["email"]), ("added", "carol@example.com"))
+
+    def test_a_sign_in_that_cannot_be_saved_says_so_and_leaves_no_login_behind(self):
+        with self.store.db() as db:
+            db.execute("ALTER TABLE accounts DROP COLUMN stale")
+        before = set(self.sec.items)
+        self.spawn_effect = self.claude_signs_in
+        job = self.finish(self.accounts.add("claude"))
+        self.assertEqual((job["state"], job["message"]),
+                         ("failed", "HQ couldn't save that account. Restart HQ and add it again"))
+        self.assertEqual(set(self.sec.items), before)  # neither the new login nor the temporary one is left
 
     def test_only_one_sign_in_per_tool_at_a_time(self):
         self.spawn_effect = lambda argv, env: FakeProcess()

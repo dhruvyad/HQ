@@ -144,6 +144,12 @@ class Store:
             for table in ("replies", "comments"):
                 if "attachments" not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            # An inbox that ran an early build of accounts has the table without these.
+            kept = {r["name"] for r in db.execute("PRAGMA table_info(accounts)")}
+            for name, declared in (("last_used", "REAL"), ("expires", "REAL"), ("refresh_expires", "REAL"),
+                                   ("stale", "INTEGER NOT NULL DEFAULT 0"), ("usage", "TEXT"), ("usage_as_of", "REAL")):
+                if name not in kept:
+                    db.execute(f"ALTER TABLE accounts ADD COLUMN {name} {declared}")
             db.execute("PRAGMA user_version=9")
         os.chmod(self.path, 0o600)
 

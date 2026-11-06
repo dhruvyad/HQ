@@ -34,6 +34,7 @@ import random
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -484,13 +485,24 @@ class Accounts:
 
     def remember(self, tool, who, secret, expires, refresh_expires, stale=False):
         key = key_for(tool, who["identity"])
-        self.vault.put(tool, key, secret)
         with self.store.db() as db:
-            db.execute("""INSERT INTO accounts (tool,key,identity,email,plan,org,added,expires,refresh_expires,stale)
-                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tool,key) DO UPDATE SET email=excluded.email,plan=excluded.plan,
-                org=excluded.org,expires=excluded.expires,refresh_expires=excluded.refresh_expires,stale=excluded.stale""",
-                       (tool, key, who["identity"], who["email"], who["plan"], who["org"], now(), expires, refresh_expires,
-                        int(stale)))
+            known = db.execute("SELECT 1 FROM accounts WHERE tool=? AND key=?", (tool, key)).fetchone()
+        self.vault.put(tool, key, secret)
+        try:
+            with self.store.db() as db:
+                db.execute("""INSERT INTO accounts (tool,key,identity,email,plan,org,added,expires,refresh_expires,stale)
+                    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tool,key) DO UPDATE SET email=excluded.email,plan=excluded.plan,
+                    org=excluded.org,expires=excluded.expires,refresh_expires=excluded.refresh_expires,stale=excluded.stale""",
+                           (tool, key, who["identity"], who["email"], who["plan"], who["org"], now(), expires, refresh_expires,
+                            int(stale)))
+        except sqlite3.Error as error:
+            self.log(f"Could not save the {tool} account: {error}")
+            if not known:  # never leave a login in the Keychain that no account points to
+                try:
+                    self.vault.remove(tool, key)
+                except AccountError:
+                    pass
+            raise AccountError("HQ couldn't save that account. Restart HQ and add it again") from None
         return key
 
     def mark(self, tool, key, **fields):
