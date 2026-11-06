@@ -155,13 +155,30 @@ class SetupTests(HomeTest):
         self.assertIn("type /hooks, and trust the hooks that run hq hook codex", out)
         self.assertIn("hq setup --undo", out)
 
-    def test_says_to_trust_codex_hooks_until_codex_does(self):
+    def test_trusts_codex_hooks_as_its_own_step(self):
         self.agent("codex")
-        events = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]
-        _, out, *_ = self.run_setup(trust=lambda: {**dict.fromkeys(events, "trusted"), "Stop": "modified"})
-        self.assertIn("Until you do, Codex skips them and its conversations do not show in HQ", out)
-        _, out, *_ = self.run_setup(trust=lambda: dict.fromkeys(events, "trusted"))
+        trust = Mock(return_value={"trusted": ["SessionStart", "Stop"], "off": [], "listed": 6})
+        _, out, install, *_ = self.run_setup(yes=False, answer=True, trust=trust)
+        self.assertIn("Trust HQ's hooks in Codex: save the approval Codex's /hooks saves, for HQ's hooks only", out)
+        trust.assert_called_once_with()
+        self.assertIn("✓ Codex: trusts HQ's hooks\n", out)
+        self.assertIn("If the ChatGPT or Codex app is open, quit and reopen it", out)
         self.assertNotIn("type /hooks", out)
+        # Nothing is trusted when you say no.
+        trust.reset_mock()
+        self.run_setup(yes=False, answer=False, trust=trust)
+        trust.assert_not_called()
+
+    def test_codex_hooks_already_trusted_turned_off_or_unanswered(self):
+        self.agent("codex")
+        _, out, *_ = self.run_setup(trust=lambda: {"trusted": [], "off": [], "listed": 6})
+        self.assertIn("✓ Codex: trusts HQ's hooks (it already did)", out)
+        self.assertNotIn("reopen it", out)
+        _, out, *_ = self.run_setup(trust=lambda: {"trusted": [], "off": ["Stop"], "listed": 6})
+        self.assertIn("HQ's hooks for Stop are turned off in /hooks", out)
+        _, out, *_ = self.run_setup(trust=lambda: None)
+        self.assertIn("✗ Codex: could not trust HQ's hooks", out)
+        self.assertIn("Until you do, Codex skips them and its conversations do not show in HQ", out)
 
     def test_with_no_agents_it_says_so_and_still_opens_the_dashboard(self):
         code, out, install, launch, _ = self.run_setup()
@@ -187,6 +204,19 @@ class SetupTests(HomeTest):
         stop.assert_called_once()
         self.assertIn("Your inbox is kept", out.getvalue())
         self.assertIn("uv tool uninstall hq-local", out.getvalue())
+
+    def test_undo_removes_codex_trust_while_the_hooks_are_still_there(self):
+        self.agent("codex")
+        install_hooks("codex")
+        seen = []
+        untrust = Mock(side_effect=lambda: seen.append((self.home / ".codex/hooks.json").exists()) or 6)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), patch("hq.usage.claude_login_enabled", return_value=False):
+            onboard.undo(Mock(return_value={"status": "stopped"}), untrust=untrust)
+        self.assertEqual(seen, [True])
+        self.assertIn("✓ Codex: no longer trusts HQ's hooks", out.getvalue())
+        hooks = self.home / ".codex/hooks.json"
+        self.assertNotIn("hook codex", hooks.read_text() if hooks.exists() else "")
 
     def test_cli_has_setup_and_undo(self):
         args = parser().parse_args(["setup", "--undo"])

@@ -245,7 +245,8 @@ class ProblemTests(DoctorCase):
         none = hooks(dict.fromkeys(events, "untrusted"))
         self.assertEqual(none["status"], "warn")
         self.assertIn("never runs them: Codex conversations do not show in HQ", none["summary"])
-        self.assertEqual(none["fix"], "Run codex in a terminal, type /hooks, and trust the ones that run hq hook codex")
+        self.assertEqual(none["fix"], doctor.TRUST)
+        self.assertTrue(none["fix"].startswith("hq setup, which trusts them when you say yes"))
         # Changed since you trusted it: Codex skips it again until you review it.
         some = hooks({**dict.fromkeys(events, "trusted"), "Stop": "modified"})
         self.assertIn("for Stop, so it skips those", some["summary"])
@@ -265,7 +266,7 @@ class ProblemTests(DoctorCase):
             check = self.checks()["Codex hooks"]
         self.assertIn("never runs them", check["summary"])
         self.assertIn("missing for SubagentStop", check["summary"])
-        self.assertEqual(check["fix"], "hq setup, then run codex in a terminal, type /hooks, and trust the ones that run hq hook codex")
+        self.assertEqual(check["fix"], doctor.TRUST)  # Setup both adds the hook and trusts them.
 
     def test_a_server_that_crashed_or_stopped_answering(self):
         self.data.mkdir(mode=0o700)
@@ -349,23 +350,86 @@ class CodexTrustTests(unittest.TestCase):
     def test_reads_hqs_hooks_and_ignores_the_rest(self):
         from hq.connections import codex_hook_trust
         answer = {"data": [{"cwd": "/", "hooks": [
-            {"eventName": "sessionStart", "command": self.hq, "enabled": True, "trustStatus": "untrusted"},
-            {"eventName": "stop", "command": "/x/count_tokens.js", "enabled": True, "trustStatus": "trusted"},
-            {"eventName": "stop", "command": self.hq, "enabled": True, "trustStatus": "modified"},
-            {"eventName": "sessionEnd", "command": self.hq, "enabled": False, "trustStatus": "trusted"}]}]}
+            {"key": "h:session_start:0:0", "eventName": "sessionStart", "command": self.hq, "enabled": True, "trustStatus": "untrusted"},
+            {"key": "h:stop:0:0", "eventName": "stop", "command": "/x/count_tokens.js", "enabled": True, "trustStatus": "trusted"},
+            {"key": "h:stop:1:0", "eventName": "stop", "command": self.hq, "enabled": True, "trustStatus": "modified"},
+            {"key": "h:session_end:0:0", "eventName": "sessionEnd", "command": self.hq, "enabled": False, "trustStatus": "trusted"}]}]}
         asked = []
         trust = codex_hook_trust(lambda method, params: asked.append(method) or answer)
         self.assertEqual(asked, ["hooks/list"])
         self.assertEqual(trust, {"SessionStart": "untrusted", "Stop": "modified", "SessionEnd": "off"})
 
     def test_a_codex_that_cannot_say_is_none(self):
-        from hq.connections import codex_hook_trust
+        from hq.connections import codex_hook_trust, trust_codex_hooks, untrust_codex_hooks
         def refuses(method, params):
             raise RuntimeError("Codex refused the request")
-        self.assertIsNone(codex_hook_trust(refuses))
-        self.assertIsNone(codex_hook_trust(lambda method, params: {"nope": 1}))
-        with patch("hq.usage.codex_binary", return_value=None):
-            self.assertIsNone(codex_hook_trust())
+        for function in (codex_hook_trust, trust_codex_hooks, untrust_codex_hooks):
+            self.assertIsNone(function(refuses))
+            self.assertIsNone(function(lambda method, params: {"nope": 1}))
+            with patch("hq.usage.codex_binary", return_value=None):
+                self.assertIsNone(function())
+
+
+class FakeCodex:
+    """Codex's hooks/list and config/batchWrite, kept in memory: never the real config."""
+    hq = CodexTrustTests.hq
+
+    def __init__(self, states):
+        self.hooks = [{"key": f"/h/hooks.json:{event}:0:0", "eventName": event, "command": self.hq,
+                       "currentHash": f"sha256:{event}", "enabled": state != "off",
+                       "trustStatus": "untrusted" if state == "off" else state} for event, state in states.items()]
+        self.hooks.append({"key": "/h/hooks.json:stop:9:0", "eventName": "stop", "command": "/x/mine.js",
+                           "currentHash": "sha256:mine", "enabled": True, "trustStatus": "untrusted"})
+        self.writes = []
+        self.keep = True
+
+    def __call__(self, method, params):
+        if method == "hooks/list":
+            return {"data": [{"hooks": [dict(hook) for hook in self.hooks]}, {"hooks": [dict(hook) for hook in self.hooks]}]}
+        self.writes.append(params)
+        for edit in params["edits"]:
+            if edit["keyPath"] == "hooks.state" and self.keep:
+                for hook in self.hooks:
+                    if edit["value"].get(hook["key"], {}).get("trusted_hash") == hook["currentHash"]:
+                        hook["trustStatus"] = "trusted"
+            elif edit["value"] is None:
+                for hook in self.hooks:
+                    if edit["keyPath"] == "hooks.state." + json.dumps(hook["key"]):
+                        hook["trustStatus"] = "untrusted"
+        return {}
+
+
+class CodexTrustWriteTests(unittest.TestCase):
+    def test_trusts_only_hqs_waiting_hooks_with_codexs_own_hash(self):
+        from hq.connections import trust_codex_hooks
+        codex = FakeCodex({"sessionStart": "untrusted", "stop": "modified", "userPromptSubmit": "trusted", "sessionEnd": "off"})
+        result = trust_codex_hooks(codex)
+        self.assertEqual(result, {"trusted": ["SessionStart", "Stop"], "off": ["SessionEnd"], "listed": 4})
+        [write] = codex.writes
+        self.assertEqual(write["edits"], [{"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": {
+            "/h/hooks.json:sessionStart:0:0": {"trusted_hash": "sha256:sessionStart"},
+            "/h/hooks.json:stop:0:0": {"trusted_hash": "sha256:stop"}}}])
+        # Your own hook, and the one you turned off, are left as they are.
+        self.assertEqual(next(h for h in codex.hooks if h["command"] == "/x/mine.js")["trustStatus"], "untrusted")
+        self.assertEqual(trust_codex_hooks(codex)["trusted"], [])
+        self.assertEqual(len(codex.writes), 1)
+
+    def test_a_trust_codex_did_not_keep_is_not_reported_as_done(self):
+        from hq.connections import trust_codex_hooks
+        codex = FakeCodex({"sessionStart": "untrusted"})
+        codex.keep = False
+        self.assertIsNone(trust_codex_hooks(codex))
+
+    def test_undo_removes_only_the_trust_kept_for_hqs_hooks(self):
+        from hq.connections import untrust_codex_hooks
+        codex = FakeCodex({"sessionStart": "trusted", "stop": "modified", "sessionEnd": "untrusted"})
+        self.assertEqual(untrust_codex_hooks(codex), 2)
+        [write] = codex.writes
+        self.assertEqual([edit["keyPath"] for edit in write["edits"]],
+                         ['hooks.state."/h/hooks.json:sessionStart:0:0"', 'hooks.state."/h/hooks.json:stop:0:0"'])
+        self.assertTrue(all(edit["value"] is None for edit in write["edits"]))
+        self.assertEqual({h["trustStatus"] for h in codex.hooks}, {"untrusted"})
+        self.assertEqual(untrust_codex_hooks(codex), 0)
 
 
 class PillTests(DoctorCase):

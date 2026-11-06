@@ -73,38 +73,84 @@ def install_hooks(provider):
                 else "Restart or resume Claude Code to load HQ hooks."}
 
 
+# Codex runs a hook only once you trust it, and asks again whenever the hook changes. Its own
+# app-server lists each hook with its trust (trusted, untrusted, modified, or managed by an
+# admin) and the hash it trusts, and saves trust the way its /hooks does. HQ talks to it only
+# through that, about HQ's own hooks, starting an app-server for the few requests and stopping it.
 TRUST_TIMEOUT = 10
+TRUSTED = {"trusted", "managed"}
 
 
-def codex_hook_trust(ask=None):
-    """How Codex itself rates each of HQ's hooks, {event: status}, or None when it cannot say.
-
-    Codex runs a hook only once you trust it in /hooks, and asks again whenever the hook
-    changes. Its own hooks/list answers trusted, untrusted, modified or managed for each; a
-    hook turned off there is "off". This only reads: it starts a Codex app-server for the one
-    question and stops it."""
-    from .usage import READ_ERRORS, ask_over_stdio, codex_binary
-    if ask is None:
+def with_codex(work, call=None):
+    """work(call) against one Codex app-server; None when there is no Codex or it cannot say."""
+    from .usage import READ_ERRORS, codex_binary, codex_over_stdio
+    try:
+        if call:
+            return work(call)
         binary = codex_binary()
         if not binary:
             return None
-        ask = lambda method, params: ask_over_stdio(binary, method, params, TRUST_TIMEOUT)
-    try:
-        result = ask("hooks/list", {"cwds": [str(Path.home())]})
+        with codex_over_stdio(binary, TRUST_TIMEOUT) as call:
+            return work(call)
     except READ_ERRORS:
         return None
+
+
+def listed_hooks(call):
+    """HQ's hooks as Codex lists them, once each: [{event, key, hash, state}]; state "off" when turned off."""
+    result = call("hooks/list", {"cwds": [str(Path.home())]})
     inventories = result.get("data") if isinstance(result, dict) else None
     if not isinstance(inventories, list):
-        return None
+        raise ValueError("Codex listed no hooks")
     found = {}
     for inventory in inventories:
         for hook in inventory.get("hooks", []) if isinstance(inventory, dict) else []:
-            if not is_hq_hook(hook, "codex"):
+            if not is_hq_hook(hook, "codex") or not isinstance(hook.get("key"), str):
                 continue
             event = str(hook.get("eventName") or "")
-            event = event[:1].upper() + event[1:]
-            found[event] = "off" if hook.get("enabled") is False else str(hook.get("trustStatus") or "unknown")
-    return found
+            found[hook["key"]] = {"event": event[:1].upper() + event[1:], "key": hook["key"], "hash": hook.get("currentHash"),
+                                  "state": "off" if hook.get("enabled") is False else str(hook.get("trustStatus") or "unknown")}
+    return list(found.values())
+
+
+def codex_hook_trust(ask=None):
+    """How Codex rates each of HQ's hooks, {event: state}, or None when it cannot say. Only reads."""
+    return with_codex(lambda call: {hook["event"]: hook["state"] for hook in listed_hooks(call)}, ask)
+
+
+def trust_codex_hooks(call=None):
+    """Trust HQ's hooks in Codex, as its /hooks would: save the hash Codex itself computes for each.
+
+    Only HQ's own hooks, only those waiting for review, and never one turned off. Codex then
+    lists them again, and anything it did not keep is an error. Returns {"trusted": events
+    newly trusted, "off": events turned off}, or None when Codex cannot. A Codex app already
+    open keeps the trust it started with until it is reopened."""
+    def work(call):
+        hooks = listed_hooks(call)
+        waiting = [hook for hook in hooks if hook["state"] in {"untrusted", "modified"} and isinstance(hook["hash"], str) and hook["hash"]]
+        if waiting:
+            call("config/batchWrite", {"edits": [{"keyPath": "hooks.state", "mergeStrategy": "upsert",
+                                                  "value": {hook["key"]: {"trusted_hash": hook["hash"]} for hook in waiting}}],
+                                       "reloadUserConfig": True})
+            after = {hook["key"]: hook["state"] for hook in listed_hooks(call)}
+            if any(after.get(hook["key"]) not in TRUSTED for hook in waiting):
+                raise RuntimeError("Codex did not keep the trust")
+        return {"trusted": [hook["event"] for hook in waiting], "off": [hook["event"] for hook in hooks if hook["state"] == "off"],
+                "listed": len(hooks)}
+    return with_codex(work, call)
+
+
+def untrust_codex_hooks(call=None):
+    """Remove the trust Codex keeps for HQ's hooks, while they are still listed; the number removed."""
+    def quoted(key):
+        return '"' + key.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    def work(call):
+        keys = [hook["key"] for hook in listed_hooks(call) if hook["state"] in {"trusted", "modified", "off"}]
+        if keys:
+            call("config/batchWrite", {"edits": [{"keyPath": "hooks.state." + quoted(key), "value": None, "mergeStrategy": "replace"}
+                                                 for key in keys]})
+        return len(keys)
+    return with_codex(work, call)
 
 
 def claude_settings():
