@@ -30,7 +30,8 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot.instant {transition: opacity .2s ease;}
 /* Hovering a circle that changed lately: its label, what happened since when, the last three. */
 .f-spot.log {height: auto; padding: 8px 12px; border-radius: 12px;}
-.f-spot.log > span {display: flex; flex-direction: column; gap: 2px; min-width: 190px; max-width: 340px;}
+/* Wide enough for most agent names beside their tool and time; past that a name ends in "…". */
+.f-spot.log > span {display: flex; flex-direction: column; gap: 2px; min-width: 190px; max-width: 400px;}
 .f-spot.log b {font-weight: 500;}
 .f-spot-sum {margin-bottom: 3px; font-size: 12px; color: var(--muted-foreground);}
 .f-spot-row {display: flex; align-items: baseline; gap: 8px; font-size: 12px;}
@@ -44,10 +45,6 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot-agent .dot {flex: none; width: 6px; height: 6px; transform: translateY(-1px); box-shadow: none;}
 .f-spot-agent .n {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgb(250 250 250 / 0.9);}
 .f-spot-agent small {flex: none; margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--muted-foreground); white-space: nowrap;}
-/* Still too long at the label's width: the name gets its own line, its tool and time under it. */
-.f-spot-agent.two {flex-wrap: wrap;}
-.f-spot-agent.two .n {flex: 1 1 calc(100% - 13px);}
-.f-spot-agent.two small {flex-basis: 100%; margin-left: 13px; padding-left: 0;}
 .f-spot-more {font-size: 11.5px; color: var(--muted-foreground);}
 .f-spot-rule {height: 1px; margin: 5px 0 4px; background: var(--hairline);}
 /* The panel's own tooltip, above everything: macOS draws native ones below the panel's window. */
