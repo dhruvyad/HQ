@@ -437,7 +437,6 @@ function notify({card, badge, dot, history}) {
 <g clip-path="url(#pillClip)">
 <g transform="translate(29 77)"><g>${animate(rail.opacity, 'opacity', loop, 0.004)}${transform(rail.scale, 'scale', loop, 0.002)}<g filter="url(#railBlur)" transform="translate(-29 -77)">
 ${railCircles}
-<g opacity="0">${animate(dotOn, 'opacity', loop, 0.004)}<g transform="translate(${dotAt[0]} ${dotAt[1]})"><g>${transform(rows[0].scale, 'scale', loop, 0.002)}<g transform="translate(${-dotAt[0]} ${-dotAt[1]})">${dot.svg}</g></g></g></g>
 </g></g></g>
 <g transform="translate(37 0)"><g opacity="0">${animate(hero.opacity, 'opacity', loop, 0.004)}${transform(flat(center), 'translate', loop, 0.02)}<g opacity="0">${animate(cardOn, 'opacity', loop, 0.004)}
 <g><g>${transform(hero.scale, 'scale', loop, 0.002)}<circle r="14" fill="#fafafa"/>${numberLayer(heroFrom, card.from)}${numberLayer(heroTo, card.to)}</g></g></g></g></g>
@@ -446,6 +445,8 @@ ${railCircles}
 <text x="0" y="-3.742" fill="#fafafa" font-size="13" font-weight="500">${card.title}</text>
 <text x="0" y="13.148" fill="#a1a1aa" font-size="12">${card.sub}</text></g></g></g>
 </g>
+<!-- The dot sits over the circle's edge and past the capsule, as on the real pill: outside its clip. -->
+<g opacity="0">${animate(dotOn, 'opacity', loop, 0.004)}<g transform="translate(${dotAt[0]} ${dotAt[1]})"><g>${transform(rows[0].scale, 'scale', loop, 0.002)}<g transform="translate(${-dotAt[0]} ${-dotAt[1]})">${dot.svg}</g></g></g></g>
 <g opacity="0">${animate(badgeOn, 'opacity', loop, 0.004)}<g transform="translate(${num(badge.rect.x)} ${num(badge.rect.y + badge.rect.height / 2)})"><g>${transform(badgeScale, 'scale', loop, 0.002)}<g transform="translate(${num(-badge.rect.x)} ${num(-(badge.rect.y + badge.rect.height / 2))})">${badge.svg}</g></g></g></g>
 <g opacity="0">${animate(label, 'opacity', loop, 0.004)}${labelShell(history)}${history.svg}</g>
 <g><g>${transform(new Derived([cursor], ([x, y]) => [x - 3, y - 2]), 'translate', loop, 0.05)}<g filter="url(#cursorShadow)">${CURSOR}</g></g></g>`;

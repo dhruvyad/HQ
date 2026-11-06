@@ -1177,8 +1177,26 @@ function enqueue(events) {
   clearTimeout(enqueue.timer);
   enqueue.timer = setTimeout(runNotice, BURST_WINDOW);
 }
+// The capsule clips only while it changes shape: through a card and its fold, and while its
+// size or corners spring. At rest nothing is cut, so a dot can sit over its edge.
+const RESHAPING = new Set(['width', 'height', 'border-radius', 'border-top-left-radius']);
+function pillReshaping() {
+  return ($('#pill')?.getAnimations?.() || []).some((a) => RESHAPING.has(a.transitionProperty));
+}
+function unclipPill() {
+  if (!notice && !pillReshaping()) $('#pill')?.classList.remove('clip');
+}
+function watchPillShape() {
+  const pill = $('#pill'), mine = (e) => e.target === pill && RESHAPING.has(e.propertyName);
+  pill.addEventListener('transitionrun', (e) => {if (mine(e)) pill.classList.add('clip');});
+  // The animation is still listed while its own end event runs, so look once it has gone.
+  const settle = (e) => {if (mine(e)) requestAnimationFrame(unclipPill);};
+  pill.addEventListener('transitionend', settle);
+  pill.addEventListener('transitioncancel', settle);
+}
 function runNotice() {
   if (notice || !pending.length || floatOpen || drag) return;
+  $('#pill').classList.add('clip');
   const event = coalesce(pending.splice(0));
   const items = attention(), reading = METRICS[event.metric].read(items);
   notice = {...event, reading, from: reading.value === null ? null : reading.value - (event.delta || 0), left: feel.hold};
@@ -1224,6 +1242,7 @@ function foldNotice() {
     $('#note').innerHTML = '';
     layout();
     runNotice();
+    unclipPill();
   }, FOLD_FOR);
 }
 // Opening or dragging takes over at once, and you can see everything from there anyway.
@@ -1238,6 +1257,7 @@ function dropNotices() {
   $('#pill').classList.remove('noting');
   $('#hero').innerHTML = '';
   $('#note').innerHTML = '';
+  requestAnimationFrame(unclipPill);
 }
 
 // Change marks: what the Island said, left behind once it folds. A signed badge stays beside
@@ -2151,6 +2171,7 @@ function bootFloat() {
     e.preventDefault();
   }, true);
   document.addEventListener('keydown', recordPanelKey, true);
+  watchPillShape();
   document.addEventListener('pointerdown', startResize, true);
   document.addEventListener('pointermove', moveResize);
   document.addEventListener('mousemove', (e) => {delete document.body.dataset.keys; cursorAt(e.clientX, e.clientY); tipHover(e.target);});
