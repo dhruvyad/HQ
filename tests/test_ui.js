@@ -1354,10 +1354,12 @@ assert.ok(html.includes('Remove personal@example.com from HQ?') && html.includes
 // and the second line: Claude's note, or Codex's warning without the words the first line says.
 html = run(`usageToastHTML({lead: 'Switched to ', email: 'alexandra@example.com', body: 'Every Claude session moves to it.'}, {label: 'Switch back'})`);
 assert.ok(html.includes('<span class="u-t-lead">Switched to </span><span class="u-t-local" data-full="alexandra">alexandra</span><span class="u-t-domain">@example.com</span>') && html.includes('>Switch back</button>'));
-assert.equal(run(`switchedBody('claude', {note: 'Every open Claude session moves to it at its next message'})`), 'Every open Claude session moves to it at its next message');
-assert.equal(run(`switchedBody('claude', {})`), 'Every Claude session moves to it.');
-assert.equal(run(`switchedBody('codex', {warning: 'Switched to side@example.com. Restart the 2 open Codex sessions to use it.'})`), 'Restart the 2 open Codex sessions to use it.');
-assert.equal(run(`switchedBody('codex', {warning: null, note: ''})`), '');
+const bodies = (tool, reply) => JSON.parse(run(`JSON.stringify(switchedBody('${tool}', ${JSON.stringify(reply)}))`));
+assert.deepEqual(bodies('claude', {note: 'Every open Claude session moves to it at its next message'}), ['Every Claude session moves to it.']); // the short form, always
+assert.deepEqual(bodies('codex', {warning: 'Switched to side@example.com. Restart the 2 open Codex sessions to use it.'}),
+  ['Restart the 2 open Codex sessions to use it.', 'Restart 2 open Codex sessions to use it.', 'Restart 2 Codex sessions to use it.', 'Restart Codex to use it.']);
+assert.deepEqual(bodies('codex', {warning: 'Restart the 1 open Codex session to use it.'}).slice(1, 3), ['Restart 1 open Codex session to use it.', 'Restart 1 Codex session to use it.']);
+assert.deepEqual(bodies('codex', {warning: null, note: ''}), []);
 // Usage is a tab of its own, reached from its circles, keeping the tool you left.
 assert.equal(run("pillTarget('claude')"), 'usage');
 assert.equal(run("pillTarget('codex')"), 'usage');

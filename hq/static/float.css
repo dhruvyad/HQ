@@ -350,7 +350,8 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 .u-card-h h2 {margin: 0; font: 400 20px/1 var(--display); letter-spacing: -0.01em;}
 .u-using {flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--muted-foreground);}
 .u-note {margin: 6px 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground); text-wrap: pretty;}
-.u-row {display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--hairline);}
+/* Tight enough that "5-hour 100% left · back in 4h 59m" stays on one line at the default 380. */
+.u-row {display: flex; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--hairline);}
 .u-mid {flex: 1; min-width: 0; display: flex; flex-direction: column;}
 .u-side {display: flex; align-items: center; gap: 4px; flex: none;}
 .u-who {display: flex; align-items: center; gap: 7px; min-width: 0;}
@@ -365,9 +366,9 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 .u-part {white-space: nowrap;}
 .u-tick {display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap;}
 .u-tick .icon {width: 13px; height: 13px; stroke-width: 2.4;}
-.u-btn {display: inline-flex; align-items: center; justify-content: center; flex: none; height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 13px; font-weight: 500; white-space: nowrap; transition: background .12s;}
+.u-btn {display: inline-flex; align-items: center; justify-content: center; flex: none; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 13px; font-weight: 500; white-space: nowrap; transition: background .12s;}
 .u-btn:hover {background: var(--hover);}
-html.float .u-x {width: 32px; height: 32px;}
+html.float .u-x {width: 28px; height: 28px;}
 /* Rings: what is left as a fill, red at 10% or less, dimmed when the reading is old. */
 .u-ring {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; font: 600 10.5px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;}
 .u-ring svg {position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); fill: none; stroke-width: 3; stroke-linecap: round;}

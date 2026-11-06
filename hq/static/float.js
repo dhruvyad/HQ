@@ -711,15 +711,19 @@ function usageCardHTML(data, tool, f = null) {
 // The notice: what happened in two lines, an address giving way in the middle of its name.
 function usageToastHTML(t, undo) {
   const at = t.email.lastIndexOf('@'), name = at > 0 ? t.email.slice(0, at) : t.email, domain = at > 0 ? t.email.slice(at) : '';
-  return `<div class="u-veil" aria-hidden="true"></div><div class="u-toast" role="status"><span class="u-t-text"><span class="u-sr">${esc(t.lead + t.email)}.</span><strong class="u-t-title" aria-hidden="true" title="${esc(t.email)}"><span class="u-t-lead">${esc(t.lead)}</span><span class="u-t-local" data-full="${esc(name)}">${esc(name)}</span><span class="u-t-domain">${esc(domain)}</span></strong>${t.body ? `<span class="u-t-body">${esc(t.body)}</span>` : ''}</span>${undo ? `<button class="u-btn" type="button" data-u="undo">${esc(undo.label)}</button>` : ''}</div>`;
+  return `<div class="u-veil" aria-hidden="true"></div><div class="u-toast" role="status"><span class="u-t-text"><span class="u-sr">${esc(t.lead + t.email)}.</span><strong class="u-t-title" aria-hidden="true" title="${esc(t.email)}"><span class="u-t-lead">${esc(t.lead)}</span><span class="u-t-local" data-full="${esc(name)}">${esc(name)}</span><span class="u-t-domain">${esc(domain)}</span></strong>${t.body?.length ? `<span class="u-t-body">${esc(t.body[0])}</span>` : ''}</span>${undo ? `<button class="u-btn" type="button" data-u="undo">${esc(undo.label)}</button>` : ''}</div>`;
 }
-// The second line after a switch. Codex's warning is already a sentence that starts by naming
-// the account, which the first line says, so only the rest of it is kept.
+// The second line after a switch, as whole sentences, longest first; the notice keeps the longest
+// that fits on its line, so it is never cut mid-sentence. Claude's is the short form; Codex's
+// warning loses the words the first line already says, then shortens step by step.
 function switchedBody(tool, reply) {
-  if (tool === 'codex' && reply?.warning) return String(reply.warning).replace(/^Switched to \S+\.\s+/, '');
-  return reply?.note || (tool === 'claude' ? 'Every Claude session moves to it.' : '');
-}
-// Reading and acting. Every request carries the token; the accounts API may be missing (an
+  if (tool === 'claude') return ['Every Claude session moves to it.'];
+  if (!reply?.warning) return reply?.note ? [String(reply.note)] : [];
+  const said = String(reply.warning).replace(/^Switched to \S+\.\s+/, '');
+  const n = Number(said.match(/\d+/)?.[0]) || null, them = n === 1 ? 'session' : 'sessions';
+  const shorter = n ? [`Restart ${n} open Codex ${them} to use it.`, `Restart ${n} Codex ${them} to use it.`] : [];
+  return [...new Set([said, ...shorter, 'Restart Codex to use it.'])];
+}// Reading and acting. Every request carries the token; the accounts API may be missing (an
 // older HQ, or the lab), and then the view shows today's readings and offers no actions.
 async function loadAccounts() {
   if (usageView.loading) return usageView.loading;
@@ -737,7 +741,7 @@ function followAccounts() {
 function usageData() {return usageModel(usageView.raw, state.usage);}
 function usageNotice(note) {
   clearTimeout(usageView.timer);
-  usageView.toast = {lead: note.lead, email: note.email, body: note.body};
+  usageView.toast = {lead: note.lead, email: note.email, body: [].concat(note.body || [])};
   usageView.undo = note.undo || null;
   render();
   usageView.timer = setTimeout(dismissUsageNotice, 9000);
@@ -869,6 +873,9 @@ function afterUsage() {
   const note = $('#main .u-toast'), veil = $('#main .u-veil');
   if (!note) {usageView.shown = null; return;}
   fitAddress($('#main .u-t-local'));
+  // The longest whole sentence that fits on the second line.
+  const body = $('#main .u-t-body'), forms = usageView.toast?.body || [];
+  for (let n = 1; body && n < forms.length && body.scrollWidth > body.clientWidth + 0.5; n += 1) body.textContent = forms[n];
   veil.style.height = `${8 + note.offsetHeight + 24}px`;
   if (usageView.shown !== usageView.toast && !calm()) {
     note.animate([{opacity: 0, transform: 'translateY(14px) scale(.97)'}, {opacity: 1, transform: 'none'}], {duration: 460, easing: spring('--f-spring')});
