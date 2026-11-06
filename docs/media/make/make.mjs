@@ -166,8 +166,9 @@ function roundPng(input, output, radius) {
 }
 
 // Screencast frames arrive with their times, about 60 a second; space them evenly and keep every
-// pixel as animated WebP: full colour, so gradients never band. Lossy at q95 tracks the source
-// closely; a clip that dims the whole screen trails under lossy blending, so that one is lossless.
+// pixel as animated WebP: full colour, so gradients never band. Both clips are lossless: lossy
+// frames are blended onto the last, and what a fade leaves behind lingers as ghosts of old shapes
+// (lossless costs the hero about a third more, 4.7 MB against 3.4).
 function webp(frames, out, {width, height, lossless = false}) {
   const {times, end} = JSON.parse(readFileSync(join(frames, 'times.json'), 'utf8'));
   const hold = end - times[times.length - 1];
@@ -242,7 +243,7 @@ const TAKES = {
     await s.wait(900);
     await s.glide(680, 530, 900);
     await s.wait(1200);
-  }, 'hero.webp'),
+  }, 'hero.webp', {lossless: true}),
 
   // The pill's own clips, hover and notifications, drawn as animated SVG (vector.mjs).
   clips: async () => console.log((await drawAll(() => capturePill({startHQ, stage}))).join(', ')),

@@ -49,8 +49,9 @@ inbox and a free port, in headless Chrome, so it never touches your inbox, your 
 agent.
 
 - **`hero.webp`, `drag.webp`**: recorded at 2x and about 60 frames a second, then evened out to 30
-  and encoded as animated WebP: the hero lossy at q95, the drag lossless, because lossy blending
-  leaves trails over its dimmed screen. The fake desktop is laid out in display points and zoomed
+  and encoded as lossless animated WebP. Lossy frames are blended onto the one before, which
+  leaves ghosts of old shapes behind after a fade; lossless costs the hero about a third more
+  (4.7 MB against 3.4). The fake desktop is laid out in display points and zoomed
   2x as a whole, since a screencast only sends frames at the page's CSS size.
 - **`glance.svg`, `notify.svg`**: the pill's own clips, drawn as animated SVG by `vector.mjs`. They
   stay sharp at any zoom and weigh a few kilobytes. What the page says (each circle's label, the
