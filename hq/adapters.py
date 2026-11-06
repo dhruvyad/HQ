@@ -13,6 +13,9 @@ from .presence import codex_activity, codex_source
 # A reading stands CODEX_LEASE seconds, several syncs, so a slow one never blinks a thread to unknown.
 CODEX_SYNC = 10
 CODEX_LEASE = 30
+# Nothing listens at the runtime's socket: it quit, or ChatGPT was opened without it (an update or the
+# Dock bypass Codex + HQ). Failing here is before anything is sent, so the message is certainly undelivered.
+UNREACHABLE = (FileNotFoundError, ConnectionRefusedError)
 
 
 def sync_codex(store, client, endpoint=None):
@@ -156,6 +159,9 @@ class Dispatcher:
         for endpoint in self.store.codex_endpoints():
             try:
                 sync_codex(self.store, self.client(endpoint), endpoint)
+            except UNREACHABLE:
+                self.store.unbind_codex(endpoint)
+                self.store.expire_activity(codex_source(endpoint))
             except (RuntimeError, ValueError, OSError):
                 client = self.clients.pop(endpoint, None)
                 if client:
@@ -172,7 +178,13 @@ class Dispatcher:
                 if question:
                     endpoint = question["endpoint"]
                     try:
-                        self.client(endpoint).deliver(question["external_id"],
+                        client = self.client(endpoint)
+                    except UNREACHABLE:
+                        self.store.unbind_codex(endpoint)
+                        self.store.comment_delivery(question["id"], "pending")
+                        continue
+                    try:
+                        client.deliver(question["external_id"],
                             f"Human clarification from HQ\nItem: {question['title']}\nQuestion: {question['text']}\n"
                             f"Reply using hq_comment_reply with session_id {question['session_id']} and comment_id {question['id']}. "
                             "This clarification does not resolve the original item.")
@@ -187,7 +199,14 @@ class Dispatcher:
                 continue
             endpoint = reply["endpoint"]
             try:
-                self.client(endpoint).deliver(reply["external_id"],
+                client = self.client(endpoint)
+            except UNREACHABLE:
+                # Nothing was sent, so the reply waits for the conversation's next hook instead of failing.
+                self.store.unbind_codex(endpoint)
+                self.store.delivery_result(reply["id"], "pending")
+                continue
+            try:
+                client.deliver(reply["external_id"],
                     f"Human response from HQ\nItem: {reply['item_id']}\nQuestion: {reply['title']}\nAnswer: {reply['text']}\n"
                     f"After reading, acknowledge with hq_acknowledge using session_id {reply['session_id']} "
                     f"and item_id {reply['item_id']}, or hq ack {reply['item_id']} --session {reply['session_id']}. "

@@ -518,6 +518,59 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(self.store.item(item["id"])["asking"])
         self.assertIsNone(self.store.item(item["id"])["answer"])
 
+    def test_gone_runtime_hands_replies_to_hooks_instead_of_failing(self):
+        # ChatGPT reopened without Codex + HQ: its old runtime socket is gone, so nothing could be sent.
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        question = self.store.ask_agent(self.question()["id"], "Why annual?")
+        for message in ("reply", "question"):
+            self.store.bind_codex("a", "thread-a", "/tmp/gone/runtime.sock")
+            dispatcher = Dispatcher(self.store)
+            dispatcher.next_sync = float("inf")  # the delivery path alone, before a sync could unbind
+            def gone(*args, **kwargs):
+                dispatcher.stop.set()
+                raise FileNotFoundError(2, "No such file or directory")
+            with patch("hq.adapters.CodexClient", side_effect=gone) as constructor:
+                dispatcher.run()
+            constructor.assert_called_once()
+            session = self.store.session("a")
+            self.assertEqual((session["route"], session["endpoint"]), ("inbox", None), message)
+        self.assertEqual([r["state"] for r in self.store.inbox("a")], ["pending"])
+        self.assertEqual(self.store.comment(question["id"])["state"], "pending")
+        replies, questions = self.store.claim_hook_messages("a")
+        self.assertEqual([r["text"] for r in replies], ["Annual"])
+        self.assertEqual([q["id"] for q in questions], [question["id"]])
+        # Opening it through Codex + HQ again binds it anew.
+        self.store.bind_codex("a", "thread-a", "/tmp/gone/runtime.sock")
+        self.assertEqual(self.store.session("a")["route"], "codex")
+
+    def test_sync_unbinds_conversations_whose_runtime_is_gone(self):
+        self.store.bind_codex("a", "thread-a", "/tmp/gone/runtime.sock")
+        self.store.register("c", "Elsewhere", "codex")
+        self.store.bind_codex("c", "thread-c", "/tmp/live/runtime.sock")
+        dispatcher = Dispatcher(self.store)
+        with patch.object(self.store, "codex_endpoints", return_value=["/tmp/gone/runtime.sock"]), \
+             patch("hq.adapters.CodexClient", side_effect=ConnectionRefusedError(61, "Connection refused")):
+            dispatcher.refresh()
+        self.assertEqual(self.store.session("a")["route"], "inbox")
+        self.assertEqual(self.store.session("c")["route"], "codex")  # another runtime's conversation keeps its route
+
+    def test_a_failure_after_connecting_still_fails_rather_than_resend(self):
+        self.store.bind_codex("a", "thread-a", "/tmp/test.sock")
+        item = self.question()
+        self.store.reply(item["id"], "Annual")
+        dispatcher = Dispatcher(self.store)
+        dispatcher.next_sync = float("inf")
+        client = Mock()
+        def broke(*_):
+            dispatcher.stop.set()
+            raise RuntimeError("Codex did not acknowledge turn/start; check the conversation before retrying")
+        client.deliver.side_effect = broke
+        with patch("hq.adapters.CodexClient", return_value=client):
+            dispatcher.run()
+        self.assertEqual(self.store.inbox("a")[0]["state"], "failed")
+        self.assertEqual(self.store.session("a")["route"], "codex")
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
