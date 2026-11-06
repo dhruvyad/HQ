@@ -90,7 +90,8 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-pill.noting .f-hero {opacity: 1; transform: translateY(-50%) scale(1.25); transition-delay: .1s;}
 .f-note {position: absolute; left: 58px; right: 18px; top: 50%; display: flex; flex-direction: column; text-align: left; opacity: 0; transform: translateY(calc(-50% + 8px)); transition: opacity .16s ease, transform .3s ease;}
 .f-pill.noting .f-note {opacity: 1; transform: translateY(-50%); transition: opacity .3s ease .16s, transform .55s var(--f-soft, ease) .12s;}
-.f-note-title {overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 500; line-height: 1.3;}
+/* Room on the left for a status dot's halo, which the clipping would otherwise cut; the text stays put. */
+.f-note-title {margin-left: -4px; padding-left: 4px; overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 500; line-height: 1.3;}
 .f-note-sub {margin-top: 1px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 1.3; color: var(--muted-foreground);}
 .f-dot {display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; vertical-align: 1px;}
 .f-dot.on {background: var(--live); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.16);}

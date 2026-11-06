@@ -93,6 +93,8 @@ class HookTests(unittest.TestCase):
         values = []
         handle("claude-code", self.event("SessionStart"), self.store, values.append)
         self.assertIn(self.sid, values[0]["hookSpecificOutput"]["additionalContext"])
+        # Every conversation is told, in plain words, to ask the user's decisions in HQ.
+        self.assertIn("ask it in HQ", values[0]["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(self.store.session(self.sid)["name"], "Keep this conversation title")
         handle("codex", self.event("UserPromptSubmit"), self.store, values.append)
         self.assertEqual(self.store.session("codex:one")["provider"], "codex")
