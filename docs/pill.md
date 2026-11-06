@@ -27,7 +27,10 @@ opens that item.
 
 Shortcuts work from any app and need no permissions. `⌃⌥H` opens Needs you and minimizes it
 again, keeping your place and draft. `⌃⌥J` and `⌃⌥K` move through items, and `⌃⌥D` opens the
-dashboard. All of them can be changed or cleared in the panel.
+dashboard. All of them can be changed or cleared in the panel, and each can have several keys.
+A key can also be modifiers alone, such as `⌃` with left `⌥` (sides count): it fires when you let
+go, and only if no other key, click or scroll came in between, so `⌃⌥J` or `⌃`-click never set it off.
+One left-hand modifier alone is refused, since it is tapped too often in passing.
 
 Usage comes only from what each tool itself reports, and a circle with no source stays
 empty rather than guessing. Codex works with nothing to set up. For Claude there are two

@@ -16,7 +16,7 @@ use, puts the pill on screen and opens the dashboard. It shows each change befor
 
 Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
 in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
-The agent picks up your reply.
+The agent picks up your reply, along with any screenshot or file you paste or drop in.
 
 ## What it does
 
@@ -54,7 +54,9 @@ shows over fullscreen apps too.
 
 <img src="docs/media/settings.png" width="380" alt="The pill's settings: which circles show and in what order, what to be told about, and keyboard shortcuts.">
 
-Choose the circles and their order, what it tells you about, and shortcuts that work from any app.
+Choose the circles, their order and the pill's size, what it tells you about, and shortcuts that
+work from any app: several per action, even modifiers alone such as `⌃` with left `⌥`. Inside the
+panel, the arrow keys move between items.
 
 ### Everything in one place
 

@@ -507,7 +507,7 @@ function keyRowHTML(kind, action, name, keys, defaults, same) {
 }
 function shortcutsHTML() {
   const rows = Object.entries(SHORTCUTS).map(([action, entry]) => keyRowHTML('global', action, entry.name, shortcuts[action], SHORTCUTS, sameHotkey)).join('');
-  return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. While recording, Delete clears a key and Escape cancels.</p>`;
+  return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. Modifiers alone work too: press ⌃ and left ⌥ together, then let go. While recording, Delete clears a key and Escape cancels.</p>`;
 }
 function panelKeysHTML() {
   const rows = Object.entries(PANEL_KEYS).map(([action, entry]) => keyRowHTML('panel', action, entry.name, panelKeys[action], PANEL_KEYS)).join('');

@@ -1274,6 +1274,11 @@ assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanPanelKeys({open: ['Enter', 
 // What the window registers: every key of every action.
 assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [KH, KX], next: [KJ], customize: []}))`)),
   [{action: 'toggle', keyCode: 4, modifiers: 6144}, {action: 'toggle', keyCode: 7, modifiers: 6144}, {action: 'next', keyCode: 38, modifiers: 6144}]);
+// Modifiers alone (⌃ with left ⌥) are kept and registered like any key, and never match ⌃⌥ with a key.
+const KMOD = {keyCode: -1, modifiers: 786465, label: '⌃ + left ⌥'};
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanShortcuts({toggle: [KH, ${JSON.stringify(KMOD)}]}))`)).toggle, [KH, KMOD]);
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [${JSON.stringify(KMOD)}]}))`)), [{action: 'toggle', keyCode: -1, modifiers: 786465}]);
+assert.equal(run(`sameHotkey(${JSON.stringify(KMOD)}, KH_)`.replace('KH_', JSON.stringify(KH))), false);
 // Panel keys find their action in any of its keys.
 run(`savedPanelKeys = panelKeys; panelKeys = cleanPanelKeys({open: ['ArrowRight', 'Enter', 'l']})`);
 assert.deepEqual(['l', 'Enter', 'ArrowRight', 'Escape', 'q'].map((k) => run(`panelAction('${k}', 'list')`)), ['open', 'open', 'open', 'back', null]);
