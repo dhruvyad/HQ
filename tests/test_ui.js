@@ -493,6 +493,11 @@ run(`realApi = api; api = () => new Promise(() => {}); realRender = render; rend
 run(`archiveAgents(['c:nofolder'], true)`);
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(!html.includes('data-agent="c:nofolder"') && html.includes('data-archived') && html.includes('1 archived'));
+// Opened, each archived agent has Restore; not f-back, the panel's card behind, which is kept hidden.
+run('agentsArchived = true');
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<button class="f-restore" type="button" data-unarchive="c:nofolder">Restore</button>') && !/class="f-back"[^>]*data-unarchive/.test(html));
+run('agentsArchived = false');
 run(`state.sessions.find((s) => s.id === 'c:nofolder').archived = 0; api = realApi; render = realRender`);
 run("agentOpen = 'c:done'");
 html = run('agentsPanelHTML(attention(), true)');

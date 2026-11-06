@@ -602,7 +602,7 @@ function agentsPanelHTML(items, live = liveHealthy) {
     const running = f.agents.filter((a) => a.state === 'active').length;
     const count = shut ? `<span class="f-fold-n">${f.agents.length} ${f.agents.length === 1 ? 'agent' : 'agents'}${running ? ` · ${running} running` : ''}</span>` : '';
     const all = spare.length > 1 && !shut ? `<button class="f-away-all" type="button" data-archive="${esc(spare.map((a) => a.id).join(' '))}" title="Archive the ${spare.length} with nothing open">Archive ${spare.length}</button>` : '';
-    const rows = restore ? f.agents.map((a) => agent(a, `<button class="f-back" type="button" data-unarchive="${esc(a.id)}">Restore</button>`, `${esc(a.harness)} · ${esc(lastRan(a))}`)) : f.agents.map((a) => agent(a));
+    const rows = restore ? f.agents.map((a) => agent(a, `<button class="f-restore" type="button" data-unarchive="${esc(a.id)}">Restore</button>`, `${esc(a.harness)} · ${esc(lastRan(a))}`)) : f.agents.map((a) => agent(a));
     return `<div class="f-folder${shut ? ' shut' : ''}"><div class="f-top"><button class="f-fold" type="button" data-agent-fold="${esc(key)}" aria-expanded="${!shut}"><span class="f-name">${esc(f.name)}</span>${icon('down', 'sm')}</button>${count}${all}${f.running && !shut ? '<span class="f-run">running</span>' : ''}</div>${shut ? '' : rows.join('')}</div>`;
   };
   let body;
@@ -1093,7 +1093,9 @@ function slideList(motion) {
   if (!motion || calm()) return;
   $('#main').animate([{opacity: 0, transform: `translateX(${motion === 'push' ? 24 : -24}px)`}, {opacity: 1, transform: 'none'}], {duration: 320, easing: spring('--f-soft')});
 }
-// While the list stays put, agents that move between folders glide to their new place.
+// While the list stays put, agents that move by themselves glide to their new place. After your own
+// change the next paint sets stillNext, so nothing springs under your hand.
+let stillNext = false;
 const agentTops = () => new Map([...document.querySelectorAll('#main [data-agent]')].map((el) => [el.dataset.agent, el.getBoundingClientRect().top]));
 function glideAgents(before) {
   if (!before || calm()) return;
@@ -1127,7 +1129,9 @@ function paintFloat({background = false} = {}) {
   setHTML($('#rail'), pillHTML(items, live, markMap()));
   rollChanged(items);
   pill.setAttribute('aria-label', pillLabel(items, live));
-  const tops = !listMotion && listView === 'agents' ? agentTops() : null;
+  // Agents glide only when they move by themselves; what you just did (fold, archive) lands at once.
+  const tops = !listMotion && listView === 'agents' && !stillNext ? agentTops() : null;
+  stillNext = false;
   const finding = document.activeElement?.matches?.('[data-g-q]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const sheet = keepSheet();
   setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'usage' ? usagePanelHTML(live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
@@ -2124,10 +2128,10 @@ function bootFloat() {
     else if (shift && !shift.disabled) setCircles(moveCircle(circles, shift.dataset.id, Number(shift.dataset.circleMove)));
     else if (e.target.closest('[data-view]')) showList(e.target.closest('[data-view]').dataset.view);
     // Inside an agent's row, so before opening it: archive, restore, fold.
-    else if (e.target.closest('[data-archive]')) archiveAgents(e.target.closest('[data-archive]').dataset.archive.split(' '), true);
-    else if (e.target.closest('[data-unarchive]')) archiveAgents([e.target.closest('[data-unarchive]').dataset.unarchive], false);
-    else if (e.target.closest('[data-agent-fold]')) {toggleAgentFold(e.target.closest('[data-agent-fold]').dataset.agentFold); render();}
-    else if (e.target.closest('[data-archived]')) {agentsArchived = !agentsArchived; render();}
+    else if (e.target.closest('[data-archive]')) {stillNext = true; archiveAgents(e.target.closest('[data-archive]').dataset.archive.split(' '), true);}
+    else if (e.target.closest('[data-unarchive]')) {stillNext = true; archiveAgents([e.target.closest('[data-unarchive]').dataset.unarchive], false);}
+    else if (e.target.closest('[data-agent-fold]')) {stillNext = true; toggleAgentFold(e.target.closest('[data-agent-fold]').dataset.agentFold); render();}
+    else if (e.target.closest('[data-archived]')) {stillNext = true; agentsArchived = !agentsArchived; render();}
     else if (e.target.closest('[data-agent]')) showList('agents', e.target.closest('[data-agent]').dataset.agent);
     else if (e.target.closest('[data-back]')) backToList();
     else if (e.target.closest('[data-pill-size]')) {
@@ -2153,7 +2157,7 @@ function bootFloat() {
       render();
     } else if (e.target.closest('[data-move-key]')) moveKey();
     else if (e.target.closest('[data-move-cancel]')) {keyConflict = null; render();}
-    else if (e.target.closest('[data-agents-all]')) {agentsAll = true; render();}
+    else if (e.target.closest('[data-agents-all]')) {stillNext = true; agentsAll = true; render();}
     else if (e.target.closest('[data-agent-dashboard]')) openDashboard(href({page: 'agent', agent: e.target.closest('[data-agent-dashboard]').dataset.agentDashboard, lane: 'you', item: null}));
     else if (row) openItem(row.dataset.item);
     else if (inner) {
