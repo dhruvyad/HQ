@@ -196,6 +196,13 @@ class Store:
                        (required(external_id, "thread id", 200), endpoint, id))
         return self.session(id)
 
+    def unbind_codex(self, endpoint):
+        """Nothing listens at this runtime any more (it quit, or ChatGPT was opened without it), so its
+        conversations take replies through their hooks again. A runtime that lists them later binds them anew."""
+        with self.db() as db:
+            db.execute("UPDATE sessions SET route='inbox',endpoint=NULL WHERE route='codex' AND COALESCE(endpoint,'')=?",
+                       (endpoint or "",))
+
     def session(self, id):
         with self.db() as db:
             row = db.execute("SELECT * FROM sessions WHERE id=?", (id,)).fetchone()
