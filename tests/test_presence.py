@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from hq.adapters import Dispatcher
 from hq.hooks import handle
-from hq.presence import ClaudePresence, codex_activity, codex_source
+from hq.presence import RENEW, ClaudePresence, codex_activity, codex_source
 from hq.store import Store
 from hq.stream import StateFeed
 
@@ -25,6 +25,10 @@ class PresenceTests(unittest.TestCase):
 
     def activity(self, sid):
         return next(s["activity"]["state"] for s in self.store.snapshot()["sessions"] if s["id"] == sid)
+
+    def collector(self, **kw):
+        # A folder that doesn't exist: no status files, so the inventory is asked every sample.
+        return ClaudePresence(self.store, folder=Path(self.temp.name) / "no-sessions", **kw)
 
     def test_connection_is_not_evidence_of_active_or_idle_and_leases_expire(self):
         self.store.heartbeat("claude-code:a", "channel")
@@ -48,7 +52,7 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(self.activity("claude-code:a"), "offline")
 
     def test_claude_native_status_is_exact_session_live_metadata_without_claiming_delivery(self):
-        collector = ClaudePresence(self.store)
+        collector = self.collector()
         records = [{"sessionId":"a", "pid":123, "name":"Do not overwrite title", "status":"busy"},
                    {"sessionId":"new", "pid":124, "name":"Live chat", "status":"idle"},
                    {"sessionId":"dead", "pid":125, "status":"busy"},
@@ -73,7 +77,7 @@ class PresenceTests(unittest.TestCase):
 
     def test_collector_timeout_invalidates_live_status(self):
         self.store.observe_activity("claude-code:a", "active", "claude-live")
-        collector = ClaudePresence(self.store)
+        collector = self.collector()
         def stop(*args, **kwargs):
             collector.stop.set()
             raise subprocess.TimeoutExpired("claude", 2)
@@ -82,7 +86,7 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(self.activity("claude-code:a"), "unknown")
 
     def test_inaccessible_or_unattached_process_is_unknown_not_offline(self):
-        collector = ClaudePresence(self.store)
+        collector = self.collector()
         self.store.observe_activity("claude-code:a", "idle", "claude-live")
         with patch("hq.presence.subprocess.run", return_value=Mock(stdout='[{"sessionId":"a","pid":123,"status":"idle"}]')), patch("hq.presence.os.kill", side_effect=PermissionError()):
             collector.sample()
@@ -153,6 +157,81 @@ class PresenceTests(unittest.TestCase):
         feed.publish()
         self.assertEqual(feed.version, version)
 
+class QuietTests(unittest.TestCase):
+    """HQ runs all day: nothing may cost CPU or wake the feed unless something changed."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name) / "hq.sqlite3")
+        self.folder = Path(self.temp.name) / "sessions"
+        self.folder.mkdir()
+        self.now = 1000.0
+
+    def write(self, pid, sid, status):
+        (self.folder / f"{pid}.json").write_text(json.dumps({"pid": pid, "sessionId": sid, "cwd": "/tmp", "name": sid, "status": status}))
+
+    def states(self):
+        return {s["id"]: s["activity"]["state"] for s in self.store.snapshot()["sessions"]}
+
+    def test_status_files_are_read_and_claude_is_started_only_for_background_agents(self):
+        me = os.getpid()
+        self.write(me, "busy-one", "busy")
+        self.write(999999, "gone", "busy")  # its process has exited
+        (self.folder / "half.json").write_text('{"pid": 1, "sess')  # caught mid-write
+        presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)
+        inventory = Mock(return_value=Mock(stdout="[]"))
+        with patch("hq.presence.subprocess.run", inventory):
+            for _ in range(5):
+                presence.sample()
+                self.now += 1
+        self.assertEqual(self.states(), {"claude-code:busy-one": "active"})
+        self.assertEqual(inventory.call_count, 1)  # once, then every BACKGROUND seconds, not every second
+        self.now += 20
+        with patch("hq.presence.subprocess.run", inventory):
+            presence.sample()
+        self.assertEqual(inventory.call_count, 2)
+        self.write(me, "busy-one", "idle")
+        with patch("hq.presence.subprocess.run", inventory):
+            presence.sample()
+        self.assertEqual(self.states(), {"claude-code:busy-one": "idle"})
+
+    def test_an_unchanged_state_is_written_only_to_renew_it(self):
+        self.write(os.getpid(), "steady", "busy")
+        presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)
+        with patch("hq.presence.subprocess.run", return_value=Mock(stdout="[]")), \
+                patch.object(self.store, "observe_activity", wraps=self.store.observe_activity) as observed:
+            for _ in range(RENEW):
+                presence.sample()
+                self.now += 1
+            self.assertEqual(observed.call_count, 1)
+            presence.sample()  # RENEW seconds on: renewed, well inside its lease
+            self.assertEqual(observed.call_count, 2)
+
+    def test_marking_a_missing_session_offline_happens_once(self):
+        self.store.register("claude-code:a", "A", "claude-code")
+        self.store.observe_activity("claude-code:a", "idle", "claude-live")
+        self.store.expire_activity("claude-live", missing=set())
+        with self.store.db() as db:
+            before = db.execute("SELECT observed FROM activity").fetchone()[0]
+        self.store.expire_activity("claude-live", missing=set())
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT observed FROM activity").fetchone()[0], before)  # not written again
+        self.assertEqual(self.states()["claude-code:a"], "offline")
+
+    def test_the_feed_stays_live_without_rebuilding_when_nothing_changes(self):
+        feed = StateFeed(self.store)
+        self.addCleanup(feed.close)
+        time.sleep(0.6)
+        with patch.object(feed, "publish", wraps=feed.publish) as rebuilt:
+            time.sleep(1.5)
+            self.assertEqual(rebuilt.call_count, 0)
+        self.assertLess(time.monotonic() - feed.last_success, 1)  # clients still see a healthy feed
+        Store(self.store.path).register("claude-code:new", "New", "claude-code")
+        version, _ = feed.wait(feed.version, timeout=2)
+        self.assertTrue(any(s["id"] == "claude-code:new" for s in json.loads(feed.payload)["sessions"]))
+
+
 class ActivityTimesTests(unittest.TestCase):
     """When a state began, and when an agent last ran, survive the every-second observations."""
 
@@ -207,7 +286,7 @@ class BackgroundSessionTests(unittest.TestCase):
     def test_dispatched_background_sessions_report_state_not_status(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "hq.sqlite3")
-            presence = ClaudePresence(store)
+            presence = ClaudePresence(store, folder=Path(temp) / "no-sessions")
             rows = [{"sessionId": "bg", "pid": os.getpid(), "kind": "background", "name": "Convert videos", "state": "blocked", "cwd": "/tmp"},
                     {"sessionId": "bg2", "pid": os.getpid(), "kind": "background", "name": "Write docs", "state": "running", "cwd": "/tmp"}]
             with patch("hq.presence.subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(rows))):

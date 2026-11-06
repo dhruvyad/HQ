@@ -8,6 +8,12 @@ import time
 from .websocket import UnixWebSocket
 from .presence import codex_activity, codex_source
 
+# The Codex app pushes each thread's status as it changes, so the full inventory (a call per thread,
+# and a rewrite of each) only has to catch threads opening and closing: every CODEX_SYNC seconds.
+# A reading stands CODEX_LEASE seconds, several syncs, so a slow one never blinks a thread to unknown.
+CODEX_SYNC = 10
+CODEX_LEASE = 30
+
 
 def sync_codex(store, client, endpoint=None):
     """Only an owning server's runtime inventory establishes a binding."""
@@ -26,7 +32,7 @@ def sync_codex(store, client, endpoint=None):
                 store.register(sid, name or thread_id, "codex", thread_id, thread.get("cwd"))
                 store.bind_codex(sid, thread_id, endpoint)
                 store.heartbeat(sid, "codex")
-                store.observe_activity(sid, codex_activity(thread.get("status")), codex_source(endpoint), lease=8, observed=requested)
+                store.observe_activity(sid, codex_activity(thread.get("status")), codex_source(endpoint), lease=CODEX_LEASE, observed=requested)
                 ids.append(sid)
             except (RuntimeError, ValueError) as error:
                 warnings.append(f"A thread could not be bound: {error}")
@@ -136,7 +142,7 @@ class Dispatcher:
                 try:
                     session = self.store.session(sid)
                     if session["route"] == "codex" and session["endpoint"] == endpoint:
-                        self.store.observe_activity(sid, codex_activity(params.get("status")), source, lease=8)
+                        self.store.observe_activity(sid, codex_activity(params.get("status")), source, lease=CODEX_LEASE)
                 except ValueError:
                     pass
             self.clients[endpoint] = CodexClient(endpoint, on_event=observe,
@@ -146,7 +152,7 @@ class Dispatcher:
     def refresh(self):
         if time.monotonic() < self.next_sync:
             return
-        self.next_sync = time.monotonic() + 2
+        self.next_sync = time.monotonic() + CODEX_SYNC
         for endpoint in self.store.codex_endpoints():
             try:
                 sync_codex(self.store, self.client(endpoint), endpoint)

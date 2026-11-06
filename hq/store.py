@@ -20,6 +20,7 @@ ROUTES = {"inbox", "codex"}
 # next agent in the same project may adopt it.
 SETTLES = {"skip", "done"}   # your closes that end once the agent has heard them
 STOPPED_AFTER = 300          # offline this long: the agent stopped before acting
+OFFLINE_FOR = 3600           # a session gone from a live inventory stays offline this long unless seen again
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 
@@ -243,20 +244,25 @@ class Store:
                        (session_id, source, state, at, now + lease, priority, at, at if state == "active" else None))
 
     def expire_activity(self, source, missing=None, before=None):
+        """Without an inventory, what a source said is unknown; with one, a session missing from it is
+        offline. Observers call this every second, so a row already marked, with time left, is not
+        written again: each write wakes the feed, which rebuilds the whole inbox."""
+        now = time.time()
         with self.db() as db:
             if missing is None:
-                now = time.time()
                 db.execute("UPDATE activity SET since=CASE WHEN state='unknown' THEN since ELSE ? END,"
-                           "state='unknown',observed=?,expires=? WHERE source=?", (now, now, now+6, source))
+                           "state='unknown',observed=?,expires=? WHERE source=? AND NOT (state='unknown' AND expires>?)",
+                           (now, now, now+6, source, now+2))
             else:
-                for row in db.execute("SELECT session_id,observed FROM activity WHERE source=?", (source,)).fetchall():
-                    if row["session_id"] not in missing and (before is None or row["observed"] <= before):
-                        # A successful live inventory confirms this runtime no longer owns it.
-                        self_id = row["session_id"]
-                        now = time.time()
-                        db.execute("UPDATE activity SET since=CASE WHEN state='offline' THEN since ELSE ? END,"
-                                   "state='offline',observed=?,expires=? WHERE source=? AND session_id=?",
-                                   (now, now, now+6, source, self_id))
+                for row in db.execute("SELECT session_id,observed,state,expires FROM activity WHERE source=?", (source,)).fetchall():
+                    if row["session_id"] in missing or (before is not None and row["observed"] > before):
+                        continue
+                    if row["state"] == "offline" and row["expires"] > now + 60:
+                        continue
+                    # A successful live inventory confirms this runtime no longer owns it.
+                    db.execute("UPDATE activity SET since=CASE WHEN state='offline' THEN since ELSE ? END,"
+                               "state='offline',observed=?,expires=? WHERE source=? AND session_id=?",
+                               (now, now, now+OFFLINE_FOR, source, row["session_id"]))
 
     def attach_activity(self, sessions):
         now, observations = time.time(), {}
