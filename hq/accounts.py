@@ -182,7 +182,8 @@ def codex_times(auth):
 
 
 class Keychain:
-    """`/usr/bin/security`, with every secret on stdin and never in argv."""
+    """`/usr/bin/security`, with every secret on stdin. The one exception is Claude Code's own
+    login when it outgrows what stdin takes: that goes in argv, as Claude Code itself writes it."""
 
     def __init__(self, run=subprocess.run, user=None):
         self.run, self.user = run, user or claude_user()
@@ -210,14 +211,18 @@ class Keychain:
             raise AccountError("That Keychain name can't be written safely")
         return f'add-generic-password -U -a "{account}" -s "{service}" -X "{secret.encode().hex()}"\n'
 
-    def fits(self, service, account, secret):
-        return len(self.line(service, account, secret)) <= LINE_LIMIT
-
-    def write(self, service, account, secret):
+    def write(self, service, account, secret, large=False):
+        """`large` lets a secret past stdin's limit go in argv, where programs running as you
+        can see it for the moment `security` runs. Claude Code does the same with its own
+        login once MCP and plugin logins make it that big ("exceeds security -i stdin limit;
+        using argv"), so HQ allows it for that item only; its own items are chunked instead."""
         line = self.line(service, account, secret)
-        if len(line) > LINE_LIMIT:
+        if len(line) <= LINE_LIMIT:
+            done = self.call(["-i"], stdin=line)
+        elif large:
+            done = self.call(["add-generic-password", "-U", "-a", account, "-s", service, "-X", secret.encode().hex()])
+        else:
             raise AccountError("That login is too large to save safely")
-        done = self.call(["-i"], stdin=line)
         if done.returncode:
             raise AccountError("The Keychain refused to save a login")
         back = self.read(service, account)
@@ -685,9 +690,6 @@ class Accounts:
             after = {k: v for k, v in login.items() if k not in CLAUDE_BOUND}
             after.update(saved["login"])
             text = dumps(after)
-            # Writing it any other way would put the login in the process list.
-            if not self.keychain.fits(item, user, text):
-                raise AccountError("Claude Code's saved login is too large for HQ to switch safely")
             # Keep the outgoing account's freshest login. A refresh may have been under way,
             # so it is kept anyway and marked in case it needs a fresh sign-in later.
             if outgoing:
@@ -695,7 +697,7 @@ class Accounts:
                 renewing = ".oauth_refresh.lock" in missed or (expires is not None and expires - now() < RENEWING)
                 self.save_claude(login, config.get("oauthAccount"), stale=renewing)
             try:
-                self.keychain.write(item, user, text)
+                self.keychain.write(item, user, text, large=True)
             except AccountError:
                 self.restore_item(before)
                 raise AccountError("Claude Code's login could not be switched; it is unchanged") from None
@@ -720,7 +722,7 @@ class Accounts:
         item, user = self.places.claude_item, self.keychain.user
         try:
             if before:
-                self.keychain.write(item, user, before)
+                self.keychain.write(item, user, before, large=True)
             else:
                 self.keychain.delete(item, user)
         except AccountError:

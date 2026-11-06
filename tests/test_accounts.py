@@ -59,6 +59,12 @@ class FakeSecurity:
             self.items[(account, service)] = value + ("x" if service in self.corrupt else "")
             return done()
         account, service = args[args.index("-a") + 1], args[args.index("-s") + 1]
+        if args[0] == "add-generic-password":  # a secret in argv: only Claude Code's own large login
+            assert args[1] == "-U"
+            if service in self.fail:
+                return done(1)
+            self.items[(account, service)] = bytes.fromhex(args[args.index("-X") + 1]).decode()
+            return done()
         if args[0] == "find-generic-password":
             return done(0, self.items[(account, service)] + "\n") if (account, service) in self.items else done(44)
         if args[0] == "delete-generic-password":
@@ -215,6 +221,7 @@ class KeychainTests(Home):
         with self.assertRaisesRegex(AccountError, "too large"):
             self.keychain.write("svc", "hq", "q" * 3000)
         self.assertEqual(len(self.sec.stdin), before)
+        self.assertFalse(any(call[1] == "add-generic-password" for call in self.sec.calls))  # nor put in argv
 
     def test_a_write_that_reads_back_wrong_is_an_error_that_shows_no_secret(self):
         self.sec.corrupt.add("svc")
@@ -267,6 +274,22 @@ class ClaudeSwitchTests(Home):
         self.assertEqual(self.item_now()["mcpOAuth"], self.item["mcpOAuth"])
         self.assertTrue(back["verified"])
         self.assertFalse(any(self.home.glob(".claude/*.lock")) or Path(str(self.home / ".claude") + ".lock").exists())
+
+    def test_a_login_too_large_for_stdin_switches_through_argv_as_claude_code_does(self):
+        # MCP and plugin logins share Claude Code's item and can take it past stdin's limit.
+        self.item["mcpOAuth"] = {f"server{n}": {"accessToken": "m" * 400} for n in range(12)}
+        self.sec.items[(USER, acc.CLAUDE_ITEM)] = json.dumps(self.item)
+        self.status = lambda: json.dumps({"email": self.config_now()["oauthAccount"]["emailAddress"]})
+        bob_key, bob = self.save_bob()
+        result = self.accounts.use("claude", bob_key)
+        self.assertTrue(result["verified"])
+        now = self.item_now()
+        self.assertEqual(now["claudeAiOauth"]["accessToken"], bob["accessToken"])
+        self.assertEqual(now["mcpOAuth"], self.item["mcpOAuth"])  # the rest of the item is untouched
+        argv = [call for call in self.sec.calls if call[1] == "add-generic-password"]
+        self.assertEqual({call[call.index("-s") + 1] for call in argv}, {acc.CLAUDE_ITEM})  # nothing else in argv
+        # HQ's own copies still go only on stdin, in chunks.
+        self.assertFalse(any("HQ account" in json.dumps(call) for call in argv))
 
     def test_a_held_lock_never_blocks_the_switch(self):
         held = self.home / ".claude" / ".storage-write.lock"
