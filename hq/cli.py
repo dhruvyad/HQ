@@ -282,6 +282,9 @@ def parser():
     onboarding.add_argument("--yes", action="store_true", help="Do not ask first")
     onboarding.add_argument("--no-pill", action="store_true", help="Skip the floating pill")
     onboarding.add_argument("--port", type=int, default=4310)
+    doctor = commands.add_parser("doctor", help="Check this setup and print a report to paste to whoever helps you; "
+                                                "it changes nothing and shows no secrets")
+    doctor.add_argument("--json", action="store_true")
     plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line, "
                                              "login reads Claude usage with Claude Code's saved login instead")
     plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall", "login", "logout"])
@@ -404,6 +407,9 @@ def main():
             return output(usage_command(args.action))
         if args.command == "accounts":
             return output(accounts_command(args))
+        if args.command == "doctor":
+            from . import doctor
+            return sys.exit(doctor.run(args.json))
         item_fields = ("owner", "waiting_on", "defer_until", "title", "detail")
         if args.command == "update" and args.item_id is None:
             if args.session or any(getattr(args, key) is not None for key in item_fields):

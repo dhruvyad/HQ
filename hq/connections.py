@@ -14,6 +14,8 @@ import uuid
 from .adapters import CodexClient, sync_codex
 from .store import Store, data_dir
 
+HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]
+
 
 def hq_command():
     source = Path(__file__).resolve().parents[1] / "bin/hq"
@@ -53,7 +55,7 @@ def install_hooks(provider):
     data = json.loads(path.read_text()) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
     changed = False
-    for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]:
+    for event in HOOK_EVENTS:
         groups = hooks.setdefault(event, [])
         mine = [h for group in groups for h in group.get("hooks", []) if is_hq_hook(h, provider)]
         if any(h.get("command") == command for h in mine):

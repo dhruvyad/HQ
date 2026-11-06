@@ -45,3 +45,5 @@ jobs:
           version="$(env -i HOME="$home" PATH=/usr/bin:/bin "$home/.local/bin/hq" --version)"
           echo "$version"
           case "$version" in *"($(git rev-parse HEAD | cut -c1-7)"*) ;; *) exit 1 ;; esac
+          # A fresh install has things to set up, but nothing broken.
+          env -i HOME="$home" PATH="$home/.local/bin:/usr/bin:/bin" LANG=en_US.UTF-8 "$home/.local/bin/hq" doctor

@@ -63,16 +63,21 @@ def hq_command():
     return [sys.executable, str(executable)] if executable.exists() else [sys.executable, "-m", "hq"]
 
 
+def binary_path(source=None):
+    """Where the window compiled from this source lives; one folder per source version."""
+    digest = hashlib.sha256(Path(source or SOURCE).read_bytes()).hexdigest()[:12]
+    # The file name stays the same across versions because WebKit keys its storage on it.
+    return data_dir() / "float" / digest / "hq-float"
+
+
 def build(source=None):
     """Compile once per source version and return the binary."""
     require_macos()
     source = Path(source or SOURCE)
     if not source.is_file():
         raise ValueError(f"The floating window source is missing: {source}")
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
-    root = data_dir() / "float"
-    # The file name stays the same across versions because WebKit keys its storage on it.
-    binary = root / digest / "hq-float"
+    binary = binary_path(source)
+    root, digest = binary.parent.parent, binary.parent.name
     if not binary.exists():
         if not shutil.which("swiftc"):
             raise ValueError("Building the floating window needs swiftc. Install Apple's command line tools: xcode-select --install")

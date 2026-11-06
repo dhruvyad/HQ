@@ -23,6 +23,7 @@ STOPPED_AFTER = 300          # offline this long: the agent stopped before actin
 OFFLINE_FOR = 3600           # a session gone from a live inventory stays offline this long unless seen again
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
+SCHEMA = 9                   # PRAGMA user_version once every migration below has run
 
 
 def data_dir():
@@ -151,7 +152,7 @@ class Store:
                                    ("stale", "INTEGER NOT NULL DEFAULT 0"), ("usage", "TEXT"), ("usage_as_of", "REAL")):
                 if name not in kept:
                     db.execute(f"ALTER TABLE accounts ADD COLUMN {name} {declared}")
-            db.execute("PRAGMA user_version=9")
+            db.execute(f"PRAGMA user_version={SCHEMA}")
         os.chmod(self.path, 0o600)
 
     @contextmanager

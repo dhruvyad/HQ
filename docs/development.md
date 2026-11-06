@@ -29,6 +29,11 @@ pill if they were running. It never opens the inbox. An install from a clone rei
 clone as it is now, so pull there first; `./bin/hq update` itself refuses and says to use git.
 Agent conversations already open keep the previous MCP tools until they restart.
 
+`hq doctor` (or `hq doctor --json`) checks the install, the inbox schema, the server, both
+agents' MCP entries and hooks, the pill, the locale, PATH and saved accounts. It only reads:
+the inbox read-only, the agents' config files for HQ's entries, never a login or the Keychain.
+When you add a migration, bump `SCHEMA` in `hq/store.py`; the doctor compares the inbox with a
+throwaway one made by the current code.
 
 ## Tests
 
@@ -46,7 +51,7 @@ conversation, ownership changes and deferral, concurrent answers, per-session ro
 offline acknowledgement, timeout/cancellation, native steering decisions,
 the HTTP origin boundary, bundled font delivery, and an end-to-end MCP human response.
 The installer runs piped to `sh` against fake `uv`, `git` and `curl` in an empty home, so the
-tests never download or install anything; `hq update` runs on a temporary home.
+tests never download or install anything; `hq update` and `hq doctor` run on temporary homes.
 
 Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-server),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),
