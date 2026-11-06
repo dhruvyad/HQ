@@ -63,11 +63,14 @@ ICONS.more = '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circ
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 function readUsage(name, title) {
   const usage = state.usage?.[name];
-  const windows = (usage?.windows || []).filter((w) => Number.isFinite(w.left));
+  const now = Date.now() / 1000;
+  // A limit past its reset time is full again, whatever the reading before it said.
+  const windows = (usage?.windows || []).filter((w) => Number.isFinite(w.left))
+    .map((w) => (w.resets_at && w.resets_at <= now ? {...w, left: 100, reset: true} : w));
   if (!windows.length) return {value: null, gauge: true, tag: `${title} usage not connected`};
   const tight = windows.reduce((a, b) => (b.left < a.left ? b : a));
-  const stale = Date.now() / 1000 - usage.as_of > USAGE_STALE;
-  const resets = tight.resets_at ? `, resets ${tight.resets_at - Date.now() / 1000 > 86400 ? fmtDate(tight.resets_at) : new Date(tight.resets_at * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` : '';
+  const stale = now - usage.as_of > USAGE_STALE;
+  const resets = tight.resets_at && !tight.reset ? `, resets ${tight.resets_at - Date.now() / 1000 > 86400 ? fmtDate(tight.resets_at) : new Date(tight.resets_at * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` : '';
   return {value: tight.left, gauge: true, low: tight.left <= USAGE_LOW, stale,
     tag: `${tight.left}% of ${title}'s ${tight.name} limit left${resets}${stale ? ` (as of ${ago(usage.as_of)})` : ''}`};
 }
@@ -660,7 +663,11 @@ function usageModel(raw, usage = state.usage) {
 }
 const usageFresh = (a, now = Date.now() / 1000) => a.asOf !== null && now - a.asOf < USAGE_DAY && a.windows.length > 0;
 const usageStale = (a, now = Date.now() / 1000) => a.state === 'expired' || (usageFresh(a, now) && now - a.asOf >= USAGE_HOUR);
-const usageTightest = (a) => (usageFresh(a) ? a.windows.reduce((m, w) => (!m || w.left < m.left ? w : m), null) : null);
+// A limit whose reset time has passed is full again: the reading saying otherwise came before
+// the reset. An account HQ can no longer read (its saved login has lapsed) would otherwise sit
+// at 0% "back in 0m 00s" until you used it again.
+const usageNow = (w, now = Date.now() / 1000) => (w.resetsAt && w.resetsAt <= now ? {...w, left: 100, reset: true} : w);
+const usageTightest = (a, now = Date.now() / 1000) => (usageFresh(a, now) ? a.windows.map((w) => usageNow(w, now)).reduce((m, w) => (!m || w.left < m.left ? w : m), null) : null);
 function untilWords(seconds) {
   const s = Math.max(0, Math.round(seconds)), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d}d ${h}h` : h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`;
@@ -675,7 +682,8 @@ const usageWho = (a) => `<span class="u-who"><span class="u-email" title="${esc(
 function usageLines(a, now = Date.now() / 1000) {
   if (a.state === 'needs sign-in') return '<span class="u-line"><span class="bad">Needs sign-in</span> · its saved login lapsed</span>';
   if (!usageFresh(a, now)) return '<span class="u-line old">No reading in the last day</span>';
-  return a.windows.map((w) => `<span class="u-line"><span class="u-part">${esc(w.name)} ${usagePct(w.left)}</span>${w.resetsAt ? ` · <span class="u-part">back ${usageUntil(w.resetsAt)}</span>` : ''}</span>`).join('')
+  return a.windows.map((w) => usageNow(w, now)).map((w) => `<span class="u-line"><span class="u-part">${esc(w.name)} ${usagePct(w.left)}</span>${
+    w.reset ? ` · <span class="u-part">reset ${ago(w.resetsAt)}</span>` : w.resetsAt ? ` · <span class="u-part">back ${usageUntil(w.resetsAt)}</span>` : ''}</span>`).join('')
     + (usageStale(a, now) ? `<span class="u-line old">As of ${ago(a.asOf)}</span>` : '');
 }
 // What a switch reaches, said before you make it.
@@ -897,8 +905,10 @@ function afterUsage() {
 // Countdowns tick while the view is open; nothing else repaints for them.
 function tickUsage() {
   if (!floatOpen || listView !== 'usage') return;
-  const now = Date.now() / 1000;
-  document.querySelectorAll('#main .u-until[data-until]').forEach((el) => {el.textContent = `in ${untilWords(Number(el.dataset.until) - now)}`;});
+  const now = Date.now() / 1000, counters = [...document.querySelectorAll('#main .u-until[data-until]')];
+  // A limit coming back while you watch is drawn again, as full, rather than held at 0m 00s.
+  if (counters.some((el) => Number(el.dataset.until) <= now)) return paintFloat();
+  counters.forEach((el) => {el.textContent = `in ${untilWords(Number(el.dataset.until) - now)}`;});
 }
 
 // Each tab keeps where you were in it: what it had open, its highlight and its scroll. Closing

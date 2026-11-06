@@ -77,7 +77,7 @@ half switched.
 HQ never renews a login. For an account that isn't signed in, it reads usage with that
 account's saved access token only while the token is still valid, about every 30 to 60
 minutes and never two accounts in a row. After that it shows the last numbers it read, with
-their time. Logins go only to Anthropic or OpenAI, and never into logs, the database or
+their time, except that a limit whose reset time has passed shows as full again. Logins go only to Anthropic or OpenAI, and never into logs, the database or
 anything HQ shows. They reach the Keychain on stdin, with one exception: when MCP and plugin
 logins make Claude Code's own Keychain entry too large for that, HQ writes the entry the way
 Claude Code itself then does, as an argument, briefly visible to programs running as you.
