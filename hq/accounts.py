@@ -128,16 +128,28 @@ def iso_seconds(value):
         return None
 
 
+def claude_plan(profile, login=None):
+    """The plan's name as Claude shows it ("Ultra"), which Claude Code keeps in
+    `oauthAccount`; failing that, the login's own type and tier ("Max 20x")."""
+    named = profile.get("planDisplayName") if isinstance(profile, dict) else None
+    if isinstance(named, str) and named.strip():
+        return named.strip()
+    oauth = (login or {}).get("claudeAiOauth") if isinstance(login, dict) else None
+    oauth = oauth if isinstance(oauth, dict) else {}
+    kind = oauth.get("subscriptionType")
+    if not isinstance(kind, str) or not kind:
+        return ""
+    tier = re.search(r"_(\d+x)$", str(oauth.get("rateLimitTier") or ""))
+    return kind.replace("_", " ").title() + (f" {tier.group(1)}" if tier else "")
+
+
 def claude_who(profile, login=None):
-    """Who a Claude login belongs to, from `oauthAccount`; the plan comes from the login."""
+    """Who a Claude login belongs to, from `oauthAccount`."""
     if not isinstance(profile, dict) or not isinstance(profile.get("accountUuid"), str) or not profile["accountUuid"]:
         return None
-    oauth = (login or {}).get("claudeAiOauth") if isinstance(login, dict) else None
-    plan = oauth.get("subscriptionType") if isinstance(oauth, dict) else None
-    plan = plan or profile.get("planDisplayName") or ""
     return {"identity": f"{profile['accountUuid']}:{profile.get('organizationUuid') or ''}",
             "email": str(profile.get("emailAddress") or ""), "org": str(profile.get("organizationName") or ""),
-            "plan": str(plan).replace("_", " ").title()}
+            "plan": claude_plan(profile, login)}
 
 
 def claude_times(login):
@@ -514,6 +526,16 @@ class Accounts:
             db.execute(f"UPDATE accounts SET {','.join(f'{k}=?' for k in fields)} WHERE tool=? AND key=?",
                        (*fields.values(), tool, key))
 
+    def relabel(self, tool, key, who):
+        """Keep a saved account's plan, email and organisation as its login now says."""
+        fields = {k: who[k] for k in ("plan", "email", "org") if who and who.get(k)}
+        with self.store.db() as db:
+            row = db.execute("SELECT plan,email,org FROM accounts WHERE tool=? AND key=?", (tool, key)).fetchone()
+            fields = {k: v for k, v in fields.items() if row and row[k] != v}
+            if fields:
+                db.execute(f"UPDATE accounts SET {','.join(f'{k}=?' for k in fields)} WHERE tool=? AND key=?",
+                           (*fields.values(), tool, key))
+
     def keep_reading(self, tool, key, value):
         if value:
             self.mark(tool, key, usage=json.dumps(value), usage_as_of=value["as_of"])
@@ -603,6 +625,8 @@ class Accounts:
         for tool in TOOLS:
             who = self.current(tool)
             key = key_for(tool, who["identity"]) if who else None
+            if who:
+                self.relabel(tool, key, who)
             entry = {"active": {"key": key, "email": who["email"], "plan": who["plan"]} if who else None,
                      "count": len(self.rows(tool)), "adding": (self.adding(tool) or {}).get("state")}
             with self.lock:
@@ -942,6 +966,8 @@ class Accounts:
         if not text:
             return None, None
         saved = json.loads(text)
+        self.relabel(tool, row["key"], claude_who(saved.get("profile"), saved.get("login")) if tool == "claude"
+                     else codex_who(saved))
         if tool == "claude":
             oauth = saved.get("login", {}).get("claudeAiOauth") or {}
             token, (expires, _) = oauth.get("accessToken"), claude_times(saved.get("login", {}))

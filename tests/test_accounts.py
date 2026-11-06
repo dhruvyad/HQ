@@ -543,6 +543,30 @@ class UsageTests(Home):
         self.assertNotEqual(first, second)
         self.assertEqual(len(self.requests), 2)
 
+    def test_the_plan_is_named_as_claude_names_it(self):
+        ultra = {**profile("bob"), "planDisplayName": "Ultra"}
+        max_20x = {"claudeAiOauth": {"subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"}}
+        self.assertEqual(acc.claude_who(ultra, max_20x)["plan"], "Ultra")
+        self.assertEqual(acc.claude_who(profile("bob"), max_20x)["plan"], "Max 20x")
+        self.assertEqual(acc.claude_who(profile("bob"), {"claudeAiOauth": {"subscriptionType": "pro"}})["plan"], "Pro")
+
+    def test_saved_accounts_take_the_plan_name_their_login_now_has(self):
+        bob_key, _ = self.save_bob()
+        with self.store.db() as db:  # saved by an earlier build, which named the plan from its type
+            db.execute("UPDATE accounts SET plan='Max' WHERE key=?", (bob_key,))
+        saved = json.loads(self.accounts.vault.get("claude", bob_key))
+        saved["profile"]["planDisplayName"] = "Ultra"
+        self.accounts.vault.put("claude", bob_key, acc.dumps(saved))
+        self.accounts.poll()
+        self.assertEqual(self.accounts.row("claude", bob_key)["plan"], "Ultra")
+        # The signed-in account is named from ~/.claude.json, without the Keychain.
+        alice_key = self.accounts.save_current("claude")
+        config = self.config_now()
+        config["oauthAccount"]["planDisplayName"] = "Ultra"
+        self.places.claude_json.write_text(json.dumps(config))
+        self.accounts.refresh()
+        self.assertEqual(self.accounts.row("claude", alice_key)["plan"], "Ultra")
+
     def test_a_refusal_backs_off_and_a_turned_down_login_needs_a_fresh_sign_in(self):
         bob_key, _ = self.save_bob()
         self.responses[acc.CLAUDE_USAGE_URL] = urllib.error.HTTPError(acc.CLAUDE_USAGE_URL, 429, "Too Many", {"Retry-After": "900"}, io.BytesIO())
