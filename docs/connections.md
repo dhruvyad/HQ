@@ -89,6 +89,12 @@ It uses the same account, profile, and conversation history. No per-chat
 configuration is needed. You can also start it with `hq launch codex-desktop`.
 An already-open desktop is left running; HQ asks you to quit it first.
 
+Opening the app any other way, from the Dock or when it reopens itself after an
+update, starts it without HQ. Its chats still show in HQ through the hooks below,
+once Codex trusts them, and get your answers at their next step or your next
+message; only sending an answer straight into an idle chat needs the launcher.
+`hq doctor` says whether the open app came through the launcher.
+
 Check the live connection:
 
 ```sh
@@ -138,7 +144,10 @@ planned but has not been implemented or live-tested. Codex desktop uses the
 launcher above to connect its owning server. Permission approvals still need
 the client's normal approval. A stopped server or disconnected channel must be
 reconnected before it can deliver turns.
-Codex requires explicit review/trust in `/hooks`; HQ does not modify that trust.
+Codex runs a hook only once you trust it in `/hooks`, and asks again whenever the
+hook changes; until then no Codex conversation, desktop or CLI, shows in HQ on its
+own. HQ never changes that trust. `hq setup` and `hq doctor` ask Codex which of
+HQ's hooks it trusts (its own `hooks/list`) and say what is left to review.
 Claude Code loads the installed hooks when starting/resuming. Hook delivery and
 an actual agent acknowledgement were verified in a real Claude Code session.
 

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from .connections import is_hq_hook, statusline_state, uninstall_statusline, write_config
+from .connections import codex_hook_trust, is_hq_hook, statusline_state, uninstall_statusline, write_config
 from .store import data_dir
 
 AGENTS = {"claude-code": {"name": "Claude Code", "binary": "claude", "hooks": ".claude/settings.json",
@@ -99,7 +99,7 @@ def say(text=""):
     print(text, flush=True)
 
 
-def setup(port, yes=False, pill=True, install=None, launch=None):
+def setup(port, yes=False, pill=True, install=None, launch=None, trust=None):
     from . import floating
     found = agents()
     steps = plan(port, pill)
@@ -141,10 +141,14 @@ def setup(port, yes=False, pill=True, install=None, launch=None):
     say("✓ Dashboard open")
     say()
     say("Next:")
+    if "codex" in found:
+        # Codex runs a hook only once you trust it, so without this no Codex conversation shows.
+        trusted = (trust or codex_hook_trust)()
+        if not trusted or any(state not in {"trusted", "managed"} for state in trusted.values()):
+            say("  Codex: run codex, type /hooks, and trust the hooks that run hq hook codex.")
+            say("  Until you do, Codex skips them and its conversations do not show in HQ. hq doctor checks this.")
     if found:
         say("  Start a new agent conversation, or restart one, and it reports to HQ.")
-    if "codex" in found:
-        say("  In Codex, open /hooks once and trust HQ's hooks.")
     if placed:
         say("  Hover the pill to see what each circle counts; click it to see what needs you.")
     say("  Claude usage in the pill is opt-in: hq usage login")

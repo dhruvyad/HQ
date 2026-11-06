@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 from . import floating, version
-from .connections import HOOK_EVENTS, hq_command, is_hq_hook, statusline_state
+from .connections import HOOK_EVENTS, codex_hook_trust, hq_command, is_hq_hook, statusline_state
 from .onboard import AGENTS, hook_file
 from .store import SCHEMA, Store, data_dir
 from .version import short
@@ -300,6 +300,8 @@ def hooks_check(agent):
     if broken:
         return check("Agents", f"{name} hooks", FAIL, f"HQ's hooks point at {short(broken[0])}, which is gone",
                      "hq setup (it points them at this hq)")
+    if agent == "codex":
+        return codex_hooks_check(path, found, missing)
     if missing:
         return check("Agents", f"{name} hooks", WARN, f"HQ's hooks are missing for {', '.join(missing)}", "hq setup")
     if agent == "claude-code" and data.get("disableAllHooks") is True:
@@ -308,10 +310,40 @@ def hooks_check(agent):
     if not all(same(words, hq_command()) for words in found.values()):
         return check("Agents", f"{name} hooks", WARN, "HQ's hooks run another copy of HQ, not this hq",
                      "hq setup (it points them at this hq)")
-    summary = f"All {len(HOOK_EVENTS)} in {short(path)}"
-    if agent == "codex":
-        summary += "; Codex runs them only once you trust them in /hooks, which HQ cannot see"
-    return check("Agents", f"{name} hooks", OK, summary)
+    return check("Agents", f"{name} hooks", OK, f"All {len(HOOK_EVENTS)} in {short(path)}")
+
+
+TRUST = "run codex in a terminal, type /hooks, and trust the ones that run hq hook codex"
+
+
+def codex_hooks_check(path, found, missing):
+    """Codex runs a hook only once you trust it, so ask Codex which of HQ's it trusts."""
+    name = "Codex hooks"
+    if not all(same(words, hq_command()) for words in found.values()):
+        return check("Agents", name, WARN, "HQ's hooks run another copy of HQ, not this hq", "hq setup (it points them at this hq)")
+    trust = codex_hook_trust()
+    absent = f"missing for {', '.join(missing)}" if missing else ""
+    if trust is None:
+        if missing:
+            return check("Agents", name, WARN, f"HQ's hooks are {absent}", "hq setup")
+        return check("Agents", name, OK, f"All {len(HOOK_EVENTS)} in {short(path)}; Codex runs them only once you "
+                     "trust them in /hooks, and this Codex could not say whether you have")
+    # Untrusted, or changed since you trusted them: Codex skips both until you review them.
+    waiting = [event for event in HOOK_EVENTS if trust.get(event) in {"untrusted", "modified"}]
+    off = [event for event in HOOK_EVENTS if trust.get(event) == "off"]
+    if waiting and len(waiting) == len(trust):
+        summary, fix = "Installed, but Codex has not trusted them, so it never runs them: Codex conversations do not show in HQ on their own", TRUST
+    elif waiting:
+        summary, fix = f"Codex has not trusted HQ's hooks for {', '.join(waiting)}, so it skips those", TRUST
+    elif off:
+        summary, fix = f"Turned off in Codex's /hooks for {', '.join(off)}", "run codex in a terminal, type /hooks, and turn HQ's hooks back on"
+    elif missing:
+        summary, fix = f"HQ's hooks are {absent}; Codex trusts the rest", TRUST
+    else:
+        return check("Agents", name, OK, f"All {len(HOOK_EVENTS)} in {short(path)}, and Codex trusts them")
+    if missing and (waiting or off):
+        summary += f"; and they are {absent}"
+    return check("Agents", name, WARN, summary, "hq setup, then " + fix if missing else fix[0].upper() + fix[1:])
 
 
 def agent_checks():
@@ -327,6 +359,34 @@ def agent_checks():
         yield hooks_check(agent)
         if agent == "claude-code":
             yield usage_check()
+    if sys.platform == "darwin":
+        desktop = desktop_check()
+        if desktop:
+            yield desktop
+
+
+def desktop_check():
+    """Whether the Codex app is open through Codex + HQ, the only way HQ can answer its chats directly."""
+    from .desktop_launch import desktop_running, native_paths, runtime_path
+    try:
+        app, binary, _ = native_paths()
+    except ValueError:
+        return None
+    name, launcher = app.stem, Path.home() / "Applications/Codex + HQ.app"
+    if not desktop_running(binary):
+        return check("Agents", "Codex desktop", OK, f"{name} is not open")
+    folder = runtime_path(app)
+    try:
+        state = json.loads((folder / "runtime.json").read_text())
+        through_hq = alive(state["wrapper_pid"]) and Path(state["socket"]).is_socket()
+    except (OSError, ValueError, KeyError, TypeError):
+        through_hq = False
+    if through_hq:
+        return check("Agents", "Codex desktop", OK, f"{name} is open through Codex + HQ, so HQ sends your answers straight into its chats")
+    reopen = f"when its chats are idle, quit {name} and open Codex + HQ from ~/Applications"
+    return check("Agents", "Codex desktop", WARN,
+                 f"{name} is open, but not through Codex + HQ, so HQ cannot send your answers straight into its chats",
+                 reopen[0].upper() + reopen[1:] if launcher.exists() else "hq desktop install; then " + reopen)
 
 
 def usage_check():

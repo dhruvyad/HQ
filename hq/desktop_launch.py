@@ -79,12 +79,18 @@ def private_json(path, value):
             Path(file.name).unlink(missing_ok=True)
 
 
-def runtime_directory(app, home=None):
+def runtime_path(app, home=None):
+    """Where the launcher keeps this app's runtime, without making it."""
     home = Path(home or os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
     key = hashlib.sha256((str(app) + "\0" + str(home) + "\0" + str(data_dir())).encode()).hexdigest()[:12]
     path = data_dir() / "desktop" / key
     if len(os.fsencode(path / "runtime.sock")) > 100:
         path = Path(tempfile.gettempdir()) / ("hq-desktop-" + str(os.getuid())) / key
+    return path
+
+
+def runtime_directory(app, home=None):
+    path = runtime_path(app, home)
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink() or path.stat().st_uid != os.getuid():
         raise ValueError("The desktop runtime directory must be owned by this user")

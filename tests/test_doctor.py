@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import sys
@@ -235,6 +236,37 @@ class ProblemTests(DoctorCase):
         settings.write_text(json.dumps({**json.loads(settings.read_text()), "disableAllHooks": True}))
         self.assertIn("disableAllHooks", self.checks()["Claude Code hooks"]["summary"])
 
+    def test_codex_hooks_it_has_not_trusted(self):
+        self.connect()
+        events = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]
+        def hooks(trust):
+            with patch.object(doctor, "codex_hook_trust", return_value=trust):
+                return self.checks()["Codex hooks"]
+        none = hooks(dict.fromkeys(events, "untrusted"))
+        self.assertEqual(none["status"], "warn")
+        self.assertIn("never runs them: Codex conversations do not show in HQ", none["summary"])
+        self.assertEqual(none["fix"], "Run codex in a terminal, type /hooks, and trust the ones that run hq hook codex")
+        # Changed since you trusted it: Codex skips it again until you review it.
+        some = hooks({**dict.fromkeys(events, "trusted"), "Stop": "modified"})
+        self.assertIn("for Stop, so it skips those", some["summary"])
+        self.assertIn("turn HQ's hooks back on", hooks({**dict.fromkeys(events, "trusted"), "Stop": "off"})["fix"])
+        trusted = hooks(dict.fromkeys(events, "trusted"))
+        self.assertEqual(trusted["status"], "ok")
+        self.assertIn("and Codex trusts them", trusted["summary"])
+
+    def test_codex_hooks_missing_and_untrusted_say_both(self):
+        self.connect()
+        hooks = self.home / ".codex/hooks.json"
+        data = json.loads(hooks.read_text())
+        del data["hooks"]["SubagentStop"]
+        hooks.write_text(json.dumps(data))
+        trust = dict.fromkeys(["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"], "untrusted")
+        with patch.object(doctor, "codex_hook_trust", return_value=trust):
+            check = self.checks()["Codex hooks"]
+        self.assertIn("never runs them", check["summary"])
+        self.assertIn("missing for SubagentStop", check["summary"])
+        self.assertEqual(check["fix"], "hq setup, then run codex in a terminal, type /hooks, and trust the ones that run hq hook codex")
+
     def test_a_server_that_crashed_or_stopped_answering(self):
         self.data.mkdir(mode=0o700)
         (self.data / "server.json").write_text(json.dumps({"pid": os.getpid(), "port": free_port(), "instance": "x"}))
@@ -267,6 +299,73 @@ class ProblemTests(DoctorCase):
             checks = self.report()["checks"]
         self.assertIn("boom", next(c for c in checks if c["section"] == "Agents")["summary"])
         self.assertIn("Locale", {c["check"] for c in checks})
+
+
+class CodexDesktopTests(DoctorCase):
+    """Whether the Codex app came through Codex + HQ, from fakes: never the real app."""
+    def setUp(self):
+        super().setUp()
+        self.app = self.root / "ChatGPT.app"
+        self.runtime = Path(tempfile.mkdtemp(dir="/tmp"))
+        self.addCleanup(shutil.rmtree, self.runtime, ignore_errors=True)
+        self.open = False
+        for patcher in (patch("hq.desktop_launch.native_paths", return_value=(self.app, self.app / "Contents/MacOS/ChatGPT", None)),
+                        patch("hq.desktop_launch.desktop_running", side_effect=lambda binary: self.open),
+                        patch("hq.desktop_launch.runtime_path", return_value=self.runtime)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_not_installed_or_not_open(self):
+        with patch("hq.desktop_launch.native_paths", side_effect=ValueError("none")):
+            self.assertIsNone(doctor.desktop_check())
+        self.assertEqual(doctor.desktop_check()["summary"], "ChatGPT is not open")
+
+    def test_open_without_the_launcher_says_how_to_reopen_it(self):
+        self.open = True
+        check = doctor.desktop_check()
+        self.assertEqual(check["status"], "warn")
+        self.assertIn("not through Codex + HQ, so HQ cannot send your answers straight into its chats", check["summary"])
+        self.assertTrue(check["fix"].startswith("hq desktop install; then when its chats are idle, quit ChatGPT"))
+        (self.home / "Applications/Codex + HQ.app").mkdir(parents=True)
+        self.assertTrue(doctor.desktop_check()["fix"].startswith("When its chats are idle, quit ChatGPT"))
+
+    def test_open_through_the_launcher_is_ok_only_while_its_runtime_lives(self):
+        self.open = True
+        endpoint = self.runtime / "r.sock"
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(endpoint))
+        self.addCleanup(listener.close)
+        state = {"wrapper_pid": os.getpid(), "socket": str(endpoint)}
+        (self.runtime / "runtime.json").write_text(json.dumps(state))
+        self.assertEqual(doctor.desktop_check()["status"], "ok")
+        (self.runtime / "runtime.json").write_text(json.dumps({**state, "wrapper_pid": 2 ** 22 + 7}))
+        self.assertEqual(doctor.desktop_check()["status"], "warn")
+
+
+class CodexTrustTests(unittest.TestCase):
+    """Codex's own hooks/list, read for HQ's hooks only."""
+    hq = "/usr/bin/python3 /src/HQ/bin/hq hook codex"
+
+    def test_reads_hqs_hooks_and_ignores_the_rest(self):
+        from hq.connections import codex_hook_trust
+        answer = {"data": [{"cwd": "/", "hooks": [
+            {"eventName": "sessionStart", "command": self.hq, "enabled": True, "trustStatus": "untrusted"},
+            {"eventName": "stop", "command": "/x/count_tokens.js", "enabled": True, "trustStatus": "trusted"},
+            {"eventName": "stop", "command": self.hq, "enabled": True, "trustStatus": "modified"},
+            {"eventName": "sessionEnd", "command": self.hq, "enabled": False, "trustStatus": "trusted"}]}]}
+        asked = []
+        trust = codex_hook_trust(lambda method, params: asked.append(method) or answer)
+        self.assertEqual(asked, ["hooks/list"])
+        self.assertEqual(trust, {"SessionStart": "untrusted", "Stop": "modified", "SessionEnd": "off"})
+
+    def test_a_codex_that_cannot_say_is_none(self):
+        from hq.connections import codex_hook_trust
+        def refuses(method, params):
+            raise RuntimeError("Codex refused the request")
+        self.assertIsNone(codex_hook_trust(refuses))
+        self.assertIsNone(codex_hook_trust(lambda method, params: {"nope": 1}))
+        with patch("hq.usage.codex_binary", return_value=None):
+            self.assertIsNone(codex_hook_trust())
 
 
 class PillTests(DoctorCase):
