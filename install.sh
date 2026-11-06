@@ -16,6 +16,8 @@ REF="${HQ_REF:-main}"
 say() { printf '%s\n' "$*"; }
 die() { printf 'HQ: %s\n' "$*" >&2; exit 1; }
 
+# Everything runs from main, called on the last line, so a download cut short runs nothing.
+main() {
 case "$(uname -s)" in
   Darwin) ;;
   Linux) say "On Linux you get the dashboard; the floating pill is macOS only." ;;
@@ -133,3 +135,6 @@ fi
 
 say ""
 exec "$bin/hq" setup
+}
+
+main "$@"
