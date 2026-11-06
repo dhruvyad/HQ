@@ -594,6 +594,13 @@ run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => 
   sendCursor('ew', 'left'); sendCursor('ew', 'left'); sendCursor('nwse', 'top-left'); sendCursor('default'); sendCursor('default')`);
 assert.deepEqual(JSON.parse(run('JSON.stringify(posted)')), [{type: 'cursor', kind: 'ew', edge: 'left'}, {type: 'cursor', kind: 'nwse', edge: 'top-left'}, {type: 'cursor', kind: 'default', edge: ''}]); // only on change
 run('delete globalThis.window; cursorSent = "default|"');
+// Two monitors of one size give the pill the same local rect: moving to the twin must still be sent.
+run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}}; savedPlaced = placed; savedDisplay = display;
+  display = {x: 0, y: 0}; placeWindow({x: 10, y: 20, width: 40, height: 120}, {});
+  display = {x: 0, y: 0}; placeWindow({x: 10, y: 20, width: 40, height: 120}, {});
+  display = {x: 1920, y: 0}; placeWindow({x: 10, y: 20, width: 40, height: 120}, {})`);
+assert.equal(run('posted.length'), 2); // the same place on the same display is sent once; on the twin, again
+run('delete globalThis.window; placed = savedPlaced; display = savedDisplay');
 // Sizes are kept per view, and anything odd in settings falls back to the default.
 assert.deepEqual(JSON.parse(run("JSON.stringify(cleanSizes({list: {width: 500.4, height: 700}, item: {width: 'wide'}}))")), {list: {width: 500, height: 700}, item: null});
 assert.deepEqual(JSON.parse(run("JSON.stringify(chosenSize('list', cleanSizes()))")), {width: 380, height: 520});
