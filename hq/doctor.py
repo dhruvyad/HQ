@@ -313,7 +313,7 @@ def hooks_check(agent):
     return check("Agents", f"{name} hooks", OK, f"All {len(HOOK_EVENTS)} in {short(path)}")
 
 
-TRUST = "run codex in a terminal, type /hooks, and trust the ones that run hq hook codex"
+TRUST = "hq setup, which trusts them when you say yes (or in codex, type /hooks and trust the ones that run hq hook codex)"
 
 
 def codex_hooks_check(path, found, missing):
@@ -331,19 +331,22 @@ def codex_hooks_check(path, found, missing):
     # Untrusted, or changed since you trusted them: Codex skips both until you review them.
     waiting = [event for event in HOOK_EVENTS if trust.get(event) in {"untrusted", "modified"}]
     off = [event for event in HOOK_EVENTS if trust.get(event) == "off"]
+    # hq setup adds what is missing and trusts what is waiting; a hook you turned off stays yours to turn on.
+    fix = TRUST
     if waiting and len(waiting) == len(trust):
-        summary, fix = "Installed, but Codex has not trusted them, so it never runs them: Codex conversations do not show in HQ on their own", TRUST
+        summary = "Installed, but Codex has not trusted them, so it never runs them: Codex conversations do not show in HQ on their own"
     elif waiting:
-        summary, fix = f"Codex has not trusted HQ's hooks for {', '.join(waiting)}, so it skips those", TRUST
+        summary = f"Codex has not trusted HQ's hooks for {', '.join(waiting)}, so it skips those"
     elif off:
-        summary, fix = f"Turned off in Codex's /hooks for {', '.join(off)}", "run codex in a terminal, type /hooks, and turn HQ's hooks back on"
+        summary = f"Turned off in Codex's /hooks for {', '.join(off)}"
+        fix = ("hq setup, then r" if missing else "R") + "un codex in a terminal, type /hooks, and turn HQ's hooks back on"
     elif missing:
-        summary, fix = f"HQ's hooks are {absent}; Codex trusts the rest", TRUST
+        summary = f"HQ's hooks are {absent}; Codex trusts the rest"
     else:
         return check("Agents", name, OK, f"All {len(HOOK_EVENTS)} in {short(path)}, and Codex trusts them")
     if missing and (waiting or off):
         summary += f"; and they are {absent}"
-    return check("Agents", name, WARN, summary, "hq setup, then " + fix if missing else fix[0].upper() + fix[1:])
+    return check("Agents", name, WARN, summary, fix)
 
 
 def agent_checks():

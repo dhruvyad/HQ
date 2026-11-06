@@ -1,8 +1,9 @@
 """One command to start using HQ, and one to undo it: hq setup and hq setup --undo.
 
 Setup shows every change before making it, and each change is one HQ already offers on
-its own (hq install, hq float install). Undo removes only what is HQ's, found by its
-command, so your own hooks and servers stay as they are, and it keeps your inbox.
+its own (hq install, hq float install), or, for Codex, the trust its own /hooks would save
+for HQ's hooks. Undo removes only what is HQ's, found by its command, so your own hooks,
+their trust and your servers stay as they are, and it keeps your inbox.
 """
 import json
 from pathlib import Path
@@ -11,7 +12,8 @@ import shutil
 import subprocess
 import sys
 
-from .connections import codex_hook_trust, is_hq_hook, statusline_state, uninstall_statusline, write_config
+from .connections import (is_hq_hook, statusline_state, trust_codex_hooks, uninstall_statusline, untrust_codex_hooks,
+                          write_config)
 from .store import data_dir
 
 AGENTS = {"claude-code": {"name": "Claude Code", "binary": "claude", "hooks": ".claude/settings.json",
@@ -77,6 +79,10 @@ def plan(port, pill=True):
               f"add HQ's tools ({AGENTS[agent]['tools']}) and its hooks (~/{AGENTS[agent]['hooks']}); "
               "each file is backed up first")
              for agent in agents()]
+    if "codex" in agents():
+        # Codex runs a hook only once you trust it; this is the same approval its /hooks saves.
+        steps.append(("Trust HQ's hooks in Codex", "save the approval Codex's /hooks saves, for HQ's hooks only, "
+                      "so Codex runs them; hq setup --undo removes it"))
     if pill and sys.platform == "darwin":
         steps.append(("Put the pill on screen", "now and at every login, over all your apps"))
     steps.append(("Open the dashboard", f"http://127.0.0.1:{port}, on this Mac only"))
@@ -125,6 +131,13 @@ def setup(port, yes=False, pill=True, install=None, launch=None, trust=None):
         else:
             tools = "not added (" + (result.get("message") or "no reason given")[:200] + ")"
         say(f"✓ {AGENTS[agent]['name']}: tools {tools}, hooks {result.get('hooks', 'unchanged')}")
+    trusted = None
+    if "codex" in found:
+        trusted = (trust or trust_codex_hooks)()
+        if trusted is None:
+            say("✗ Codex: could not trust HQ's hooks, because Codex did not answer")
+        elif trusted["listed"]:
+            say("✓ Codex: trusts HQ's hooks" + ("" if trusted["trusted"] else " (it already did)"))
     placed = False
     if pill and sys.platform == "darwin":
         if not swift_ready():
@@ -143,10 +156,13 @@ def setup(port, yes=False, pill=True, install=None, launch=None, trust=None):
     say("Next:")
     if "codex" in found:
         # Codex runs a hook only once you trust it, so without this no Codex conversation shows.
-        trusted = (trust or codex_hook_trust)()
-        if not trusted or any(state not in {"trusted", "managed"} for state in trusted.values()):
+        if trusted is None:
             say("  Codex: run codex, type /hooks, and trust the hooks that run hq hook codex.")
             say("  Until you do, Codex skips them and its conversations do not show in HQ. hq doctor checks this.")
+        elif trusted["off"]:
+            say(f"  Codex: HQ's hooks for {', '.join(trusted['off'])} are turned off in /hooks; turn them on there to use them.")
+        elif trusted["trusted"]:
+            say("  If the ChatGPT or Codex app is open, quit and reopen it: until then it keeps its old hook trust.")
     if found:
         say("  Start a new agent conversation, or restart one, and it reports to HQ.")
     if placed:
@@ -157,10 +173,13 @@ def setup(port, yes=False, pill=True, install=None, launch=None, trust=None):
     return 0
 
 
-def undo(stop_server):
+def undo(stop_server, untrust=None):
     from . import floating
     from .usage import claude_login_enabled, set_claude_login
     for agent, info in AGENTS.items():
+        # While Codex still lists HQ's hooks, so it can find the trust it keeps for them.
+        if agent == "codex" and hook_file(agent).exists() and (untrust or untrust_codex_hooks)():
+            say("✓ Codex: no longer trusts HQ's hooks")
         if shutil.which(info["binary"]):
             remove = [info["binary"], "mcp", "remove", "hq"] + (["--scope", "user"] if agent == "claude-code" else [])
             gone = subprocess.run(remove, capture_output=True, text=True).returncode == 0

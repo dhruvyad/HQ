@@ -10,6 +10,7 @@ here, since rotating it behind Claude Code's back could sign Claude Code out.
 HQ never reads a transcript. When a tool has not said, the answer is None, never
 an estimate.
 """
+import contextlib
 import json
 import math
 import random
@@ -329,12 +330,20 @@ def read_over_stdio(binary, timeout=CODEX_TIMEOUT):
 
 def ask_over_stdio(binary, method, params, timeout=CODEX_TIMEOUT):
     """One request to a Codex app-server started for it, and stopped once it answers."""
+    with codex_over_stdio(binary, timeout) as call:
+        return call(method, params)
+
+
+@contextlib.contextmanager
+def codex_over_stdio(binary, timeout=CODEX_TIMEOUT):
+    """A Codex app-server started for a few requests, stopped afterwards: yields call(method, params)."""
     process = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     # A hung server must not hang the worker: killing it ends the reads below.
     timer = threading.Timer(timeout, process.kill)
     timer.daemon = True
     timer.start()
+    counter = iter(range(2, 1_000_000))
 
     def send(message):
         process.stdin.write(json.dumps(message) + "\n")
@@ -352,12 +361,16 @@ def ask_over_stdio(binary, method, params, timeout=CODEX_TIMEOUT):
                 return value["result"]
         raise EOFError("Codex closed before answering")
 
+    def call(method, params):
+        request = next(counter)
+        send({"id": request, "method": method, "params": params})
+        return answer(request)
+
     try:
         send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "hq", "title": "HQ", "version": "0.1.0"}}})
         answer(1)
         send({"method": "initialized"})
-        send({"id": 2, "method": method, "params": params})
-        return answer(2)
+        yield call
     finally:
         timer.cancel()
         for stream in (process.stdin, process.stdout):

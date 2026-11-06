@@ -10,8 +10,8 @@ hq discover --limit 50
 
 The installer configures **Codex, Claude Code, and Claude Desktop** local MCP
 tools and adds Codex/Claude Code lifecycle hooks, preserving other settings and
-backing up changed files. Review Codex hooks in `/hooks`; reload MCP tools or
-restart/resume the client to load changes. Running sessions are not interrupted.
+backing up changed files. `hq setup` also trusts HQ's Codex hooks (see below); reload
+MCP tools or restart/resume the client to load changes. Running sessions are not interrupted.
 An existing HQ entry in Claude Desktop is preserved; client CLIs handle existing
 server names according to their own behavior.
 
@@ -146,8 +146,13 @@ the client's normal approval. A stopped server or disconnected channel must be
 reconnected before it can deliver turns.
 Codex runs a hook only once you trust it in `/hooks`, and asks again whenever the
 hook changes; until then no Codex conversation, desktop or CLI, shows in HQ on its
-own. HQ never changes that trust. `hq setup` and `hq doctor` ask Codex which of
-HQ's hooks it trusts (its own `hooks/list`) and say what is left to review.
+own. `hq setup` trusts HQ's hooks for you, as its own step that you approve with
+the rest: Codex computes each hook's hash (`hooks/list`) and saves it
+(`config/batchWrite`), exactly as `/hooks` does, for HQ's hooks only. A hook you
+turned off stays off, and your other hooks are never touched. Setup does it again
+when HQ moves, since that changes the hooks. `hq setup --undo` removes that trust
+with the hooks, and `hq doctor` reports which of HQ's hooks Codex trusts. A Codex
+app that is already open keeps the trust it started with, so quit and reopen it.
 Claude Code loads the installed hooks when starting/resuming. Hook delivery and
 an actual agent acknowledgement were verified in a real Claude Code session.
 
