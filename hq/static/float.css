@@ -8,7 +8,9 @@ html.float, html.float body {height: 100%; background: transparent; overflow: hi
 .f-capsule {display: inline-flex; width: max-content; padding: var(--f-pad, 4px); background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: calc(var(--f-size, 28px) / 2 + 5px); color: var(--foreground); white-space: nowrap; -webkit-user-select: none; user-select: none;}
 .f-rail {display: flex; flex: none; flex-direction: column; gap: var(--f-pad, 4px); transition: opacity .24s ease .22s, transform .5s var(--f-soft, ease), filter .24s ease .22s;}
 .f-capsule[data-layout="horizontal"] .f-rail {flex-direction: row;}
-.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: hidden; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
+.f-pill {position: absolute; display: flex; align-items: flex-start; overflow: visible; box-shadow: 0 6px 22px rgb(0 0 0 / 0.38); transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease), border-radius .5s ease, background .15s;}
+/* The capsule clips only while it changes shape (into the card and back, or as circles come and go), so at rest a change dot can sit over its edge. */
+.f-pill.clip {overflow: hidden;}
 body[data-across="end"] .f-pill .f-rail {margin-left: auto;}
 body[data-across="center"] .f-pill .f-rail {margin-inline: auto;}
 body[data-down="end"] .f-pill .f-rail {margin-top: auto;}
@@ -61,10 +63,9 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-marks[data-side="left"] .f-mark {right: calc(100% + var(--f-size, 28px) * 0.18); top: var(--y); translate: 0 -50%;}
 .f-marks[data-side="above"] .f-mark {bottom: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
 .f-marks[data-side="below"] .f-mark {top: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
-/* The dot sits at one o'clock, above the number, as far out as the capsule's rounded end allows:
-   that end is centred on the first and last circles, so the dot, with its ring, stays within it.
-   Whole pixels, or a fractional dot is drawn squashed. */
-.f-mark-dot {--dot: round(calc(var(--f-size, 28px) * 0.28), 1px); --reach: calc(var(--f-size, 28px) / 2 + var(--f-pad, 4px) - var(--dot) / 2 - 2px); position: absolute; left: round(calc(50% + var(--reach) * 0.5 - var(--dot) / 2), 1px); top: round(calc(50% - var(--reach) * 0.866 - var(--dot) / 2), 1px); width: var(--dot); height: var(--dot); border-radius: 50%; box-shadow: 0 0 0 1.5px var(--background); pointer-events: none;}
+/* The dot sits over the circle's top-right edge, as such dots do, and may reach past the
+   capsule. Whole pixels, or a fractional dot is drawn squashed. */
+.f-mark-dot {--dot: round(calc(var(--f-size, 28px) * 0.3), 1px); position: absolute; right: -2px; top: -2px; width: var(--dot); height: var(--dot); border-radius: 50%; box-shadow: 0 0 0 2px var(--background); pointer-events: none;}
 .f-mark.more, .f-mark-dot.more {background: var(--more);}
 .f-mark.fewer, .f-mark-dot.fewer {background: var(--live);}
 .f-mark.same, .f-mark-dot.same {background: rgb(250 250 250 / 0.85);}
@@ -86,7 +87,7 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-circle.low {color: var(--error);}
 
 /* Island: the capsule becomes a card, then folds back. */
-.f-pill.noting {border-radius: 31px;}
+.f-pill.noting {border-radius: 31px; overflow: hidden;}
 .f-pill.noting .f-rail {opacity: 0; transform: scale(.7); filter: blur(3px); transition-delay: 0s;}
 .f-hero {position: absolute; left: 12px; top: 50%; opacity: 0; transform: translateY(-50%) scale(.55); transition: opacity .2s ease, transform .55s var(--f-spring, ease);}
 .f-pill.noting .f-hero {opacity: 1; transform: translateY(-50%) scale(1.25); transition-delay: .1s;}
