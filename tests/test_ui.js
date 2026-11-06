@@ -1044,7 +1044,7 @@ assert.equal(run("pillTarget('agents')"), 'agents');
 assert.equal(run("pillTarget('needs')"), 'needs');
 assert.equal(run("pillTarget('due')"), 'needs');
 assert.equal(run("pillTarget('stuck')"), 'stuck');
-assert.equal(run("pillTarget('claude')"), null);
+assert.equal(run("pillTarget('claude')"), 'usage'); // the usage circles open Usage
 assert.equal(run("pillTarget(null)"), null);
 assert.equal(run("pillTarget('needs', 'agents')"), 'agents'); // a notice about an agent opens Agents
 run(`setOpen(false); openTab('agents')`);
@@ -1310,5 +1310,58 @@ assert.ok(!run("rowHTML(agedItem, {where: true})").includes('class="age"')); // 
 context.agedItem = {...context.agedItem, status: 'answered', followup: {stage: 'delivering', stuck: 'stopped', replied: now - 3 * 86400}};
 html = run("rowHTML(agedItem, {stuck: true})");
 assert.ok(html.includes('<span class="age">3d ago</span>') && !html.includes('decided'));
+
+// Usage, as Tool cards. The accounts API in its own shape becomes the view's; without it, today's
+// single reading per tool is the account signed in now.
+const acct = (key, email, plan, extra = {}) => ({key, email, plan, org: '', active: false, saved: true, state: 'ok', added: now - 86400, last_used: null,
+  usage: {windows: [{name: '5-hour', left: 60, resets_at: now + 3600}, {name: 'weekly', left: 80, resets_at: now + 5 * 86400}], as_of: now - 120}, ...extra});
+context.accountsRaw = {
+  claude: {active: 'c1', adding: null, accounts: [acct('c1', 'studio@example.com', 'Max', {active: true}), acct('c2', 'personal@example.com', 'Pro'),
+    acct('c3', 'team@example.com', 'Team', {state: 'expired', usage: {windows: [{name: '5-hour', left: 54, resets_at: now + 3000}], as_of: now - 2 * 3600}}),
+    acct('c4', 'old@example.com', 'Pro', {state: 'needs sign-in', usage: null})]},
+  codex: {active: 'x1', adding: null, running: 2, accounts: [acct('x1', 'work@example.com', 'Plus', {active: true, saved: false}), acct('x2', 'side@example.com', 'Pro')]},
+};
+let usage = JSON.parse(run('JSON.stringify(usageModel(accountsRaw))'));
+assert.equal(usage.live, true);
+assert.deepEqual(usage.claude.accounts.map((a) => [a.key, a.active, a.state]), [['c1', true, 'ok'], ['c2', false, 'ok'], ['c3', false, 'expired'], ['c4', false, 'needs sign-in']]);
+assert.deepEqual(usage.claude.accounts[0].windows[0], {name: '5-hour', left: 60, resetsAt: now + 3600});
+assert.equal(usage.codex.running, 2);
+usage = JSON.parse(run(`JSON.stringify(usageModel(null, {claude: {windows: [{name: '5-hour', left: 33, resets_at: ${now + 600}}], as_of: ${now - 60}}}))`));
+assert.deepEqual([usage.live, usage.claude.accounts.length, usage.claude.accounts[0].windows[0].left, usage.codex.accounts.length], [false, 1, 33, 0]); // today's reading, no API
+// The card: the active one first with Active; the others Use and a remove button; a lapsed login
+// offers Sign in again; an expired one keeps its numbers as of when they were read.
+html = run("usageCardHTML(usageModel(accountsRaw), 'claude')");
+assert.ok(html.includes('<h2>Claude</h2><span class="u-using">uses studio@example.com</span>') && html.includes('<p class="u-note">Every Claude session moves to the one you pick.</p>'));
+assert.deepEqual([...html.matchAll(/data-acct="(c\d)"/g)].map((m) => m[1]), ['c1', 'c2', 'c3', 'c4']);
+assert.ok(/data-acct="c1">.*Active<\/span><\/div>/.test(html.split('data-acct="c2"')[0]) && !html.split('data-acct="c2"')[0].includes('data-u="ask-remove"'));
+assert.ok(html.includes('data-u="use" data-key="c2"') && html.includes('data-u="ask-remove" data-key="c2"'));
+assert.ok(html.includes('data-u="again" data-key="c4">Sign in again') && html.includes('<span class="bad">Needs sign-in</span> · its saved login lapsed'));
+assert.ok(/data-acct="c3".*As of 2h ago/.test(html) && /data-acct="c3"><div class="u-row"><span class="u-ring\s+dim/.test(html));
+assert.ok(html.includes('data-u="add" data-tool="claude"') && html.includes('<span class="u-mini-h">Codex</span><span class="u-using">uses work@example.com · 2 accounts</span>'));
+assert.ok(run("usageCardHTML(usageModel(accountsRaw), 'codex')").includes('Open Codex sessions keep the old account until restarted.'));
+html = run(`usageCardHTML(usageModel(null, {claude: {windows: [{name: '5-hour', left: 33}], as_of: ${now - 60}}}), 'claude')`);
+assert.ok(!html.includes('data-u="use"') && !html.includes('data-u="add"') && html.includes('33% left')); // no API: readings only
+// Steps in place: add, waiting with its spinner (browser or Terminal), sign in again, remove.
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: null, step: 'intro'})`);
+assert.ok(html.includes('Add a Claude account') && html.includes('Nothing changes for Claude Code until you switch to it.') && !html.includes('data-u="add"'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: null, step: 'waiting', job: {terminal: true}})`);
+assert.ok(html.includes('<span class="u-spin" aria-hidden="true"></span>Waiting for you to sign in…') && html.includes('Finish in the Terminal window HQ opened.'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: 'c4', step: 'intro'})`);
+assert.ok(html.includes('Sign old@example.com in again') && html.includes('Claude Code stays signed in as studio@example.com.'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'remove', tool: 'claude', key: 'c2'})`);
+assert.ok(html.includes('Remove personal@example.com from HQ?') && html.includes('data-u="remove" data-key="c2"'));
+// The notice: the address on the first line in parts (so its name gives way and its domain stays),
+// and the second line: Claude's note, or Codex's warning without the words the first line says.
+html = run(`usageToastHTML({lead: 'Switched to ', email: 'alexandra@example.com', body: 'Every Claude session moves to it.'}, {label: 'Switch back'})`);
+assert.ok(html.includes('<span class="u-t-lead">Switched to </span><span class="u-t-local" data-full="alexandra">alexandra</span><span class="u-t-domain">@example.com</span>') && html.includes('>Switch back</button>'));
+assert.equal(run(`switchedBody('claude', {note: 'Every open Claude session moves to it at its next message'})`), 'Every open Claude session moves to it at its next message');
+assert.equal(run(`switchedBody('claude', {})`), 'Every Claude session moves to it.');
+assert.equal(run(`switchedBody('codex', {warning: 'Switched to side@example.com. Restart the 2 open Codex sessions to use it.'})`), 'Restart the 2 open Codex sessions to use it.');
+assert.equal(run(`switchedBody('codex', {warning: null, note: ''})`), '');
+// Usage is a tab of its own, reached from its circles, keeping the tool you left.
+assert.equal(run("pillTarget('claude')"), 'usage');
+assert.equal(run("pillTarget('codex')"), 'usage');
+assert.equal(run("cleanTabs({tabs: {usage: {tool: 'codex'}}}).tabs.usage.tool"), 'codex');
+assert.equal(run("cleanTabs({tabs: {usage: {tool: '<x>'}}}).tabs.usage.tool"), 'claude');
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

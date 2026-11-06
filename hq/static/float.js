@@ -623,10 +623,270 @@ function agentPageHTML(a, now) {
     ${lane('you', 'Needs you')}${lane('agents', 'With the agent')}${lane('waiting', 'Waiting on someone')}
     <button class="ghost-pill f-wide" type="button" data-agent-dashboard="${esc(a.id)}">Open in the dashboard</button></div>`;
 }
+// Usage: the Claude or Codex circle on the pill opens a card for that tool, with every account
+// HQ keeps for it, how much each has left and when it comes back, and one tap to use another;
+// the other tool waits below as one line. Switching swaps the tool's login, as /login does, so a
+// notice says what moved and offers to switch back. Adding never switches.
+const USAGE_TOOLS = {claude: {name: 'Claude', app: 'Claude Code'}, codex: {name: 'Codex', app: 'Codex'}};
+const USAGE_HOUR = 3600, USAGE_DAY = 86400;
+const usageView = {tool: 'claude', data: null, live: false, loading: null, flow: null, toast: null, undo: null, toastFor: null, timer: null, seen: ''};
+// The accounts API, or, where it is missing, today's single reading for each tool as the account
+// signed in now, so the view never comes up empty.
+function usageModel(raw, usage = state.usage) {
+  const windows = (u) => (u?.windows || []).filter((w) => Number.isFinite(w.left)).map((w) => ({name: w.name, left: w.left, resetsAt: w.resets_at || null}));
+  if (raw?.claude && raw?.codex) {
+    const tool = (t) => ({active: t.active || null, adding: t.adding || null, running: Number(t.running) || 0,
+      accounts: (t.accounts || []).map((a) => ({key: a.key, email: a.email || '', plan: a.plan || '', active: Boolean(a.active), saved: a.saved !== false,
+        state: ['ok', 'expired', 'needs sign-in'].includes(a.state) ? a.state : 'ok', windows: windows(a.usage), asOf: a.usage?.as_of ?? null}))});
+    return {live: true, claude: tool(raw.claude), codex: tool(raw.codex)};
+  }
+  const one = (name) => {
+    const u = usage?.[name], w = windows(u);
+    return {active: w.length ? 'current' : null, adding: null, running: 0,
+      accounts: w.length ? [{key: 'current', email: '', plan: '', active: true, saved: false, state: 'ok', windows: w, asOf: u.as_of ?? null}] : []};
+  };
+  return {live: false, claude: one('claude'), codex: one('codex')};
+}
+const usageFresh = (a, now = Date.now() / 1000) => a.asOf !== null && now - a.asOf < USAGE_DAY && a.windows.length > 0;
+const usageStale = (a, now = Date.now() / 1000) => a.state === 'expired' || (usageFresh(a, now) && now - a.asOf >= USAGE_HOUR);
+const usageTightest = (a) => (usageFresh(a) ? a.windows.reduce((m, w) => (!m || w.left < m.left ? w : m), null) : null);
+function untilWords(seconds) {
+  const s = Math.max(0, Math.round(seconds)), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`;
+}
+const usageUntil = (at) => `<span class="u-until" data-until="${at}">in ${untilWords(at - Date.now() / 1000)}</span>`;
+const usagePct = (left) => (left <= USAGE_LOW ? `<span class="bad">${left}% left</span>` : `${left}% left`);
+function usageRing(left, {cls = '', dim = false} = {}) {
+  const empty = left === null || left === undefined, low = !empty && left <= USAGE_LOW;
+  return `<span class="u-ring ${cls} ${low ? 'low' : ''} ${dim ? 'dim' : ''} ${empty ? 'u-none' : ''}" aria-label="${empty ? 'No reading' : `${left}% left`}"><svg viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="16" pathLength="100"/>${!empty && left > 0 ? `<circle class="fill" cx="18" cy="18" r="16" pathLength="100" stroke-dasharray="${left} 100"/>` : ''}</svg><b>${empty ? '–' : left}</b></span>`;
+}
+const usageWho = (a) => `<span class="u-who"><span class="u-email" title="${esc(a.email || 'Signed in now')}">${esc(a.email || 'Signed in now')}</span>${a.plan ? `<span class="u-plan">${esc(a.plan)}</span>` : ''}</span>`;
+function usageLines(a, now = Date.now() / 1000) {
+  if (a.state === 'needs sign-in') return '<span class="u-line"><span class="bad">Needs sign-in</span> · its saved login lapsed</span>';
+  if (!usageFresh(a, now)) return '<span class="u-line old">No reading in the last day</span>';
+  return a.windows.map((w) => `<span class="u-line"><span class="u-part">${esc(w.name)} ${usagePct(w.left)}</span>${w.resetsAt ? ` · <span class="u-part">back ${usageUntil(w.resetsAt)}</span>` : ''}</span>`).join('')
+    + (usageStale(a, now) ? `<span class="u-line old">As of ${ago(a.asOf)}</span>` : '');
+}
+// What a switch reaches, said before you make it.
+const usageReach = (tool) => (tool === 'claude' ? 'Every Claude session moves to the one you pick.' : 'Open Codex sessions keep the old account until restarted.');
+const usageActive = (t) => t.accounts.find((a) => a.active) || null;
+// The add or sign-in step, in place.
+function usageAddHTML(tool, f, data) {
+  const t = data[tool], who = f.key && t.accounts.find((a) => a.key === f.key), now = usageActive(t), app = USAGE_TOOLS[tool].app;
+  const go = '<div class="u-send"><button class="ghost-pill" type="button" data-u="cancel">Cancel</button><button class="u-wide" type="button" data-u="signin">Sign in with your browser</button></div>';
+  if (f.step === 'waiting') {
+    const where = f.job?.terminal ? 'the Terminal window HQ opened' : 'the browser tab HQ opened';
+    return `<div class="u-sheet" data-u-sheet="add"><div class="u-title"><span class="u-spin" aria-hidden="true"></span>Waiting for you to sign in…</div><p>Finish in ${where}${who ? `, as ${esc(who.email)}` : ''}.</p><div class="u-send"><button class="ghost-pill" type="button" data-u="cancel">Cancel</button></div></div>`;
+  }
+  if (f.step === 'failed') {
+    return `<div class="u-sheet" data-u-sheet="add"><div class="u-title">The sign-in didn't finish</div><p>${esc(f.job?.message || 'HQ could not add the account.')}</p><div class="u-send"><button class="ghost-pill" type="button" data-u="cancel">Close</button><button class="u-wide" type="button" data-u="signin">Try again</button></div></div>`;
+  }
+  if (who) return `<div class="u-sheet" data-u-sheet="add"><div class="u-title">Sign ${esc(who.email)} in again</div><p>Its saved login lapsed.${now && now !== who ? ` ${app} stays signed in as ${esc(now.email)}.` : ''}</p>${go}</div>`;
+  return `<div class="u-sheet" data-u-sheet="add"><div class="u-title">Add a ${USAGE_TOOLS[tool].name} account</div><p>Nothing changes for ${app} until you switch to it.</p>${go}</div>`;
+}
+function usageRemoveHTML(a) {
+  return `<div class="u-sheet" data-u-sheet="remove"><div class="u-title">Remove ${esc(a.email)} from HQ?</div><p>HQ deletes the login it stored for it. You stay signed in wherever else you use it.</p><div class="u-send"><button class="ghost-pill" type="button" data-u="cancel">Cancel</button><button class="u-wide" type="button" data-u="remove" data-key="${esc(a.key)}">Remove</button></div></div>`;
+}
+// B: the tool you clicked as a card; the other tool as one line under it.
+function usageCardHTML(data, tool, f = null) {
+  const t = data[tool], other = tool === 'claude' ? 'codex' : 'claude', o = data[other], active = usageActive(t);
+  const rows = t.accounts.map((a) => {
+    const w = usageTightest(a), id = esc(a.key);
+    const side = a.active ? `<span class="u-tick">${icon('check', 'sm')}Active</span>`
+      : a.state === 'needs sign-in' ? `<button class="u-btn" type="button" data-u="again" data-key="${id}">Sign in again</button>`
+      : data.live ? `<button class="u-btn" type="button" data-u="use" data-key="${id}">Use</button>` : '';
+    const remove = !a.active && a.saved && data.live ? `<button class="icon-btn u-x" type="button" data-u="ask-remove" data-key="${id}" aria-label="Remove ${esc(a.email)} from HQ" title="Remove from HQ">${icon('x', 'sm')}</button>` : '';
+    const sheet = f?.key === a.key ? (f.kind === 'remove' ? usageRemoveHTML(a) : usageAddHTML(tool, f, data)) : '';
+    return `<div class="u-acct" data-acct="${id}"><div class="u-row">${usageRing(w ? w.left : null, {dim: usageStale(a)})}<div class="u-mid">${usageWho(a)}${usageLines(a)}</div><div class="u-side">${side}${remove}</div></div>${sheet}</div>`;
+  }).join('') || `<p class="u-empty">${USAGE_TOOLS[tool].app} isn't signed in on this Mac.</p>`;
+  const adding = f?.kind === 'add' && !f.key && f.tool === tool;
+  const add = !data.live ? '' : adding ? usageAddHTML(tool, f, data)
+    : `<button class="u-add" type="button" data-u="add" data-tool="${tool}">${icon('plus', 'sm')}Add a ${USAGE_TOOLS[tool].name} account</button>`;
+  const card = `<section class="u-card" aria-label="${USAGE_TOOLS[tool].name}"><div class="u-card-h"><h2>${USAGE_TOOLS[tool].name}</h2><span class="u-using">${active ? `uses ${esc(active.email || 'the signed-in account')}` : 'not signed in'}</span></div>
+    ${data.live ? `<p class="u-note">${usageReach(tool)}</p>` : ''}${rows}${add}</section>`;
+  const theirs = usageActive(o), tw = theirs && usageTightest(theirs);
+  const mini = `<button class="u-mini" type="button" data-u="tool" data-tool="${other}">${usageRing(tw ? tw.left : null)}<span class="u-mid"><span class="u-mini-h">${USAGE_TOOLS[other].name}</span><span class="u-using">${theirs ? `uses ${esc(theirs.email || 'the signed-in account')}` : 'not signed in'}${data.live ? ` · ${plural(o.accounts.length, 'account', 'accounts')}` : ''}</span></span></button>`;
+  return card + mini;
+}
+// The notice: what happened in two lines, an address giving way in the middle of its name.
+function usageToastHTML(t, undo) {
+  const at = t.email.lastIndexOf('@'), name = at > 0 ? t.email.slice(0, at) : t.email, domain = at > 0 ? t.email.slice(at) : '';
+  return `<div class="u-veil" aria-hidden="true"></div><div class="u-toast" role="status"><span class="u-t-text"><span class="u-sr">${esc(t.lead + t.email)}.</span><strong class="u-t-title" aria-hidden="true" title="${esc(t.email)}"><span class="u-t-lead">${esc(t.lead)}</span><span class="u-t-local" data-full="${esc(name)}">${esc(name)}</span><span class="u-t-domain">${esc(domain)}</span></strong>${t.body ? `<span class="u-t-body">${esc(t.body)}</span>` : ''}</span>${undo ? `<button class="u-btn" type="button" data-u="undo">${esc(undo.label)}</button>` : ''}</div>`;
+}
+// The second line after a switch. Codex's warning is already a sentence that starts by naming
+// the account, which the first line says, so only the rest of it is kept.
+function switchedBody(tool, reply) {
+  if (tool === 'codex' && reply?.warning) return String(reply.warning).replace(/^Switched to \S+\.\s+/, '');
+  return reply?.note || (tool === 'claude' ? 'Every Claude session moves to it.' : '');
+}
+// Reading and acting. Every request carries the token; the accounts API may be missing (an
+// older HQ, or the lab), and then the view shows today's readings and offers no actions.
+async function loadAccounts() {
+  if (usageView.loading) return usageView.loading;
+  usageView.loading = api('accounts').then((raw) => {usageView.raw = raw;}).catch(() => {usageView.raw = null;})
+    .finally(() => {usageView.loading = null; if (listView === 'usage') render();});
+  return usageView.loading;
+}
+// /api/state carries a summary every 15s; when it changes, the open view reads the details again.
+function followAccounts() {
+  const seen = JSON.stringify(state.accounts || null);
+  if (seen === usageView.seen) return;
+  usageView.seen = seen;
+  if (floatOpen && listView === 'usage') loadAccounts();
+}
+function usageData() {return usageModel(usageView.raw, state.usage);}
+function usageNotice(note) {
+  clearTimeout(usageView.timer);
+  usageView.toast = {lead: note.lead, email: note.email, body: note.body};
+  usageView.undo = note.undo || null;
+  render();
+  usageView.timer = setTimeout(dismissUsageNotice, 9000);
+}
+function dismissUsageNotice() {
+  clearTimeout(usageView.timer);
+  if (!usageView.toast) return false;
+  usageView.toast = usageView.undo = null;
+  render();
+  return true;
+}
+async function useAccount(tool, key) {
+  const before = usageActive(usageData()[tool]);
+  try {
+    const reply = await api(`accounts/${tool}/${key}/use`, {});
+    await loadAccounts();
+    if (reply.already) return render();
+    usageNotice({lead: 'Switched to ', email: reply.account?.email || '', body: switchedBody(tool, reply),
+      // HQ saves the login it switches away from, so switching back needs no sign-in.
+      undo: before && before.key !== key ? {kind: 'use', tool, key: before.key, label: 'Switch back'} : null});
+  } catch (error) {
+    toast(error.message);
+  }
+}
+async function removeAccount(tool, key) {
+  try {
+    const reply = await api(`accounts/${tool}/${key}/remove`, {});
+    usageView.flow = null;
+    await loadAccounts();
+    usageNotice({lead: 'Removed ', email: reply.email || '', body: 'HQ deleted the login it stored for it.'});
+  } catch (error) {
+    toast(error.message);
+  }
+}
+// Adding is a sign-in that HQ keeps; nothing changes for the tool until you switch to it.
+async function startSignIn() {
+  const f = usageView.flow;
+  if (!f || f.kind !== 'add') return;
+  try {
+    f.job = await api(`accounts/${f.tool}/add`, {});
+    f.step = 'waiting';
+    render();
+    pollSignIn(f);
+  } catch (error) {
+    f.step = 'failed';
+    f.job = {message: error.message};
+    render();
+  }
+}
+async function pollSignIn(f) {
+  while (usageView.flow === f && f.step === 'waiting' && f.job?.id) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (usageView.flow !== f) return;
+    let job;
+    try {
+      job = await api(`accounts/jobs/${f.job.id}`);
+    } catch {
+      continue;
+    }
+    f.job = job;
+    if (job.state === 'added') {
+      usageView.flow = null;
+      await loadAccounts();
+      const a = job.account;
+      return usageNotice({lead: 'Added ', email: a?.email || '', body: 'Nothing changes until you switch.',
+        undo: a && !a.active ? {kind: 'use', tool: f.tool, key: a.key, label: 'Switch to it'} : null});
+    }
+    if (job.state === 'failed') {f.step = 'failed'; return render();}
+    if (job.state === 'cancelled') {usageView.flow = null; return render();}
+    render();
+  }
+}
+async function cancelUsageFlow() {
+  const f = usageView.flow;
+  usageView.flow = null;
+  render();
+  if (f?.kind === 'add' && f.step === 'waiting' && f.job?.id) {
+    try {await api(`accounts/jobs/${f.job.id}/cancel`, {});} catch {/* it may have just finished */}
+  }
+}
+function usageClick(e) {
+  const el = e.target.closest('[data-u]');
+  if (!el || !el.closest('#main')) return false;
+  const act = el.dataset.u, key = el.dataset.key, tool = usageView.tool;
+  if (act === 'tool') {usageView.tool = el.dataset.tool; usageView.flow = null; saveTab(); render();}
+  else if (act === 'use') useAccount(tool, key);
+  else if (act === 'add') {usageView.flow = {kind: 'add', tool, key: null, step: 'intro'}; render();}
+  else if (act === 'again') {usageView.flow = {kind: 'add', tool, key, step: 'intro'}; render();}
+  else if (act === 'signin') startSignIn();
+  else if (act === 'ask-remove') {usageView.flow = usageView.flow?.kind === 'remove' && usageView.flow.key === key ? null : {kind: 'remove', tool, key}; render();}
+  else if (act === 'remove') removeAccount(tool, key);
+  else if (act === 'cancel') cancelUsageFlow();
+  else if (act === 'undo') {const u = usageView.undo; dismissUsageNotice(); if (u?.kind === 'use') useAccount(u.tool, u.key);}
+  else if (act === 'close') setOpen(false);
+  else return false;
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+// Escape steps back one thing at a time: the notice, then an open step, then the panel.
+function usageEscape() {
+  if (dismissUsageNotice()) return true;
+  if (usageView.flow) {cancelUsageFlow(); return true;}
+  return false;
+}
+// The Usage view in the panel: its header with a corner close, the card, and the notice.
+function usagePanelHTML(live = liveHealthy) {
+  const head = `<header class="f-head"><span class="f-headline"><h1>Usage</h1></span>${offlineNote(live)}<button class="icon-btn f-push" type="button" data-u="close" aria-label="Back to the pill" title="Close  Esc">${icon('x')}</button></header>`;
+  const toast = usageView.toast ? usageToastHTML(usageView.toast, usageView.undo) : '';
+  return `${head}<div class="f-rows scroll"><div class="f-rows-in u-body">${usageCardHTML(usageData(), usageView.tool, usageView.flow)}</div></div>${toast}`;
+}
+// A long address gives way in the middle of its name: the longest start that fits, then "…",
+// set right against the domain.
+function fitAddress(el) {
+  if (!el) return;
+  const full = el.dataset.full || '';
+  el.textContent = full;
+  if (el.scrollWidth <= el.clientWidth + 0.5) return;
+  let lo = 1, hi = full.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    el.textContent = `${full.slice(0, mid)}…`;
+    if (el.scrollWidth <= el.clientWidth + 0.5) lo = mid; else hi = mid - 1;
+  }
+  el.textContent = `${full.slice(0, lo).replace(/[.\-_]$/, '')}…`;
+}
+// After a paint: the notice's address fitted, its veil sized, and a new notice rising in.
+function afterUsage() {
+  const note = $('#main .u-toast'), veil = $('#main .u-veil');
+  if (!note) {usageView.shown = null; return;}
+  fitAddress($('#main .u-t-local'));
+  veil.style.height = `${8 + note.offsetHeight + 24}px`;
+  if (usageView.shown !== usageView.toast && !calm()) {
+    note.animate([{opacity: 0, transform: 'translateY(14px) scale(.97)'}, {opacity: 1, transform: 'none'}], {duration: 460, easing: spring('--f-spring')});
+    veil.animate([{opacity: 0}, {opacity: 1}], {duration: 300, easing: 'ease-out'});
+  }
+  usageView.shown = usageView.toast;
+}
+// Countdowns tick while the view is open; nothing else repaints for them.
+function tickUsage() {
+  if (!floatOpen || listView !== 'usage') return;
+  const now = Date.now() / 1000;
+  document.querySelectorAll('#main .u-until[data-until]').forEach((el) => {el.textContent = `in ${untilWords(Number(el.dataset.until) - now)}`;});
+}
+
 // Each tab keeps where you were in it: what it had open, its highlight and its scroll. Closing
 // the panel keeps it, and so does a restart, since only ids and positions are stored.
-const TABS_KEY = 'hq-float-tabs', TAB_NAMES = ['needs', 'agents', 'stuck'];
-const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false, filter: blankNeeds('none'), show: 'all', sheet: null});
+const TABS_KEY = 'hq-float-tabs', TAB_NAMES = ['needs', 'agents', 'stuck', 'usage'];
+const blankTab = () => ({item: null, agent: null, cursor: null, index: 0, scroll: 0, body: 0, itemTab: null, all: false, filter: blankNeeds('none'), show: 'all', sheet: null, tool: 'claude'});
 const idOrNull = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 200 ? v : null);
 const place = (v) => (Number.isFinite(v) && v >= 0 ? Math.min(Math.round(v), 1e6) : 0);
 function cleanTabs(saved) {
@@ -635,7 +895,7 @@ function cleanTabs(saved) {
     if (!t || typeof t !== 'object') return [name, blankTab()];
     return [name, {item: idOrNull(t.item), agent: idOrNull(t.agent), cursor: idOrNull(t.cursor), index: place(t.index), scroll: place(t.scroll),
       body: place(t.body), itemTab: ['steps', 'why', 'context', 'ask'].includes(t.itemTab) ? t.itemTab : null, all: t.all === true,
-      filter: cleanNeeds(t.filter, 'none'), show: t.show === 'unacted' ? 'unacted' : 'all', sheet: idOrNull(t.sheet)}];
+      filter: cleanNeeds(t.filter, 'none'), show: t.show === 'unacted' ? 'unacted' : 'all', sheet: idOrNull(t.sheet), tool: t.tool === 'codex' ? 'codex' : 'claude'}];
   }));
   return {view: TAB_NAMES.includes(saved?.view) ? saved.view : 'needs', tabs};
 }
@@ -662,7 +922,7 @@ function saveTab() {
   Object.assign(t, {item: route.item || null, agent: listView === 'agents' ? agentOpen : null, cursor,
     index: Math.max(0, rows.findIndex((r) => rowKey(r) === on)), scroll: place($('.f-rows')?.scrollTop),
     body: route.item ? place($('.d-body')?.scrollTop) : 0, itemTab: route.item ? draftOf(route.item).tab || null : null,
-    all: listView === 'agents' && agentsAll, show: listView === 'agents' ? agentsShow : t.show, sheet: listView === 'agents' ? heldSheet : null});
+    all: listView === 'agents' && agentsAll, show: listView === 'agents' ? agentsShow : t.show, sheet: listView === 'agents' ? heldSheet : null, tool: listView === 'usage' ? usageView.tool : t.tool || 'claude'});
   tabState.view = listView;
   const kept = {view: tabState.view, tabs: Object.fromEntries(Object.entries(tabState.tabs).map(([name, x]) => [name, {...x, filter: keptNeeds(x.filter || blankNeeds('none'))}]))};
   const json = JSON.stringify(kept);
@@ -679,6 +939,8 @@ function restoreTab(view) {
   if (view === 'agents') agentsShow = t.show || 'all';
   heldSheet = view === 'agents' ? t.sheet : null;
   heldClosing = null;
+  // Usage comes back on the tool you left, and reads its accounts again.
+  if (view === 'usage') {usageView.tool = t.tool || 'claude'; usageView.flow = null; loadAccounts();}
   const item = t.item && stillOpen(view, t.item, agentOpen) ? t.item : null;
   if (item && t.itemTab && !draftOf(item).tab) setDraft(item, {tab: t.itemTab});
   // A stale item stays the highlight; it is gone from the list, so the row now at its place lights.
@@ -710,7 +972,7 @@ function openTab(view = tabState.view, item) {
 // itself, wherever you were.
 function pillTarget(metric, noticeGroup) {
   if (noticeGroup) return noticeGroup === 'agents' ? 'agents' : 'needs';
-  return {needs: 'needs', decisions: 'needs', due: 'needs', agents: 'agents', stuck: 'stuck'}[metric] || null;
+  return {needs: 'needs', decisions: 'needs', due: 'needs', agents: 'agents', stuck: 'stuck', claude: 'usage', codex: 'usage'}[metric] || null;
 }
 // The highlighted row in whichever list is open: the first on open, the item you came back from.
 const cursorRows = () => [...document.querySelectorAll('#main [data-item], #main [data-agent]')];
@@ -850,8 +1112,10 @@ function paintFloat({background = false} = {}) {
   const tops = !listMotion && listView === 'agents' ? agentTops() : null;
   const finding = document.activeElement?.matches?.('[data-g-q]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const sheet = keepSheet();
-  setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
+  setHTML($('#main'), customizing ? settingsHTML(items) : listView === 'agents' ? agentsPanelHTML(items, live) : listView === 'usage' ? usagePanelHTML(live) : listView === 'stuck' ? stuckPanelHTML(live) : floatListHTML(items, live));
   sheet();
+  if (listView === 'usage') afterUsage();
+  followAccounts();
   if (finding) {const q = $('#main [data-g-q]'); q?.focus({preventScroll: true}); q?.setSelectionRange(...finding);}
   if (mode === 'list') {markCursor(); slideList(listMotion); glideAgents(tops);}
   listMotion = null;
@@ -1111,7 +1375,7 @@ function boxSize(mode = document.body.dataset.mode) {
   const chosen = chosenSize(sizeView(mode));
   if (mode === 'list') {
     if (listView === 'agents' && heldSheet && $('#main .held-sheet')) return {width: chosen.width, height: chosen.height};
-    const above = [...($('#main')?.children || [])].filter((el) => !el.matches('.f-rows, .g-pop, .held-scrim, .held-sheet')).reduce((n, el) => n + el.offsetHeight, 0);
+    const above = [...($('#main')?.children || [])].filter((el) => !el.matches('.f-rows, .g-pop, .held-scrim, .held-sheet, .u-toast, .u-veil')).reduce((n, el) => n + el.offsetHeight, 0);
     const rows = $('.f-rows-in')?.offsetHeight || 0;
     return {width: chosen.width, height: Math.min(chosen.height, above + rows + 2)};
   }
@@ -1273,6 +1537,8 @@ function setOpen(open) {
   saveTab();
   floatOpen = false;
   customizing = false;
+  if (usageView.timer) clearTimeout(usageView.timer);
+  usageView.toast = usageView.undo = null;
   render();
 }
 function syncPill() {
@@ -1743,6 +2009,7 @@ function bootFloat() {
     go({item: target});
   };
   window.hqFloat = {receive};
+  setInterval(tickUsage, 1000);
   document.documentElement.style.setProperty('--f-spring', springCurve({stiffness: 190, damping: 17}));
   document.documentElement.style.setProperty('--f-soft', springCurve({stiffness: 170, damping: 26}));
   document.documentElement.style.setProperty('--f-hug', springCurve({stiffness: 240, damping: 26}));
@@ -1761,7 +2028,7 @@ function bootFloat() {
       e.stopPropagation();
       return;
     }
-    if (e.target.closest('#main') && heldClick(e)) return;
+    if (e.target.closest('#main') && (heldClick(e) || usageClick(e))) return;
     const row = e.target.closest('#main [data-item]');
     const inner = e.target.closest('[data-href], #detail a[href^="#"]');
     const circle = e.target.closest('[data-circle]'), shift = e.target.closest('[data-circle-move]');
@@ -1772,6 +2039,10 @@ function bootFloat() {
       const item = notice?.item, rows = [...document.querySelectorAll('#rail .f-row[data-metric]')];
       const metric = e.target.closest('[data-metric]')?.dataset.metric || (spot.on ? rows[spot.index]?.dataset.metric : null);
       const target = pillTarget(metric, notice?.group);
+      if (target === 'usage' && USAGE_TOOLS[metric]) {
+        if (floatOpen && listView === 'usage' && usageView.tool !== metric) {usageView.tool = metric; usageView.flow = null; saveTab(); return render();}
+        tabState.tabs.usage.tool = metric;
+      }
       if (floatOpen && (!target || target === listView)) return setOpen(false);
       if (floatOpen) return showList(target);
       // An item that is no longer in Needs you, such as a stuck decision, still opens.
@@ -1841,6 +2112,7 @@ function bootFloat() {
     else if (customizing && keyConflict) {keyConflict = null; render();}
     else if (customizing) {customizing = false; render();}
     else if (floatOpen && !route.item && listView === 'agents' && heldEscape()) {/* the note or the sheet took it */}
+    else if (floatOpen && !route.item && listView === 'usage' && usageEscape()) {/* the notice or a step took it */}
     else if (floatOpen && !route.item && listView === 'needs' && needsEscape(e)) {/* the search or a menu took it */}
     else if (floatOpen && !route.item && (agentOpen || listView === 'stuck')) backToList();
     else if (floatOpen && !route.item) setOpen(false);
