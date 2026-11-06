@@ -597,6 +597,14 @@ function agentOf(s, items) {
 const archivable = (a) => !a.open && !a.held && !['active', 'waiting'].includes(a.state);
 // Put away, and nothing since: it comes back by itself once it runs or has something open.
 const putAway = (a) => a.archived > 0 && archivable(a) && (a.last || 0) <= a.archived;
+// Putting away is only a view, so it is never asked about: Archived brings it back. The live
+// feed carries the change to the dashboard and the pill alike.
+const archiveAgents = (ids, archived) => api('sessions/archive', {ids, archived}).catch((error) => toast(error.message));
+function toggleAgentFold(key) {
+  if (agentFolds.has(key)) agentFolds.delete(key);
+  else agentFolds.add(key);
+  remember('hq-agent-folds', [...agentFolds]);
+}
 // When an agent last ran: running now is the most recent of all.
 const lately = (a) => (a.state === 'active' ? Infinity : Math.max(a.last || 0, a.state === 'waiting' ? a.since || 0 : 0));
 const byLately = (x, y) => (lately(y) - lately(x)) || ((y.since || 0) - (x.since || 0));
@@ -1658,18 +1666,9 @@ function bind() {
   if (quiet) quiet.onclick = () => {showQuiet = true; render();};
   const shelf = main.querySelector('[data-archived]');
   if (shelf) shelf.onclick = () => {showArchived = !showArchived; render();};
-  main.querySelectorAll('[data-agent-fold]').forEach((el) => (el.onclick = () => {
-    const key = el.dataset.agentFold;
-    if (agentFolds.has(key)) agentFolds.delete(key);
-    else agentFolds.add(key);
-    remember('hq-agent-folds', [...agentFolds]);
-    render();
-  }));
-  // Putting away is only a view, so it is never asked about: Archived brings it back.
-  const archive = (ids, archived) => api('sessions/archive', {ids, archived}).then(() => refresh(true))
-    .catch((error) => toast(error.message));
-  main.querySelectorAll('[data-archive]').forEach((el) => (el.onclick = () => archive(el.dataset.archive.split(' '), true)));
-  main.querySelectorAll('[data-unarchive]').forEach((el) => (el.onclick = () => archive([el.dataset.unarchive], false)));
+  main.querySelectorAll('[data-agent-fold]').forEach((el) => (el.onclick = () => {toggleAgentFold(el.dataset.agentFold); render();}));
+  main.querySelectorAll('[data-archive]').forEach((el) => (el.onclick = () => archiveAgents(el.dataset.archive.split(' '), true).then(() => refresh(true))));
+  main.querySelectorAll('[data-unarchive]').forEach((el) => (el.onclick = () => archiveAgents([el.dataset.unarchive], false).then(() => refresh(true))));
   const more = main.querySelector('[data-more]');
   if (more) more.onclick = () => {doneLimit += 200; render();};
   const menu = $('#menu');

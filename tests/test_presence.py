@@ -196,6 +196,26 @@ class QuietTests(unittest.TestCase):
             presence.sample()
         self.assertEqual(self.states(), {"claude-code:busy-one": "idle"})
 
+    def test_a_name_you_gave_it_replaces_hqs_at_once_and_a_made_up_one_never(self):
+        me = os.getpid()
+        self.store.register("claude-code:s1", "Claude Code · noclick4", "claude-code", "s1", "/tmp")
+        path = self.folder / f"{me}.json"
+        row = {"pid": me, "sessionId": "s1", "cwd": "/tmp", "status": "busy", "name": "noclick4-59", "nameSource": "derived"}
+        path.write_text(json.dumps(row))
+        presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)
+        name = lambda: self.store.session("claude-code:s1")["name"]
+        with patch("hq.presence.subprocess.run", return_value=Mock(stdout="[]")):
+            presence.sample()
+            self.assertEqual(name(), "Claude Code · noclick4")
+            path.write_text(json.dumps({**row, "name": " main   coordinator ", "nameSource": "user"}))
+            os.utime(path, (time.time() + 5, time.time() + 5))
+            with patch.object(self.store, "register", wraps=self.store.register) as registered:
+                for _ in range(3):
+                    self.now += 1
+                    presence.sample()
+            self.assertEqual(name(), "main coordinator")
+            self.assertEqual(registered.call_count, 1)  # once, not every second
+
     def test_an_unchanged_state_is_written_only_to_renew_it(self):
         self.write(os.getpid(), "steady", "busy")
         presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)

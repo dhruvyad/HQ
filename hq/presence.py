@@ -124,11 +124,17 @@ class ClaudePresence:
             except PermissionError:
                 self.unverified(sid, present)
                 continue
+            # A name you gave it (/rename, --name; Claude Code marks it as yours) replaces HQ's at once,
+            # without waiting for your next message. One it made up from the folder never does.
+            yours = row.get("name") if row.get("nameSource") == "user" and isinstance(row.get("name"), str) else ""
+            yours = " ".join(yours.split())[:80]
             try:
-                self.store.session(sid)
+                known = self.store.session(sid)
             except ValueError:
-                name = (row.get("name") or "Claude Code conversation")[:500]
-                self.store.register(sid, name, "claude-code", row["sessionId"], row.get("cwd"))
+                known = self.store.register(sid, yours or (row.get("name") or "Claude Code conversation")[:500],
+                                            "claude-code", row["sessionId"], row.get("cwd"))
+            if yours and known["name"] != yours:
+                self.store.register(sid, yours, "claude-code", row["sessionId"], row.get("cwd"))
             # Dispatched background sessions report "state" where interactive ones say "status".
             status = row.get("status") or row.get("state")
             state = {"busy": "active", "running": "active", "idle": "idle", "blocked": "waiting"}.get(status, "unknown")
