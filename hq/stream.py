@@ -12,13 +12,14 @@ def signature(snapshot):
                 for s in snapshot["sessions"]]
     # The numbers, not when they were read: a newer as_of alone is not news.
     usage = {name: reading and reading["windows"] for name, reading in (snapshot.get("usage") or {}).items()}
-    return json.dumps({"items": snapshot["items"], "sessions": sorted(sessions, key=lambda s: s["id"]), "usage": usage}, sort_keys=True)
+    return json.dumps({"items": snapshot["items"], "sessions": sorted(sessions, key=lambda s: s["id"]), "usage": usage,
+                       "accounts": snapshot.get("accounts")}, sort_keys=True)
 
 
 class StateFeed:
-    def __init__(self, store, usage=None):
+    def __init__(self, store, usage=None, accounts=None):
         self.store, self.stop = store, threading.Event()
-        self.usage = usage
+        self.usage, self.accounts = usage, accounts
         self.condition = threading.Condition()
         self.publish_lock = threading.Lock()
         self.instance = str(uuid.uuid4())
@@ -33,6 +34,8 @@ class StateFeed:
             snapshot = self.store.snapshot()
             # Memory only: the worker does the reading, because this runs constantly.
             snapshot["usage"] = self.usage.current() if self.usage else {"claude": None, "codex": None}
+            # Which account each tool is signed in as, from memory: never a login read here.
+            snapshot["accounts"] = self.accounts.summary() if self.accounts else None
             self.last_success = time.monotonic()
             current = signature(snapshot)
             with self.condition:

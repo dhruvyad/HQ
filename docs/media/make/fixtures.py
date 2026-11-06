@@ -1,6 +1,6 @@
 """Made-up agents and items for the README's pictures, so they never show anyone's real work.
 
-    python3 fixtures.py seed | add | resolve PREFIX
+    python3 fixtures.py seed | add | burst | resolve PREFIX | accounts FAKE_HOME
 
 Only runs against a throwaway inbox: HQ_HOME must be a folder make.mjs created.
 """
@@ -25,6 +25,9 @@ SESSIONS = {
     "docs": ("claude-code:demo-docs", "Update the API reference", "claude-code", "/Users/you/code/lantern", "idle"),
 }
 HARBOR, LANTERN, LEDGER = {"project": "Harbor"}, {"project": "Lantern"}, {"project": "Ledger"}
+# Where each agent says it works, as "worktree · task".
+SOURCES = {"release": "harbor · spring release", "cluster": "lantern · cluster move", "onboarding": "harbor · onboarding emails",
+           "export": "ledger · export totals", "docs": "lantern · api reference"}
 
 
 def items():
@@ -77,11 +80,11 @@ def seed(store):
         kind, owner = fields.pop("kind", "todo"), fields.pop("owner")
         detail, options = fields.pop("detail", ""), fields.pop("options", None)
         item = store.add(SESSIONS[key][0], title, detail, kind, options=options, owner=owner,
-                         readable=owner == "human", source="demo", **fields)
+                         readable=owner == "human", source=SOURCES[key], **fields)
         with store.db() as db:
             db.execute("UPDATE items SET created=?,updated=? WHERE id=?", (now - age * 60, now - age * 60, item["id"]))
     done = store.add(SESSIONS["docs"][0], "Confirm the backup restore finished", "", "todo", owner="human", minutes=2,
-                     steps=["Open the restore log", "Look for the final success line"], readable=True, source="demo",
+                     steps=["Open the restore log", "Look for the final success line"], readable=True, source=SOURCES["docs"],
                      **WHY, **LANTERN)
     store.reply(done["id"], "Looks right")
     # Running for a while already, so nothing reads as having just started.
@@ -92,11 +95,63 @@ def seed(store):
 def add(store):
     """A new decision arrives, as an agent would report it."""
     store.add(SESSIONS["cluster"][0], "Name the new reports page", "", "question", owner="human", minutes=1, rank=30,
-              readable=True, source="demo", project="Lantern", workstream="Reports",
+              readable=True, source=SOURCES["cluster"], project="Lantern", workstream="Reports",
               options=[{"label": "Reports", "note": "Plain, and it's what people already call it.", "recommended": True},
                        {"label": "Insights", "note": "Broader, but vaguer about what's inside."}],
               matters={"lead": "The page ships with the next release", "points": ["The name goes in the sidebar and the emails"]},
               needs_you={"lead": "It's a product call", "points": ["Both names test about the same"]})
+
+
+def accounts(store, fake_home):
+    """Saved Claude and Codex accounts, as database rows only, and who is signed in now, as fake
+    ~/.claude.json and ~/.codex/auth.json files in a throwaway HOME. No secret, real or fake, is
+    written anywhere, and nothing here touches the Keychain: listing reads files and rows."""
+    import base64
+    import json
+    from hq.accounts import key_for
+    if "hq-media-" not in fake_home:
+        sys.exit("Refusing to write login files outside a throwaway HOME")
+    now, H, D = time.time(), 3600, 86400
+
+    def b64(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    def reading(*windows, ago=60):
+        return {"windows": [{"name": n, "left": left, "resets_at": now + r} for n, left, r in windows], "as_of": now - ago}
+
+    os.makedirs(os.path.join(fake_home, ".claude"), exist_ok=True)
+    os.makedirs(os.path.join(fake_home, ".codex"), exist_ok=True)
+    with open(os.path.join(fake_home, ".claude", ".claude.json"), "w") as f:
+        json.dump({"oauthAccount": {"accountUuid": "demo-studio", "organizationUuid": "demo-org", "emailAddress": "studio@example.com",
+                                    "organizationName": "Studio", "planDisplayName": "Max"}}, f)
+    claims = {"email": "work@example.com", "https://api.openai.com/auth": {"chatgpt_user_id": "demo-work", "chatgpt_account_id": "demo-acct-work",
+                                                                            "chatgpt_plan_type": "plus"}}
+    with open(os.path.join(fake_home, ".codex", "auth.json"), "w") as f:
+        json.dump({"tokens": {"id_token": f"{b64({'alg': 'none'})}.{b64(claims)}.demo", "account_id": "demo-acct-work"}}, f)
+    # The signed-in Claude account's live reading, as Claude Code's status line would leave it.
+    studio = reading(("5-hour", 62, 2 * H + 10 * 60), ("weekly", 90, 4 * D + 3 * H))
+    with open(os.path.join(os.environ["HQ_HOME"], "claude-usage.json"), "w") as f:
+        json.dump(studio, f)
+    rows = [  # tool, identity, email, plan, added days ago, reading
+        ("claude", "demo-studio:demo-org", "studio@example.com", "Max", 30, studio),
+        ("claude", "demo-personal:", "personal@example.com", "Pro", 20, reading(("5-hour", 88, 3 * H + 40 * 60), ("weekly", 72, 5 * D + 2 * H))),
+        ("claude", "demo-team:demo-org-2", "team@example.com", "Team", 10, reading(("5-hour", 31, 48 * 60), ("weekly", 63, 2 * D + 6 * H))),
+        ("codex", "demo-work:demo-acct-work", "work@example.com", "Plus", 25, reading(("5-hour", 18, 3 * H + 5 * 60), ("weekly", 70, 3 * D + 4 * H))),
+        ("codex", "demo-side:demo-acct-side", "side@example.com", "Pro", 15, reading(("5-hour", 96, 4 * H + 30 * 60), ("weekly", 92, 6 * D))),
+    ]
+    with store.db() as db:
+        for tool, identity, email, plan, added, usage in rows:
+            db.execute("""INSERT INTO accounts (tool,key,identity,email,plan,org,added,expires,refresh_expires,stale,usage,usage_as_of)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (tool, key_for(tool, identity), identity, email, plan, "", now - added * D,
+                                                    now + 5 * H, now + 60 * D, 0, json.dumps(usage), usage["as_of"]))
+
+
+def burst(store):
+    """Three decisions at once, as agents would report them."""
+    for title, project in [("Name the new reports page", "Lantern"), ("Approve the invoice run for March", "Ledger"),
+                           ("Pick the onboarding illustration", "Harbor")]:
+        store.add(SESSIONS["cluster"][0], title, "", "question", owner="human", minutes=1, rank=30, readable=True, source=SOURCES["cluster"],
+                  project=project, options=["Yes", "Not yet"], **WHY)
 
 
 def resolve(store, prefix):
@@ -114,5 +169,9 @@ if __name__ == "__main__":
         add(store)
     elif command == "resolve":
         resolve(store, sys.argv[2])
+    elif command == "burst":
+        burst(store)
+    elif command == "accounts":
+        accounts(store, sys.argv[2])
     else:
         sys.exit(__doc__)

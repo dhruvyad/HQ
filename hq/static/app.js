@@ -225,8 +225,11 @@ function paintDashboard({background = false} = {}) {
   if (snapshotSignature && route.item && !model.items.some((i) => i.id === route.item)) route.item = null;
   const scrolls = ['#page', '.sb-body', '.d-body'].map((sel) => [sel, document.querySelector(sel)?.scrollTop]);
   const active = document.activeElement, selection = active?.id === 'search' ? [active.selectionStart, active.selectionEnd] : null;
+  const finding = active?.matches?.('[data-g-q]') ? [active.selectionStart, active.selectionEnd] : null;
   $('#sidebar').innerHTML = sidebarHTML();
+  const sheet = keepSheet();
   $('#main').innerHTML = mainHTML();
+  sheet();
   // Typing in the item pane wins over a live refresh; drafts are kept either way.
   const typing = background && $('#detail').contains(active) && active.matches('textarea, input, select');
   if (!typing) renderDetail();
@@ -236,6 +239,7 @@ function paintDashboard({background = false} = {}) {
   else if (scrolls[1][1]) $('.sb-body').scrollTop = scrolls[1][1];
   render.scope = scope;
   if (selection) {const el = $('#search'); el.focus(); el.setSelectionRange(...selection);}
+  if (finding) {const el = $('#main [data-g-q]'); el?.focus({preventScroll: true}); el?.setSelectionRange(...finding);}
   document.body.classList.toggle('detail-open', Boolean(route.item));
   $('#scrim').className = `scrim ${sheetOpen ? 'sheet' : route.item ? 'on' : ''}`;
   $('#sidebar').classList.toggle('on', sheetOpen);
@@ -290,11 +294,12 @@ function projectNavHTML(p) {
 function mainHTML() {
   const page = search ? searchPage() : {needs: needsPage, stuck: stuckPage, agents: agentsPage, agent: agentPage, project: projectPage, workstream: workstreamPage}[route.page]();
   return `<div class="phone-bar"><button class="icon-btn" id="menu" aria-label="Open menu">${icon('menu')}</button><span class="t">${esc(page.title)}</span>${page.actions ? newItemIcon : ''}</div>
-    <div class="page scroll" id="page"><div class="page-inner">
+    <div class="page scroll" id="page" ${page.inert ? 'inert' : ''}><div class="page-inner">
       ${page.crumb ? `<nav class="crumb" aria-label="Breadcrumb"><button data-href="${esc(page.crumb.href)}">${esc(page.crumb.label)}</button>${icon('chev', 'sm')}</nav>` : ''}
-      <header class="page-head"><div><h1>${esc(page.title)}</h1>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</div>${page.actions || ''}</header>
+      ${page.head ? `<header class="page-head g-page"><div class="g-wrap">${page.head}</div>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</header>`
+        : `<header class="page-head"><div><h1>${esc(page.title)}</h1>${page.desc ? `<div class="desc">${page.desc}</div>` : ''}</div>${page.actions || ''}</header>`}
       ${page.body}
-    </div></div>`;
+    </div></div>${page.overlay || ''}`;
 }
 const newItemPill = `<button class="pill outline sm" data-new>${icon('plus', 'sm')}New item</button>`;
 const newItemIcon = `<button class="icon-btn" data-new aria-label="New item">${icon('plus')}</button>`;
@@ -304,13 +309,241 @@ function sortHTML(lane) {
 }
 const headActions = (lane) => `<div class="head-actions">${sortHTML(lane)}${newItemPill}</div>`;
 
+// Needs you, narrowed and arranged (Dhruv's pick, Views + Groups): a view, a search inside
+// it, an order, and a grouping whose folds are kept for each way of grouping.
+const NEED_VIEWS = [['all', 'All'], ['due', 'Due soon'], ['decision', 'Decisions'], ['quick', 'Quick wins'], ['failed', 'Failed replies'], ['new', 'New today'], ['pinned', 'Pinned']];
+const startOfToday = () => new Date(new Date().toDateString()).getTime() / 1000;
+const NEED_FLAGS = {
+  due: dueSoon, quick: (i) => i.minutes > 0 && i.minutes <= 2, failed: (i) => i.delivery === 'failed',
+  new: (i) => i.created >= startOfToday(), pinned: (i) => Boolean(i.pinned),
+};
+// Everything that needs you: your lane, plus any reply that failed to reach its agent.
+const needsYou = (items) => items.filter((i) => i.lane === 'you' || (i.delivery === 'failed' && (i.status !== 'done' || Boolean(i.skipped))));
+const KIND_GROUPS = {blocker: 'Blockers', question: 'Decisions', todo: 'Actions'};
+const DUE_GROUPS = {overdue: 'Overdue', today: 'Today', week: 'This week', later: 'Later', none: 'No due date'};
+// Due dates by week: this week runs through Sunday.
+function weekOf(i) {
+  if (!i.due) return 'none';
+  const d = daysUntil(i.due), toSunday = (7 - new Date().getDay()) % 7;
+  return d < 0 ? 'overdue' : d === 0 ? 'today' : d <= toSunday ? 'week' : 'later';
+}
+const byName = (items, key, name) => [...new Map(items.map((i) => [key(i), name(i)]))].sort((a, b) => a[1].localeCompare(b[1]));
+const GROUP_BY = {
+  none: {label: 'None'},
+  project: {label: 'Project', key: (i) => i.project, list: (items) => byName(items, (i) => i.project, (i) => i.project_name)},
+  kind: {label: 'Kind', key: (i) => (i.kind in KIND_GROUPS ? i.kind : 'todo'), list: () => Object.entries(KIND_GROUPS)},
+  due: {label: 'Due date', short: 'Due', key: weekOf, list: () => Object.entries(DUE_GROUPS)},
+  agent: {label: 'Agent', key: (i) => i.session_id, list: (items) => byName(items, (i) => i.session_id, (i) => i.session_name)},
+};
+const smartOrder = (a, b) => leadOf(a) - leadOf(b) || (leadOf(a) === 1 ? a.due.localeCompare(b.due) : 0) || rankOf(a) - rankOf(b) || b.created - a.created;
+const NEED_ORDERS = {
+  smart: {label: 'Smart', note: 'Pinned, then due soon, then priority', by: smartOrder},
+  newest: {label: 'Newest', note: 'Most recently added first', by: (a, b) => b.created - a.created || smartOrder(a, b)},
+  oldest: {label: 'Oldest', note: 'Waiting longest first', by: (a, b) => a.created - b.created || smartOrder(a, b)},
+  quick: {label: 'Quickest', note: 'Fewest minutes first', by: (a, b) => (a.minutes || 999) - (b.minutes || 999) || smartOrder(a, b)},
+};
+const blankNeeds = (group = 'project') => ({view: 'all', q: '', order: 'smart', group, folds: {}, only: null, searching: false, open: null});
+// Settings come back from storage: keep only what is valid, and ids, never what items say.
+function cleanNeeds(saved, group = 'project') {
+  const f = blankNeeds(group), ok = (v) => typeof v === 'string' && v.length > 0 && v.length <= 200;
+  if (!saved || typeof saved !== 'object') return f;
+  if (ok(saved.view) && (NEED_VIEWS.some(([id]) => id === saved.view) || /^(project|agent):/.test(saved.view))) f.view = saved.view;
+  if (saved.order in NEED_ORDERS) f.order = saved.order;
+  if (saved.group in GROUP_BY) f.group = saved.group;
+  for (const name of Object.keys(GROUP_BY)) {
+    const list = saved.folds?.[name];
+    if (Array.isArray(list)) f.folds[name] = list.filter(ok).slice(0, 200);
+  }
+  if (saved.only && saved.only.group in GROUP_BY && ok(saved.only.v)) f.only = {group: saved.only.group, v: saved.only.v, label: ok(saved.only.label) ? saved.only.label : saved.only.v};
+  return f;
+}
+const keptNeeds = (f) => ({view: f.view, order: f.order, group: f.group, folds: f.folds, only: f.only});
+function viewOk(view, i) {
+  if (view === 'all') return true;
+  if (view === 'decision') return i.kind === 'question';
+  if (view.startsWith('project:')) return i.project === view.slice(8);
+  if (view.startsWith('agent:')) return i.session_id === view.slice(6);
+  return Boolean(NEED_FLAGS[view]?.(i));
+}
+function searchOk(q, i) {
+  const words = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = `${i.title} ${i.project_name} ${i.workstream_name} ${i.session_name} ${KIND_GROUPS[i.kind] || ''} ${(i.tags || []).join(' ')}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+const onlyOk = (only, i) => !only || GROUP_BY[only.group].key(i) === only.v;
+const isNarrowed = (f) => f.view !== 'all' || Boolean(f.q.trim()) || Boolean(f.only);
+function narrowNeeds(base, f) {
+  return base.filter((i) => viewOk(f.view, i) && searchOk(f.q, i) && onlyOk(f.only, i)).sort(NEED_ORDERS[f.order].by);
+}
+// The groups that have rows, in their own order, with the order inside each.
+function needsGroups(rows, f, base = rows) {
+  const g = GROUP_BY[f.group];
+  if (!g.key) return [{k: '', name: '', rows}];
+  return g.list(base).map(([k, name]) => ({k, name, rows: rows.filter((i) => g.key(i) === k)})).filter((x) => x.rows.length);
+}
+function needsViewName(f, base) {
+  if (f.view.startsWith('project:')) return base.find((i) => i.project === f.view.slice(8))?.project_name || 'Project';
+  if (f.view.startsWith('agent:')) return base.find((i) => i.session_id === f.view.slice(6))?.session_name || 'Agent';
+  return f.view === 'all' ? 'Needs you' : NEED_VIEWS.find(([id]) => id === f.view)[1];
+}
+const foldsOf = (f) => new Set(f.folds[f.group] || []);
+function setFolds(f, keys, shut) {
+  const set = foldsOf(f);
+  for (const k of keys) shut ? set.add(k) : set.delete(k);
+  f.folds = {...f.folds, [f.group]: [...set]};
+}
+const G_ICON = {
+  order: '<path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/>', group: '<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/>',
+  foldAll: '<path d="m7 20 5-5 5 5M7 4l5 5 5-5"/>', openAll: '<path d="m7 15 5 5 5-5M7 9l5-5 5 5"/>',
+};
+const gIcon = (name) => `<svg class="icon ico" viewBox="0 0 24 24" aria-hidden="true">${G_ICON[name] || ICONS[name]}</svg>`;
+// The header: one row whatever the width. Search springs open in place of the gap beside it.
+function needsHeadHTML(f, base, {extra = '', more = '', elsewhere = ''} = {}) {
+  const rows = narrowNeeds(base, f), narrowed = isNarrowed(f), g = GROUP_BY[f.group];
+  const name = needsViewName(f, base);
+  const view = `<button class="g-view" type="button" data-g="pop" data-v="view" aria-haspopup="menu" aria-expanded="${f.open === 'view'}" title="View: ${esc(name)}"><span class="h">${esc(name)}</span>${narrowed ? '' : `<span class="count">${base.length}</span>`}${icon('down', 'sm ico')}</button>`;
+  const find = `<div class="g-find"><button class="g-find-btn" type="button" data-g="search" aria-label="Search" title="Search  /">${icon('search', 'sm')}</button><input data-g-q type="search" autocomplete="off" spellcheck="false" tabindex="${f.searching ? 0 : -1}" placeholder="${esc(f.view === 'all' ? 'Search' : `Search in ${name}`)}" value="${esc(f.q)}" aria-label="Search"><button class="g-find-x" type="button" data-g="clearq" aria-label="Clear the search" ${f.q ? '' : 'hidden'}>${icon('x', 'sm')}</button></div>`;
+  const button = (v, ic, label, tip, on) => `<button class="g-btn ${on ? 'on' : ''}" type="button" data-g="pop" data-v="${v}" aria-haspopup="menu" aria-expanded="${f.open === v}" aria-label="${esc(tip)}" title="${esc(tip)}">${gIcon(ic)}<span class="g-label">${esc(label)}</span></button>`;
+  const order = button('order', 'order', NEED_ORDERS[f.order].label, `Order: ${NEED_ORDERS[f.order].label}`, f.order !== 'smart');
+  const group = button('group', 'group', f.group === 'none' ? 'Group' : g.short || g.label, f.group === 'none' ? 'Group by' : `Group by: ${g.label}`, f.group !== 'none');
+  const groups = needsGroups(rows, f, base), shut = f.group !== 'none' && groups.length > 0 && groups.every((x) => foldsOf(f).has(x.k));
+  const foldAll = f.group === 'none' ? '' : `<button class="g-round" type="button" data-g="foldall" aria-label="${shut ? 'Open all groups' : 'Fold all groups'}" title="${shut ? 'Open all groups  ⌥→' : 'Fold all groups  ⌥←'}">${gIcon(shut ? 'openAll' : 'foldAll')}</button>`;
+  const only = f.only ? `<span class="g-token">Only ${esc(f.only.label)}<button type="button" data-g="unonly" aria-label="Show every group">${icon('x', 'sm')}</button></span>` : '';
+  const tally = narrowed ? `<div class="g-tally"><span class="count"><b>${rows.length}</b> of ${base.length}</span>${only}<span class="g-spacer"></span><button class="g-clear" type="button" data-g="clear">Clear</button></div>` : '';
+  return `<div class="g-head ${f.searching ? 'searching' : ''}">${view}<span class="g-gap"></span>${find}${order}${group}${foldAll}${extra}${more}</div>${tally}${needsPopHTML(f, base, elsewhere)}`;
+}
+function needsPopHTML(f, base, elsewhere = '') {
+  if (!f.open) return '';
+  const radio = (act, id, label, n, on, note = '') => `<button class="g-opt" type="button" data-g="${act}" data-v="${esc(id)}" role="menuitemradio" aria-checked="${on}"><span class="tick">${on ? icon('check', 'sm') : ''}</span><span class="o-text">${esc(label)}${note ? `<span class="o-note">${esc(note)}</span>` : ''}</span>${n === undefined ? '' : `<span class="n">${n}</span>`}</button>`;
+  const counted = (view) => base.filter((i) => viewOk(view, i) && searchOk(f.q, i)).length;
+  const sections = {
+    view: () => [['Views', NEED_VIEWS], ['By project', byName(base, (i) => i.project, (i) => i.project_name).map(([k, n]) => [`project:${k}`, n])],
+      ['By agent', byName(base, (i) => i.session_id, (i) => i.session_name).map(([k, n]) => [`agent:${k}`, n])]]
+      .filter(([, list]) => list.length).map(([title, list]) => `<div class="p-label">${title}</div>${list.map(([id, label]) => radio('view', id, label, counted(id), f.view === id)).join('')}`).join('') + elsewhere,
+    order: () => Object.entries(NEED_ORDERS).map(([id, o]) => radio('order', id, o.label, undefined, f.order === id, o.note)).join(''),
+    group: () => `<div class="p-label">Group by</div>${Object.entries(GROUP_BY).map(([id, x]) => radio('group', id, x.label, undefined, f.group === id)).join('')}${f.group === 'none' ? '' : '<div class="p-foot"><button class="g-text" type="button" data-g="foldall" data-v="fold">Fold all</button><button class="g-text" type="button" data-g="foldall" data-v="open">Open all</button></div>'}`,
+  };
+  return `<div class="g-pop" role="menu" data-pop="${f.open}">${sections[f.open]()}</div>`;
+}
+// The rows, under group heads you can fold or narrow to.
+function needsBodyHTML(f, base, row, empty) {
+  const rows = narrowNeeds(base, f);
+  if (!rows.length) return empty(isNarrowed(f));
+  if (f.group === 'none') return rows.map(row).join('');
+  const folds = foldsOf(f);
+  return needsGroups(rows, f, base).map(({k, name, rows: list}) => {
+    const shut = folds.has(k), isOnly = f.only?.group === f.group && f.only.v === k;
+    const action = isOnly ? '<button class="g-text g-only" type="button" data-g="unonly">Show all</button>'
+      : `<button class="g-text g-only" type="button" data-g="only" data-v="${esc(k)}" data-name="${esc(name)}">Only this</button>`;
+    return `<div class="gh ${shut ? 'shut' : ''}" data-g="fold" data-v="${esc(k)}" title="Option-click to fold or open every group"><button class="g-name" type="button" data-g="fold" data-v="${esc(k)}" aria-expanded="${!shut}">${icon('down', 'sm')}<span>${esc(name)}</span></button><span class="g-n">${list.length}</span>${action}</div>${shut ? '' : `<div class="g-rows" data-rows="${esc(k)}">${list.map(row).join('')}</div>`}`;
+  }).join('');
+}
+// What a header control does to the state; true when the list needs drawing again.
+function needsAct(f, act, el, e, base) {
+  const v = el.dataset.v;
+  if (act === 'pop') f.open = f.open === v ? null : v;
+  else if (act === 'view') {f.view = v; f.only = null; f.open = null;}
+  else if (act === 'order') {f.order = v; f.open = null;}
+  else if (act === 'group') {f.group = v; f.open = null;}
+  else if (act === 'fold') {
+    const folds = foldsOf(f), keys = needsGroups(narrowNeeds(base, f), f, base).map((x) => x.k);
+    // Option-click works as in Finder: on an open group it folds them all, on a folded one it opens them all.
+    if (e?.altKey) setFolds(f, keys, !folds.has(v));
+    else setFolds(f, [v], !folds.has(v));
+  } else if (act === 'foldall') {
+    const keys = needsGroups(narrowNeeds(base, f), f, base).map((x) => x.k), all = keys.length > 0 && keys.every((k) => foldsOf(f).has(k));
+    setFolds(f, keys, v === 'fold' || (v !== 'open' && !all));
+    f.open = null;
+  } else if (act === 'only') {f.only = {group: f.group, v, label: el.dataset.name}; f.open = null;}
+  else if (act === 'unonly') f.only = null;
+  else if (act === 'clear') Object.assign(f, {view: 'all', q: '', only: null, open: null, searching: false});
+  else if (act === 'clearq') f.q = '';
+  else return false;
+  return true;
+}
+// The dashboard keeps its own Needs you arrangement; the panel keeps one in its tab memory.
+let needsState = cleanNeeds(remember('hq-needs'), 'project');
+let needsFilter = () => needsState, needsBase = () => needsYou(model.items);
+let saveNeeds = () => remember('hq-needs', keptNeeds(needsState));
+const showingNeeds = () => Boolean($('#main .g-head'));
+function needsClick(e) {
+  if (!showingNeeds()) return;
+  const f = needsFilter(), el = e.target.closest('[data-g]');
+  // A click outside an open menu closes it.
+  if (f.open && !e.target.closest('.g-pop, [data-g="pop"]')) {f.open = null; render(); if (!el) return;}
+  if (!el || !$('#main').contains(el)) return;
+  if (el.dataset.g === 'search') return openNeedsSearch();
+  const folded = el.dataset.g === 'fold' && foldsOf(f).has(el.dataset.v) && !e.altKey ? el.dataset.v : null;
+  if (!needsAct(f, el.dataset.g, el, e, needsBase())) return;
+  e.preventDefault();
+  saveNeeds();
+  render();
+  if (el.dataset.g === 'clearq') $('#main [data-g-q]')?.focus();
+  // A group that unfolds springs its rows in.
+  const rows = folded && $(`#main [data-rows="${CSS.escape(folded)}"]`);
+  if (rows && !matchMedia('(prefers-reduced-motion: reduce)').matches) rows.animate([{opacity: 0, transform: 'translateY(-8px)'}, {opacity: 1, transform: 'none'}], {duration: 420, easing: 'cubic-bezier(.16,1,.3,1)'});
+}
+// Search opens and closes by a class on the same header, so its spring runs and nothing redraws.
+function openNeedsSearch() {
+  const f = needsFilter(), head = $('#main .g-head'), input = $('#main [data-g-q]');
+  f.searching = true;
+  f.open = null;
+  $('#main .g-pop')?.remove();
+  head?.classList.add('searching');
+  if (input) {input.tabIndex = 0; input.focus({preventScroll: true});}
+}
+function closeNeedsSearch() {
+  const f = needsFilter();
+  if (!f.searching || f.q) return false;
+  f.searching = false;
+  $('#main .g-head')?.classList.remove('searching');
+  const input = $('#main [data-g-q]');
+  if (input) {input.tabIndex = -1; input.blur();}
+  return true;
+}
+// Escape closes a menu, then clears the search, then folds the field back to its icon.
+function needsEscape(e) {
+  if (!showingNeeds()) return false;
+  const f = needsFilter();
+  if (f.open) {f.open = null; render(); return true;}
+  if (!e.target.matches?.('[data-g-q]')) return false;
+  if (f.q) {f.q = ''; render(); $('#main [data-g-q]')?.focus(); return true;}
+  closeNeedsSearch();
+  return true;
+}
+// / opens the search; ⌥← folds every group and ⌥→ opens them.
+function needsKey(e) {
+  if (!showingNeeds() || e.metaKey || e.ctrlKey || e.target.matches?.('input, textarea, select')) return false;
+  const f = needsFilter();
+  if (e.key === '/' && !e.altKey) {openNeedsSearch(); return true;}
+  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && f.group !== 'none') {
+    setFolds(f, needsGroups(narrowNeeds(needsBase(), f), f, needsBase()).map((x) => x.k), e.key === 'ArrowLeft');
+    saveNeeds();
+    render();
+    return true;
+  }
+  return false;
+}
+function needsInput(e) {
+  if (!e.target.matches?.('[data-g-q]')) return;
+  needsFilter().q = e.target.value;
+  render();
+}
+// Leaving an empty search folds it back; the pause lets a click that caused the blur land first.
+function needsBlur(e) {
+  if (!e.target.matches?.('[data-g-q]')) return;
+  clearTimeout(needsBlur.timer);
+  needsBlur.timer = setTimeout(() => {if (!needsFilter().q && !document.activeElement?.matches?.('[data-g-q]')) closeNeedsSearch();}, 180);
+}
+const needsEmpty = (narrowed) => (narrowed ? '<div class="g-empty">Nothing here matches. <button class="g-text" type="button" data-g="clear">Clear</button></div>' : emptyHTML('you'));
 function needsPage() {
-  const items = sortLane(model.items.filter((i) => i.lane === 'you'), 'you');
+  const items = needsYou(model.items), f = needsState;
   const decisions = items.filter((i) => i.kind === 'question').length;
   const minutes = items.reduce((n, i) => n + (i.minutes || 0), 0);
   const fresh = items.filter(isNew).length;
   const desc = items.length ? [`${items.length} items`, `${decisions} decisions`, fresh ? `${fresh} new` : '', minutes ? `about ${Math.max(1, Math.round(minutes / 60))} h of your time` : ''].filter(Boolean).join(' · ') : '';
-  return {title: 'Needs you', desc: esc(desc), actions: headActions('you'), body: listHTML(items, 'you', 'all')};
+  return {title: 'Needs you', desc: esc(desc), head: needsHeadHTML(f, items, {extra: `<span class="g-new">${newItemPill}</span>`}),
+    body: `<div class="g-list">${needsBodyHTML(f, items, (i) => rowHTML(i, {where: f.group !== 'project', source: true}), needsEmpty)}</div>`};
 }
 function scopePage({title, crumb, items, level, desc}) {
   const lanes = LANES.map(([id, label]) => {
@@ -348,14 +581,16 @@ function ranFor(seconds) {
   const s = Math.max(0, Math.floor(seconds)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`;
 }
+// One agent as the lists show it: where it works, what it is doing, and what it has for you.
+function agentOf(s, items) {
+  const mine = items.filter((i) => i.session_id === s.id && i.lane !== 'done'), st = agentState(s);
+  return {id: s.id, name: s.name, harness: harness(s.provider), folder: s.cwd || '', state: st,
+    since: s.activity?.since || null, last: s.last_active || null,
+    background: st === 'active' && s.activity?.source === 'background',
+    you: mine.filter((i) => i.lane === 'you').length, open: mine.length};
+}
 function agentFolders(sessions, items, now = Date.now() / 1000) {
-  const all = sessions.map((s) => {
-    const mine = items.filter((i) => i.session_id === s.id && i.lane !== 'done'), st = agentState(s);
-    return {id: s.id, name: s.name, harness: harness(s.provider), folder: s.cwd || '', state: st,
-      since: s.activity?.since || null, last: s.last_active || null,
-      background: st === 'active' && s.activity?.source === 'background',
-      you: mine.filter((i) => i.lane === 'you').length, open: mine.length};
-  });
+  const all = sessions.map((s) => agentOf(s, items));
   const recent = (a) => Boolean(a.last) && now - a.last < AGENT_WINDOW;
   const newest = (key) => (x, y) => (y[key] || 0) - (x[key] || 0);
   const running = all.filter((a) => a.state === 'active').sort(newest('since'));
@@ -401,6 +636,237 @@ function tickTimes(root = document) {
   const now = Date.now() / 1000;
   root.querySelectorAll('.tick[data-since]').forEach((el) => {el.textContent = ranFor(now - Number(el.dataset.since));});
 }
+// Decisions an agent holds: yours, replied, not yet closed. Unheard until the agent confirms
+// hearing, then not closed. Stuck once its agent stopped, or a day passed. Both the panel and
+// the dashboard's Agents page count them from each item's followup.
+const heldItems = (items) => items.filter((i) => i.status === 'answered' && i.followup);
+const heardIt = (i) => i.followup.stage === 'acknowledged';
+const decidedAt = (i) => i.followup.replied || i.updated || 0;
+function heldMap(items) {
+  const map = new Map();
+  for (const i of heldItems(items)) {
+    if (!map.has(i.session_id)) map.set(i.session_id, []);
+    map.get(i.session_id).push(i);
+  }
+  return map;
+}
+function heldBy(list) {
+  const unheard = list.filter((i) => !heardIt(i)).length;
+  return {unheard, open: list.length - unheard, total: list.length, stuck: list.some((i) => Boolean(i.followup.stuck)), oldest: Math.min(...list.map(decidedAt))};
+}
+// The quiet count in All: what it has not heard; or, once stuck, what it heard and never closed.
+// Heard and still being worked on is normal, so it says nothing until then.
+function heldCount(list = []) {
+  const unheard = list.filter((i) => !heardIt(i));
+  if (unheard.length) return {n: unheard.length, word: 'unheard', stuck: unheard.some((i) => Boolean(i.followup.stuck))};
+  const late = list.filter((i) => heardIt(i) && i.followup.stuck);
+  return late.length ? {n: late.length, word: 'not closed', stuck: true} : null;
+}
+const heldSplit = (o) => [o.unheard ? `${o.unheard} unheard` : '', o.open ? `${o.open} not closed` : ''].filter(Boolean).join(' · ');
+const heldExplain = (c) => (c.word === 'unheard' ? `${c.n} of your decisions it hasn't confirmed hearing` : `${c.n} ${c.n === 1 ? 'decision' : 'decisions'} it heard a day ago and never closed`);
+// What sits on the right of an agent in All: what it has for you, then the quiet count.
+const agentSideHTML = (a, held) => `${agentSide(a) ? `<span>${agentSide(a)}</span>` : ''}${heldButton(a.id, heldCount(held))}`;
+function heldButton(id, c, text = c && `${c.n} ${c.word}`, label = c && heldExplain(c)) {
+  if (!c) return '';
+  return `<button type="button" class="held-n ${c.stuck ? 'stuck' : ''}" data-held="${esc(id)}" title="${esc(label)}" aria-label="${esc(`${label}: show them`)}">${esc(text)}</button>`;
+}
+// Not acted on: every agent, of any age, still holding decisions of yours. Stuck first, then the
+// most, then the longest waiting; each folder keeps its first agent's place.
+function unactedAgents(sessions, items, now = Date.now() / 1000) {
+  const held = heldMap(items);
+  const rows = sessions.filter((s) => held.has(s.id)).map((s) => ({a: agentOf(s, items), o: heldBy(held.get(s.id))}))
+    .sort((x, y) => (y.o.stuck - x.o.stuck) || (y.o.total - x.o.total) || (x.o.oldest - y.o.oldest));
+  const folders = new Map();
+  for (const r of rows) {
+    if (!folders.has(r.a.folder)) folders.set(r.a.folder, {key: r.a.folder, name: folderName(r.a.folder), rows: []});
+    folders.get(r.a.folder).rows.push(r);
+  }
+  const total = rows.reduce((n, r) => n + r.o.total, 0);
+  // One agent sitting on clearly more than the rest is named: at least 3, and half again the next.
+  const top = rows.reduce((m, r) => (!m || r.o.total > m.o.total ? r : m), null);
+  const second = rows.filter((r) => r !== top).reduce((m, r) => Math.max(m, r.o.total), 0);
+  const most = top && rows.length > 1 && top.o.total >= Math.max(3, second * 1.5) ? top : null;
+  return {rows, folders: [...folders.values()], total, most, stuck: rows.some((r) => r.o.stuck), held};
+}
+function lastRan(a) {
+  if (a.state === 'active') return 'running now';
+  if (a.state === 'waiting') return 'waiting on you';
+  if (a.state === 'unknown') return a.last ? `no live signal · last ran ${ago(a.last)}` : 'no live signal';
+  return a.last ? `${a.state === 'offline' ? 'offline · ' : ''}last ran ${ago(a.last)}` : a.state;
+}
+function unactedSummary(v) {
+  const a = v.most?.a, said = !a ? '' : a.state === 'active' ? ' and is running' : a.state === 'waiting' ? ' and is waiting on you' : a.last ? `, and last ran ${ago(a.last)}` : '';
+  return `${v.total} ${v.total === 1 ? 'decision' : 'decisions'} not acted on, across ${v.rows.length} ${v.rows.length === 1 ? 'agent' : 'agents'}${a ? `. <b>${esc(a.name)}</b> holds ${v.most.o.total} of them${said}.` : '.'}`;
+}
+// What one Not acted on row says on its right: what it holds, and its share of all of them.
+function unactedSide(r, v) {
+  const share = Math.round((r.o.total / v.total) * 100);
+  return `${heldButton(r.a.id, {n: r.o.total, stuck: r.o.stuck}, heldSplit(r.o), heldSplit(r.o))}<span class="held-share ${v.most === r ? 'most' : ''}"><span class="held-meter" aria-hidden="true"><i style="width:${Math.max(share, 4)}%"></i></span>holds ${r.o.total} of ${v.total}</span>`;
+}
+const UNACTED_EMPTY = '<b>Every decision has been acted on</b><span>An agent shows here while it holds a decision of yours it hasn’t heard or closed.</span>';
+// All, or only the agents holding decisions: ←/→ move between the two, as tabs do.
+function agentsShowHTML(show, v) {
+  const tab = (id, text, n = '') => `<button type="button" class="ag-seg" role="tab" data-agents-show="${id}" aria-selected="${show === id}" tabindex="${show === id ? 0 : -1}">${text}${n}</button>`;
+  return `<div class="ag-show" role="tablist" aria-label="Show">${tab('all', 'All')}${tab('unacted', 'Not acted on', v.total ? `<span class="n ${v.stuck ? 'stuck' : ''}">${v.total}</span>` : '')}</div>`;
+}
+function heldStage(i, now = Date.now() / 1000) {
+  const f = i.followup, when = `You decided ${ago(decidedAt(i))}`;
+  if (f.stuck === 'stopped') return `${when} · <span class="bad">agent stopped before ${heardIt(i) ? 'closing' : 'hearing'} it</span>`;
+  if (f.stuck === 'unheard') return `${when} · <span class="bad">not heard in ${dayWords(now - decidedAt(i))}</span>`;
+  if (f.stuck === 'unclosed') return `${when} · <span class="bad">heard, never closed</span>`;
+  return `${when} · ${heardIt(i) ? 'heard, not closed yet' : 'not heard yet'}`;
+}
+// The sheet: one agent's decisions, what you answered, where each stands, and what you can do.
+const HELD_SHOWN = 30;
+function heldSheetHTML(a, list, {closing = null, note = ''} = {}) {
+  const order = [...list].sort((x, y) => (Boolean(y.followup.stuck) - Boolean(x.followup.stuck)) || (decidedAt(x) - decidedAt(y)));
+  const item = (i) => {
+    const id = esc(i.id);
+    const give = i.handoff ? `<span class="held-note" data-tip="Offered to the next agent in ${esc(i.project_name)}">Offered to the next agent</span>`
+      : i.project !== OTHER ? `<button class="ghost-pill sm" type="button" data-held-handoff="${id}">Give to another agent</button>` : '';
+    const acts = closing === i.id
+      ? `<div class="held-close"><input id="held-note" class="held-input" type="text" maxlength="2000" value="${esc(note)}" placeholder="A note for the record (optional)" aria-label="A note for the record (optional)">
+          <div class="held-acts"><button class="pill sm" type="button" data-held-confirm="${id}">Close it</button><button class="ghost-pill sm" type="button" data-held-cancel="${id}">Cancel</button></div><p class="form-error" aria-live="polite"></p></div>`
+      : `<div class="held-acts"><button class="ghost-pill sm" type="button" data-held-open="${id}">Open item</button>${give}<button class="held-quiet" type="button" data-held-close="${id}">Close it myself</button></div>`;
+    return `<div class="held-item" data-held-item="${id}"><div class="t">${esc(i.title)}</div><div class="you">You: ${esc(i.answer || settleLabel(i) || 'your reply')}</div><div class="m">${heldStage(i)}</div>${acts}</div>`;
+  };
+  const more = order.length > HELD_SHOWN ? `<div class="held-more">…and ${order.length - HELD_SHOWN} more on <button type="button" class="held-link" data-held-page="${esc(a.id)}">the agent's page</button></div>` : '';
+  return `<div class="held-scrim" data-held-shut></div><section class="held-sheet" role="dialog" aria-modal="true" aria-labelledby="held-title">
+    <div class="held-h"><div class="held-t"><b id="held-title">${esc(heldSplit(heldBy(list)))}</b><span>${esc(a.name)}</span></div><button class="icon-btn" type="button" data-held-shut aria-label="Close">${icon('x')}</button></div>
+    <div class="held-list">${order.slice(0, HELD_SHOWN).map(item).join('')}${more}</div></section>`;
+}
+// Focus and scroll inside the sheet survive a live repaint, which replaces it.
+function keepSheet() {
+  const el = document.activeElement, sheet = document.querySelector('.held-sheet');
+  const list = sheet?.querySelector('.held-list')?.scrollTop || 0;
+  if (!sheet || !sheet.contains(el)) return () => {const l = document.querySelector('.held-list'); if (l && list) l.scrollTop = list;};
+  const attr = [...el.attributes].find((x) => x.name.startsWith('data-held'));
+  const selector = el.id ? `#${CSS.escape(el.id)}` : attr ? `[${attr.name}="${CSS.escape(attr.value)}"]` : null;
+  const caret = el.matches('input') ? [el.selectionStart, el.selectionEnd] : null;
+  return () => {
+    const l = document.querySelector('.held-list');
+    if (l) l.scrollTop = list;
+    const again = selector && document.querySelector(`.held-sheet ${selector}`);
+    if (!again) return;
+    again.focus({preventScroll: true});
+    if (caret) again.setSelectionRange(...caret);
+  };
+}
+function animateSheet(open) {
+  const sheet = document.querySelector('.held-sheet'), scrim = document.querySelector('.held-scrim');
+  if (!sheet || matchMedia('(prefers-reduced-motion: reduce)').matches) return Promise.resolve();
+  const ease = 'cubic-bezier(.16,1,.3,1)';
+  scrim?.animate([{opacity: 0}, {opacity: 1}], {duration: open ? 250 : 200, direction: open ? 'normal' : 'reverse', fill: 'both'});
+  return sheet.animate([{transform: 'translateY(102%)'}, {transform: 'none'}], {duration: open ? 420 : 240, easing: open ? ease : 'ease-in', direction: open ? 'normal' : 'reverse', fill: 'both'}).finished.catch(() => {});
+}
+// Which list, which sheet, and a close note being written. The dashboard keeps the list in
+// localStorage; the panel keeps all of it in its tab memory, through these hooks.
+let agentsShow = remember('hq-agents-show') === 'unacted' ? 'unacted' : 'all', heldSheet = null, heldClosing = null, heldNote = '';
+let saveAgentsShow = () => remember('hq-agents-show', agentsShow);
+let openHeldItem = (id) => {
+  const i = model.items.find((x) => x.id === id);
+  go({page: 'agent', agent: i?.session_id || route.agent, lane: 'agents', item: id});
+};
+let openHeldPage = (agent) => go({page: 'agent', agent, lane: 'you', item: null});
+function setAgentsShow(show, focus = false) {
+  if (show !== 'all' && show !== 'unacted') return;
+  if (show !== agentsShow) {
+    agentsShow = show;
+    heldSheet = heldClosing = null;
+    saveAgentsShow();
+    render();
+    // The other list starts at its top, where its summary is.
+    const list = document.querySelector('#main .f-rows') || document.querySelector('#page');
+    if (list) list.scrollTop = 0;
+  }
+  if (focus) document.querySelector(`[data-agents-show="${show}"]`)?.focus();
+}
+function openHeld(id) {
+  heldSheet = id;
+  heldClosing = null;
+  heldNote = '';
+  saveAgentsShow();
+  render();
+  animateSheet(true);
+  document.querySelector('.held-h [data-held-shut]')?.focus({preventScroll: true});
+}
+// Closing hands focus back to the count that opened it.
+async function shutHeld() {
+  const id = heldSheet;
+  if (!id) return false;
+  heldClosing = null;
+  await animateSheet(false);
+  if (heldSheet !== id) return true;
+  heldSheet = null;
+  heldNote = '';
+  saveAgentsShow();
+  render();
+  document.querySelector(`[data-held="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
+  return true;
+}
+async function closeHeld(id) {
+  const note = (document.querySelector('#held-note')?.value ?? heldNote).trim();
+  const error = document.querySelector('.held-close .form-error');
+  if (await act(api(`items/${id}/close`, {note}), 'Closed it yourself', error)) {
+    heldClosing = null;
+    heldNote = '';
+    render();
+    (document.querySelector('.held-sheet [data-held-close]') || document.querySelector('.held-h [data-held-shut]'))?.focus({preventScroll: true});
+  }
+}
+function heldClick(e) {
+  const on = (sel) => e.target.closest(sel);
+  let el;
+  if ((el = on('[data-agents-show]'))) setAgentsShow(el.dataset.agentsShow);
+  else if ((el = on('[data-held]'))) openHeld(el.dataset.held);
+  else if (on('[data-held-shut]')) shutHeld();
+  else if ((el = on('[data-held-open]'))) {heldSheet = heldClosing = null; saveAgentsShow(); openHeldItem(el.dataset.heldOpen);}
+  else if ((el = on('[data-held-page]'))) {heldSheet = heldClosing = null; saveAgentsShow(); openHeldPage(el.dataset.heldPage);}
+  else if ((el = on('[data-held-handoff]'))) {
+    const i = model.items.find((x) => x.id === el.dataset.heldHandoff);
+    act(api(`items/${el.dataset.heldHandoff}/handoff`, {}), `Offered to the next agent in ${i?.project_name || 'its project'}`);
+  } else if ((el = on('[data-held-close]'))) {
+    heldClosing = el.dataset.heldClose;
+    heldNote = '';
+    render();
+    document.querySelector('#held-note')?.focus();
+  } else if ((el = on('[data-held-cancel]'))) {
+    heldClosing = null;
+    render();
+    document.querySelector(`[data-held-close="${CSS.escape(el.dataset.heldCancel)}"]`)?.focus();
+  } else if ((el = on('[data-held-confirm]'))) closeHeld(el.dataset.heldConfirm);
+  else return false;
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+// Escape steps back one thing at a time: the note first, then the sheet.
+function heldEscape() {
+  if (!heldSheet) return false;
+  if (heldClosing) {
+    const id = heldClosing;
+    heldClosing = null;
+    heldNote = '';
+    render();
+    document.querySelector(`[data-held-close="${CSS.escape(id)}"]`)?.focus();
+    return true;
+  }
+  shutHeld();
+  return true;
+}
+function heldKey(e) {
+  if (e.target.id === 'held-note' && e.key === 'Enter' && heldClosing) {e.preventDefault(); closeHeld(heldClosing); return true;}
+  if (!['ArrowLeft', 'ArrowRight'].includes(e.key) || !e.target.matches?.('.ag-seg') || e.altKey || e.metaKey || e.ctrlKey) return false;
+  e.preventDefault();
+  setAgentsShow(e.target.dataset.agentsShow === 'all' ? 'unacted' : 'all', true);
+  return true;
+}
+function heldInput(e) {if (e.target.id === 'held-note') heldNote = e.target.value;}
+// A sheet whose agent no longer holds anything closes itself.
+function heldStill(items = model.items) {
+  if (heldSheet && !heldItems(items).some((i) => i.session_id === heldSheet)) heldSheet = heldClosing = null;
+  if (heldClosing && !heldItems(items).some((i) => i.id === heldClosing)) heldClosing = null;
+}
 function stuckPage() {
   const items = stuckItems(), projects = new Map();
   for (const i of items) {
@@ -413,13 +879,25 @@ function stuckPage() {
 }
 function agentsPage() {
   const view = agentFolders(state.sessions, model.items), now = Date.now() / 1000;
-  const row = (a) => `<a class="row agent-row" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" data-session="${esc(a.id)}">${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${esc(a.harness)} · ${agentMeta(a, now)}</span></span><span class="a-side">${agentSide(a)}</span></a>`;
-  const folder = (f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="n">running</span>' : ''}</div>${f.agents.map(row).join('')}</section>`;
-  const fold = view.quiet.length ? (showQuiet ? view.quiet.map(folder).join('')
-    : `<button class="fold" data-quiet>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}${icon('chev', 'sm')}</button>`) : '';
+  heldStill();
+  const v = unactedAgents(state.sessions, model.items, now);
+  // The whole row opens the agent; its count, above that link, opens the sheet instead.
+  const row = (a, side = agentSideHTML(a, v.held.get(a.id)), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
+    `<div class="row agent-row" data-session="${esc(a.id)}"><a class="a-hit" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" aria-label="${esc(a.name)}"></a>${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${meta}</span></span><span class="a-side">${side}</span></div>`;
+  const folder = (f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="n">running</span>' : ''}</div>${f.agents.map((a) => row(a)).join('')}</section>`;
   const desc = [view.running ? `${view.running} running` : '', view.finished ? `${view.finished} finished in the last day` : ''].filter(Boolean).join(' · ');
-  const body = view.groups.map(folder).join('') + fold;
-  return {title: 'Agents', desc: esc(desc), body: body || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`};
+  let body;
+  if (agentsShow === 'unacted') {
+    body = v.rows.length ? `<p class="ag-sum">${unactedSummary(v)}</p>${v.folders.map((f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span></div>${f.rows.map((r) => row(r.a, unactedSide(r, v), `${esc(r.a.harness)} · ${esc(lastRan(r.a))}`)).join('')}</section>`).join('')}`
+      : `<div class="empty ag-empty">${UNACTED_EMPTY}</div>`;
+  } else {
+    const fold = view.quiet.length ? (showQuiet ? view.quiet.map(folder).join('')
+      : `<button class="fold" data-quiet>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}${icon('chev', 'sm')}</button>`) : '';
+    body = view.groups.map(folder).join('') + fold || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`;
+  }
+  const held = heldSheet && v.held.get(heldSheet), who = held && view.all.find((a) => a.id === heldSheet);
+  return {title: 'Agents', desc: esc(desc), body: `${agentsShowHTML(agentsShow, v)}<div class="ag-body">${body}</div>`,
+    overlay: who ? heldSheetHTML(who, held, {closing: heldClosing, note: heldNote}) : '', inert: Boolean(who)};
 }
 function agentPage() {
   const a = model.agents.find((s) => s.id === route.agent);
@@ -460,23 +938,29 @@ function groupHeadHTML(g, level) {
   const label = level === 'project' ? esc(name) : `<span class="of">${esc(projectName(g.project))}</span>${lone ? '' : `<span class="of">›</span>${esc(name)}`}`;
   return `<div class="group-head"><button data-href="${esc(target)}">${label}</button><span class="n">${g.items.length}</span></div>`;
 }
+// Where a row shows an age, it gets a column of its own on the right, so ages line up row to row.
 function rowHTML(i, opts = {}) {
-  return `<button class="row" data-item="${esc(i.id)}" aria-current="${route.item === i.id}">${isNew(i) ? '<span class="new" title="New in the last day"></span>' : ''}<span class="title">${esc(i.title)}</span><span class="meta">${metaHTML(i, opts)}</span></button>`;
+  const age = opts.age ? ago(i.created) : opts.stuck ? ago(i.followup?.replied || i.updated) : '';
+  return `<button class="row ${age ? 'aged' : ''}" data-item="${esc(i.id)}" aria-current="${route.item === i.id}">${isNew(i) ? '<span class="new" title="New in the last day"></span>' : ''}<span class="title">${esc(i.title)}</span><span class="meta">${metaHTML(i, {...opts, apart: Boolean(age)})}</span>${age ? `<span class="age">${esc(age)}</span>` : ''}</button>`;
 }
 function whereLabel(i) {
   const lone = i.workstream === OTHER && (projectOf(i.project)?.workstreams.length || 0) <= 1;
   return lone ? i.project_name : `${i.project_name} › ${i.workstream_name}`;
 }
-function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false} = {}) {
-  const parts = [];
-  if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].join('<span class="sep">·</span>');
+// Where an item came from, as its agent wrote it ("worktree · task"), shortened only when very long.
+const SOURCE_MAX = 40;
+const sourceText = (i) => {const s = String(i.source || '').trim(); return s.length > SOURCE_MAX ? `${s.slice(0, SOURCE_MAX - 1).trimEnd()}…` : s;};
+function metaHTML(i, {withLane = false, where = false, age = false, kind = false, stuck = false, source = false, apart = false} = {}) {
+  const parts = [], from = source && sourceText(i) ? `<span class="src">${esc(sourceText(i))}</span>` : '';
+  if (stuck) return [`<span class="overdue">${esc(followupLine(i))}</span>`, apart ? '' : `decided ${ago(i.followup.replied || i.updated)}`, esc(whereLabel(i))].filter(Boolean).join('<span class="sep">·</span>');
   if (age && i.delivery === 'failed') parts.push('<span class="overdue">Reply failed</span>');
   if (kind && i.kind === 'question') parts.push('Decision');
   if (kind && i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
   if (i.due && i.lane !== 'done') parts.push(`<span class="${daysUntil(i.due) < 0 ? 'overdue' : 'due'}">${dueLabel(i)}</span>`);
   if (withLane) parts.push(LANES.find(([id]) => id === i.lane)[1]);
   if (where) parts.push(esc(whereLabel(i)));
-  if (age) parts.push(ago(i.created));
+  // The source comes just before the time; where there is no time, it ends the line.
+  if (age) {if (from) parts.push(from); if (!apart) parts.push(ago(i.created));}
   else if (i.lane === 'you' && !where) {
     if (i.kind === 'question') parts.push('Decision');
     if (i.kind === 'blocker') parts.push('<span class="blocker">Blocker</span>');
@@ -488,6 +972,7 @@ function metaHTML(i, {withLane = false, where = false, age = false, kind = false
   } else if (i.lane === 'waiting') parts.push(`On ${esc(i.waiting_on || 'someone')}`);
   else if (i.lane === 'later') parts.push(fmtDate(i.defer_until));
   else if (i.lane === 'done') parts.push(i.skipped ? `Skipped · ${fmtDate(i.updated)}` : fmtDate(i.updated));
+  if (!age && from) parts.push(from);
   return parts.join('<span class="sep">·</span>');
 }
 function emptyHTML(lane) {
@@ -659,7 +1144,9 @@ function detailHTML(i) {
   const crumbs = `<button data-href="${esc(href({page: 'project', project: i.project, lane: i.lane, item: null}))}">${esc(i.project_name)}</button>${lone ? '' : ` › <button data-href="${esc(href({page: 'workstream', project: i.project, workstream: i.workstream, lane: i.lane, item: null}))}">${esc(i.workstream_name)}</button>`}`;
   const draft = draftOf(i.id), tab = tabOf(i, draft);
   const tabs = tabsOf(i).map((t) => `<button class="d-tab" role="tab" id="d-tab-${t.id}" data-tab="${t.id}" aria-selected="${t.id === tab}" aria-controls="d-panel" tabindex="${t.id === tab ? 0 : -1}">${t.label}${t.n ? `<span class="n">${t.n}</span>` : ''}</button>`).join('');
-  return `<div class="d-bar"><div class="crumbs">${crumbs}</div>
+  // The source shares the crumb line: the crumbs stay whole and it gives way first.
+  const from = String(i.source || '').trim();
+  return `<div class="d-bar"><div class="crumbs"><span class="c-path">${crumbs}</span>${from ? `<span class="c-src"><span class="sep">·</span>${esc(from)}</span>` : ''}</div>
       ${i.status === 'open' ? `<button class="icon-btn" data-pin aria-pressed="${Boolean(i.pinned)}" aria-label="${i.pinned ? 'Unpin' : 'Pin'}" title="${i.pinned ? 'Unpin' : 'Pin to the top'}">${icon('pin', i.pinned ? 'filled' : '')}</button>` : ''}
       <button class="icon-btn" data-step="-1" aria-label="Previous item" ${at <= 0 ? 'disabled' : ''}>${icon('up')}</button>
       <button class="icon-btn" data-step="1" aria-label="Next item" ${at < 0 || at >= visible.length - 1 ? 'disabled' : ''}>${icon('down')}</button>
@@ -733,10 +1220,39 @@ function setFiles(id, key, list) {
   const draft = draftOf(id);
   setDraft(id, {files: {...(draft.files || {}), [key]: list}});
 }
+// Where dropped files go: the box under them, or the item's own answer box, opening a note
+// first if picking an option folded it away. One path for drops in the page and from the window.
+function markDrop(el) {
+  const detail = $('#detail');
+  detail?.querySelectorAll('.drop-on').forEach((x) => x.classList.remove('drop-on'));
+  const key = el && route.item && detail?.contains(el) ? dropTarget(el) : null;
+  if (key) (detail.querySelector(`.compose[data-attach="${key}"]`) || detail.querySelector('.d-dock'))?.classList.add('drop-on');
+  return key;
+}
+function dropFilesAt(el, files) {
+  const id = route.item, detail = $('#detail');
+  markDrop(null);
+  const key = el && id && detail?.contains(el) ? dropTarget(el) : null;
+  if (!key) {toast('Open an item to attach files'); return false;}
+  const respond = detail.querySelector('#respond'), item = model.items.find((x) => x.id === id);
+  if (key === 'text' && respond?.dataset.state === 'picked' && item) {setDraft(id, {note: true}); syncRespond(respond, item);}
+  addFiles(id, key, files);
+  return true;
+}
+// The window reads dropped files itself and sends them as base64, or with a reason it left one out.
+function nativeFiles(list) {
+  return (Array.isArray(list) ? list : []).map((f) => {
+    if (f.error || typeof f.data !== 'string') return {name: String(f.name || 'file'), error: String(f.error || 'Could not read it'), size: 0, type: ''};
+    const bytes = atob(f.data), buffer = new Uint8Array(bytes.length);
+    for (let n = 0; n < bytes.length; n += 1) buffer[n] = bytes.charCodeAt(n);
+    return new File([buffer], String(f.name || 'file'), {type: String(f.type || '')});
+  });
+}
 function addFiles(id, key, picked) {
   const list = [...filesOf(draftOf(id), key)];
   for (const file of picked) {
-    const problem = fileProblem(file, list.filter((f) => f.status !== 'error').length);
+    // A file the window already refused, such as a folder or one too big, arrives with its reason.
+    const problem = file.error || fileProblem(file, list.filter((f) => f.status !== 'error').length);
     const kind = fileKind(file);
     const entry = {key: `f${fileSeq += 1}`, name: file.name || `pasted${kind === 'image/png' ? '.png' : ''}`, type: kind, size: file.size,
       status: problem ? 'error' : 'uploading', error: problem, url: !problem && ATTACH.shown.has(kind) ? URL.createObjectURL(file) : ''};
@@ -1343,27 +1859,16 @@ function bindDetail(detail) {
     else if (sent && document.body.dataset.surface === 'float') window.open(`/${href({...route, item: id})}`, '_blank', 'noreferrer');
     else if (sent) openFile(sent.dataset.openFile, sent.dataset.type);
   };
-  const dropOn = (key) => {
-    detail.querySelectorAll('.drop-on').forEach((el) => el.classList.remove('drop-on'));
-    if (key) (detail.querySelector(`.compose[data-attach="${key}"]`) || detail.querySelector('.d-dock'))?.classList.add('drop-on');
-  };
   detail.ondragover = (e) => {
-    const key = carriesFiles(e) && dropTarget(e.target);
-    if (!key) return;
+    if (!carriesFiles(e) || !markDrop(e.target)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    dropOn(key);
   };
-  detail.ondragleave = (e) => {if (!detail.contains(e.relatedTarget)) dropOn(null);};
+  detail.ondragleave = (e) => {if (!detail.contains(e.relatedTarget)) markDrop(null);};
   detail.ondrop = (e) => {
-    const key = carriesFiles(e) && dropTarget(e.target);
-    dropOn(null);
-    if (!key) return;
+    if (!carriesFiles(e) || !dropTarget(e.target)) return markDrop(null);
     e.preventDefault();
-    const files = [...e.dataTransfer.files];
-    // A drop on the dock opens its box first, if picking an option folded it away.
-    if (key === 'text' && respond?.dataset.state === 'picked') {setDraft(id, {note: true}); syncRespond(respond, item());}
-    addFiles(id, key, files);
+    dropFilesAt(e.target, [...e.dataTransfer.files]);
   };
   const closeSelf = detail.querySelector('[data-close-self]');
   if (closeSelf) closeSelf.onclick = () => {openMove = 'close'; rerender(); detail.querySelector('#close-note')?.focus();};
@@ -1423,15 +1928,19 @@ function boot() {
   document.addEventListener('keydown', (e) => {
     const typing = e.target.matches('input, textarea, select');
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {e.preventDefault(); $('#search')?.focus(); return;}
+    if (heldKey(e)) return;
     if (e.key === 'Escape') {
       if ($('#dialog').open) return;
       if ($('#lightbox')) return $('#lightbox').remove();
+      if (heldEscape()) return e.preventDefault();
+      if (needsEscape(e)) return e.preventDefault();
       if (typing && e.target.id === 'search' && search) {search = ''; render(); return;}
       if (sheetOpen) {sheetOpen = false; return render();}
       if (route.item) go({item: null});
       return;
     }
-    if (typing || $('#dialog').open) return;
+    if (typing || $('#dialog').open || heldSheet) return;
+    if (needsKey(e)) return e.preventDefault();
     const option = route.item && /^[1-9]$/.test(e.key) && !(e.metaKey || e.ctrlKey || e.altKey) && document.querySelectorAll('#detail [data-choice]')[Number(e.key) - 1];
     if (option) {e.preventDefault(); option.click(); return;}
     if (e.key === 'j' || e.key === 'ArrowDown') {e.preventDefault(); step(1);}
@@ -1442,6 +1951,9 @@ function boot() {
     go({item: null});
   };
   $('#dialog').addEventListener('click', (e) => {if (e.target.closest('[data-dclose]') || e.target === $('#dialog')) $('#dialog').close();});
+  $('#main').addEventListener('click', (e) => {if (!heldClick(e)) needsClick(e);});
+  $('#main').addEventListener('input', (e) => {heldInput(e); needsInput(e);});
+  $('#main').addEventListener('focusout', needsBlur);
   document.addEventListener('dragover', (e) => {if (carriesFiles(e) && !e.defaultPrevented) {e.preventDefault(); e.dataTransfer.dropEffect = 'none';}});
   document.addEventListener('drop', (e) => {if (carriesFiles(e)) e.preventDefault();});
   render();

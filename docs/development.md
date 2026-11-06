@@ -40,7 +40,7 @@ Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-serve
 
 ```sh
 node docs/media/make/make.mjs              # all of them
-node docs/media/make/make.mjs hero clips   # just these
+node docs/media/make/make.mjs hero usage   # just these: hero, clips, usage, drag, settings, dashboard
 ```
 
 Update them whenever the pill, the panel or the dashboard changes. Every picture shows the real
@@ -53,10 +53,16 @@ agent.
   leaves trails over its dimmed screen. The fake desktop is laid out in display points and zoomed
   2x as a whole, since a screencast only sends frames at the page's CSS size.
 - **`glance.svg`, `notify.svg`**: the pill's own clips, drawn as animated SVG by `vector.mjs`. They
-  stay sharp at any zoom and weigh a few kilobytes. The sizes, colours and baselines in it were
-  measured from `/float`, and the motion is the panel's CSS, with its springs taken from
-  `float.js`. They are not read from the page, so a change to the pill's look or motion needs the
-  matching change there.
+  stay sharp at any zoom and weigh a few kilobytes. What the page says (each circle's label, the
+  card for a burst, the badge it leaves, the dot and the history) is read from the real page by
+  `snapshot.js`, which draws any part of it as SVG from what the browser laid out. The pill's
+  sizes and motion are constants in `vector.mjs`, measured from `/float`, with its springs taken
+  from `float.js`, so a change there needs the matching change here.
+- **`usage-accounts.svg`, `usage-switch.svg`, `usage-add.svg`**: the Usage view, drawn the same way
+  by `usage.mjs` from every state the real panel goes through. They run against a throwaway HQ
+  outside lab mode, with a fake HOME holding fake Claude and Codex login files, a PATH without
+  either tool, and saved accounts as database rows only. Every write (switch, add, remove) is
+  answered inside the page, since against the server it would reach the Keychain.
 - **`settings.png`, `dashboard.png`**: 2x screenshots.
 - **`loop.svg`**: drawn by hand.
 
@@ -64,4 +70,5 @@ Every picture has rounded corners, 12 CSS pixels at the width the README shows i
 transparent outside them, so it sits as well on GitHub's light page as on its dark one.
 
 It needs Google Chrome (or `CHROME=/path/to/chrome`), `ffmpeg` with libwebp, and Python's
-`fonttools` with `brotli` to embed a small Inter subset in the SVGs (or `uv`, which fetches them).
+`fonttools` with `brotli` to embed small Inter and Instrument Serif subsets in the SVGs (or `uv`,
+which fetches them).

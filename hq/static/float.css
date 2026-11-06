@@ -26,6 +26,46 @@ body[data-side="left"] .f-pill .f-row {flex-direction: row-reverse;}
 .f-spot {position: absolute; left: 0; top: 0; z-index: 30; display: flex; align-items: center; height: var(--f-size, 28px); padding: 0 12px; background: var(--background); border: 1px solid rgb(250 250 250 / 0.16); border-radius: 14px; box-shadow: 0 6px 22px rgb(0 0 0 / 0.35); font-size: 12.5px; white-space: nowrap; color: rgb(250 250 250 / 0.92); opacity: 0; pointer-events: none; transition: transform .5s var(--f-spring, ease), opacity .2s ease;}
 .f-spot.on {opacity: 1;}
 .f-spot.instant {transition: opacity .2s ease;}
+/* Hovering a circle that changed lately: its label, what happened since when, the last three. */
+.f-spot.log {height: auto; padding: 8px 12px; border-radius: 12px;}
+.f-spot.log > span {display: flex; flex-direction: column; gap: 2px; min-width: 190px; max-width: 340px;}
+.f-spot.log b {font-weight: 500;}
+.f-spot-sum {margin-bottom: 3px; font-size: 12px; color: var(--muted-foreground);}
+.f-spot-row {display: flex; align-items: baseline; gap: 8px; font-size: 12px;}
+.f-spot-row em {min-width: 26px; font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums;}
+.f-spot-row em.more {color: var(--more);}
+.f-spot-row em.fewer {color: var(--live);}
+.f-spot-row span {flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;}
+.f-spot-row small {font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted-foreground);}
+/* The agents circle: who is running, then its history under a hairline. */
+.f-spot-agent {display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 12px;}
+.f-spot-agent .dot {flex: none; width: 6px; height: 6px; transform: translateY(-1px); box-shadow: none;}
+.f-spot-agent .n {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgb(250 250 250 / 0.9);}
+.f-spot-agent small {flex: none; margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--muted-foreground); white-space: nowrap;}
+/* Still too long at the label's width: the name gets its own line, its tool and time under it. */
+.f-spot-agent.two {flex-wrap: wrap;}
+.f-spot-agent.two .n {flex: 1 1 calc(100% - 13px);}
+.f-spot-agent.two small {flex-basis: 100%; margin-left: 13px; padding-left: 0;}
+.f-spot-more {font-size: 11.5px; color: var(--muted-foreground);}
+.f-spot-rule {height: 1px; margin: 5px 0 4px; background: var(--hairline);}
+/* The panel's own tooltip, above everything: macOS draws native ones below the panel's window. */
+.f-tip {position: absolute; left: 0; top: 0; z-index: 60; display: flex; align-items: baseline; gap: 16px; max-width: 300px; padding: 5px 9px; border-radius: 8px; background: var(--notice); border: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 6px 18px rgb(0 0 0 / 0.45); font-size: 12.5px; line-height: 1.35; color: rgb(250 250 250 / 0.92); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .12s ease;}
+.f-tip.on {opacity: 1;}
+.f-tip kbd {margin-left: auto; font: inherit; color: var(--muted-foreground);}
+/* Change marks: a signed badge beside a circle, in a layer that keeps the pill's box (and its
+   spring), then a dot on the circle. Amber is more needing you, green fewer, white either way. */
+.f-marks {position: absolute; pointer-events: none; transition: left .68s var(--f-spring, ease), top .68s var(--f-spring, ease), width .68s var(--f-spring, ease), height .68s var(--f-spring, ease);}
+.f-pill.instant + .f-marks {transition: none;}
+.f-mark {position: absolute; display: inline-flex; align-items: center; height: calc(var(--f-size, 28px) * 0.57); padding: 0 calc(var(--f-size, 28px) * 0.18); border-radius: 999px; font: 600 calc(var(--f-size, 28px) * 0.357)/1 var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--primary-foreground); box-shadow: 0 0 0 2px var(--background); transition: opacity 1s linear;}
+.f-marks[data-side="right"] .f-mark {left: calc(100% + var(--f-size, 28px) * 0.18); top: var(--y); translate: 0 -50%;}
+.f-marks[data-side="left"] .f-mark {right: calc(100% + var(--f-size, 28px) * 0.18); top: var(--y); translate: 0 -50%;}
+.f-marks[data-side="above"] .f-mark {bottom: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
+.f-marks[data-side="below"] .f-mark {top: calc(100% + var(--f-size, 28px) * 0.18); left: var(--x); translate: -50% 0;}
+.f-mark-dot {position: absolute; right: -2px; top: -2px; width: calc(var(--f-size, 28px) * 0.32); height: calc(var(--f-size, 28px) * 0.32); border-radius: 50%; box-shadow: 0 0 0 2px var(--background); pointer-events: none;}
+.f-mark.more, .f-mark-dot.more {background: var(--more);}
+.f-mark.fewer, .f-mark-dot.fewer {background: var(--live);}
+.f-mark.same, .f-mark-dot.same {background: rgb(250 250 250 / 0.85);}
+@media (prefers-reduced-motion: reduce) {.f-mark {transition: none;}}
 .f-ripple {position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--foreground); pointer-events: none;}
 body[data-hover] .f-pill .f-circle {border-color: rgb(250 250 250 / 0.5);}
 .f-circle.wide {font-size: calc(var(--f-size, 28px) * 0.357); letter-spacing: -0.03em;}
@@ -88,7 +128,7 @@ body[data-hover] .f-pill .f-circle.live {border-color: var(--live);}
 .f-flight-card > .detail {position: absolute; inset: 0; width: 100%; height: 100%; border: 0; box-shadow: none; transform: none;}
 @keyframes f-open {from {opacity: 0; transform: scale(.975);}}
 html.float body[data-mode="pill"] #toast {display: none;}
-html.float body[data-drag] .f-pill, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
+html.float body[data-drag] .f-pill, html.float body[data-drag] .f-marks, html.float body[data-drag] .f-box, html.float body[data-drag] #toast, html.float body[data-drag] .f-grips {visibility: hidden;}
 /* Resize grips on the box's edges away from the pill: 6px outside the border, 3px in. */
 .f-grips {position: absolute; z-index: 20; pointer-events: none;}
 .f-grip {position: absolute; pointer-events: auto;}
@@ -113,15 +153,17 @@ body[data-resizing="top-left"], body[data-resizing="bottom-right"] {cursor: nwse
 body[data-resizing="top-right"], body[data-resizing="bottom-left"] {cursor: nesw-resize;}
 body[data-resizing] .f-box {transition: none;}
 
-.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: var(--f-content, 380px);}
-.f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+/* Inside the box's 1px border, so whatever sits at the right edge is as far in as it looks. */
+.f-list {display: flex; flex-direction: column; flex: 1; flex-shrink: 0; min-height: 0; width: calc(var(--f-content, 380px) - 2px);}
+.f-head {display: flex; align-items: center; gap: 2px; flex: none; height: 48px; padding: 0 8px 0 16px; -webkit-user-select: none; user-select: none;}
+/* Every corner button is a 32px circle 8px from the top and 8px from the right, in every view,
+   so switching views never shifts it and its centre sits on the corner's diagonal. */
+html.float .f-head .icon-btn, html.float .d-bar .icon-btn {width: 32px; height: 32px;}
 .f-head h1 {margin: 0; font: 400 21px/1 var(--display); letter-spacing: -0.01em;}
-/* The list header: Needs you, and Agents beside it. */
-.f-tabs {display: flex; align-items: baseline; gap: 14px; min-width: 0;}
-.f-tab {font: 400 20px/1 var(--display); letter-spacing: -0.01em; color: rgb(250 250 250 / 0.38); white-space: nowrap; transition: color .15s;}
-.f-tab:hover {color: rgb(250 250 250 / 0.7);}
-.f-tab[aria-selected="true"] {color: var(--foreground);}
-.f-tab small {margin-left: 6px; font: 400 12.5px/1 var(--sans); color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+/* Agents' header: its name and how many are running, set like Needs you's. */
+.f-headline {display: inline-flex; align-items: center; gap: 6px; min-width: 0;}
+.f-headline h1 {line-height: 1.15; white-space: nowrap;}
+.f-count {font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap;}
 .f-return {display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 10px 0 4px; margin-left: -6px; border-radius: 999px; font-size: 13px; color: var(--muted-foreground); transition: background .12s, color .12s;}
 .f-return:hover {color: var(--foreground); background: var(--hover);}
 .f-return .icon {width: 15px; height: 15px;}
@@ -132,6 +174,11 @@ body[data-resizing] .f-box {transition: none;}
 .f-top .f-run {margin-left: auto; font-size: 12px; color: var(--muted-foreground);}
 .f-agent {position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: 9px; text-align: left; transition: background .12s;}
 .f-agent:hover {background: rgb(250 250 250 / 0.05);}
+/* One button stretched over the row opens the agent; its count sits above it and opens the sheet. */
+.f-hit {position: absolute; inset: 0; z-index: 0; border-radius: inherit;}
+.f-hit:focus-visible {outline: 2px solid var(--ring); outline-offset: -2px; border-radius: inherit;}
+.f-agent > :not(.f-hit) {position: relative; pointer-events: none;}
+.ag-bar {flex: none; height: 30px; padding: 0 12px 4px;}
 .f-quiet {display: flex; align-items: center; width: 100%; margin: 0 0 6px; padding: 8px; border-radius: 9px; font-size: 12.5px; color: var(--muted-foreground);}
 .f-quiet:hover {color: var(--foreground); background: rgb(250 250 250 / 0.04);}
 .f-stuck {margin-top: 6px; color: var(--error);}
@@ -152,6 +199,17 @@ body[data-resizing] .f-box {transition: none;}
 .f-off {display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 12.5px; color: var(--muted-foreground);}
 .f-push {margin-left: auto;}
 .f-head .icon {width: 18px; height: 18px;}
+/* Needs you's header in the panel: one 48px row, labels folded to icons at this width. */
+.f-list {position: relative; container-type: inline-size;}
+/* Its 32px buttons sit 8px below the top, so 8px in from the right: a corner button's centre on
+   the corner's diagonal. */
+html.float .g-head {flex: none; height: 48px; padding: 0 8px 0 16px; -webkit-user-select: none; user-select: none;}
+html.float .g-head .g-view {margin-left: -6px;}
+html.float .g-head .icon-btn {width: 32px; height: 32px;}
+html.float .g-tally {flex: none; padding: 4px 10px 8px 16px; border-bottom: 1px solid var(--hairline);}
+html.float .g-pop {top: 48px; left: 8px; right: 8px; max-height: calc(100% - 56px);}
+html.float .gh {padding: 10px 8px 4px; background: var(--sunken); font-size: 12.5px;}
+html.float .g-empty {padding: 24px 8px;}
 .f-rows {flex: 1; min-height: 0;}
 .f-rows-in {padding: 0 8px 8px;}
 /* The panel is narrow on any screen. Its window covers the whole display, so the dashboard's
@@ -175,6 +233,12 @@ body[data-resizing] .f-box {transition: none;}
 .f-rows .row.hl, .f-agent.hl {background: rgb(250 250 250 / 0.06);}
 .f-rows .row.hl .title, .f-agent.hl .a-name {color: var(--foreground);}
 .f-rows .row.hl::after, .f-agent.hl::after {opacity: 1; transform: none;}
+/* In the panel the age has a column on the right: on the title's first line, lined up row to row,
+   with the highlight's arrow below it on the meta line. Both are reserved on every row, so
+   highlighting moves nothing and the age always stays in view. */
+.f-rows .row.aged {padding-right: 70px;}
+:where(html.float) .row.aged .age {position: absolute; right: 8px; top: 9px; width: 54px; font-size: 12.5px; line-height: calc(14.5px * 1.4); pointer-events: none;}
+.f-rows .row.aged::after {top: auto; bottom: 8px;}
 body[data-keys] .f-rows .row:not(.hl), body[data-keys] .f-agent:not(.hl) {opacity: .45;}
 body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
@@ -188,8 +252,25 @@ body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):h
 .f-set .check[aria-checked="true"] {color: var(--foreground);}
 .f-set .check small {display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted-foreground);}
 .f-section {margin: 14px 8px 4px; font-size: 12.5px; color: var(--muted-foreground);}
-.f-key {display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 2px 8px; font-size: 14px; line-height: 1.3;}
-.f-key > span {flex: 1; min-width: 0;}
+/* A row of keys: the action on the left, its key chips on the right, wrapping to a second line
+   rather than overflowing; a chip's × shows on hover or focus, and a round + records another. */
+.f-key {display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px; min-height: 36px; padding: 4px 8px; font-size: 14px; line-height: 1.3;}
+/* The label keeps its width; when it and the keys don't fit on one line, the keys take their own
+   line under it, right-aligned, rather than squeezing the label onto several lines. */
+.f-key-name {flex: 1 0 auto; max-width: 100%; padding-top: 5px;}
+.f-key-name .f-reset {margin-left: 8px; font-size: 12px;}
+.f-chips {display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 100%; margin-left: auto;}
+.f-chip {position: relative; display: inline-flex; flex-direction: column; align-items: flex-end;}
+.f-chip-x {position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #3f3f46; color: var(--foreground); box-shadow: 0 0 0 2px var(--sunken); opacity: 0; pointer-events: none; transition: opacity .12s;}
+.f-chip-x .icon {width: 9px; height: 9px; stroke-width: 2.6;}
+.f-chip:hover .f-chip-x, .f-chip:focus-within .f-chip-x {opacity: 1; pointer-events: auto;}
+.f-chip.bad .f-cap {box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.6);}
+.f-key > .f-key-bad {flex-basis: 100%; margin-top: -2px; text-align: right; font-size: 12px;}
+html.float .f-plus {width: 28px; height: 28px; border: 1px dashed rgb(250 250 250 / 0.2);}
+html.float .f-plus.live {width: auto; padding: 0 9px; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); border-color: transparent; font-size: 12.5px;}
+.f-conflict {flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 10px; border-radius: 10px; background: rgb(250 250 250 / 0.04); border: 1px solid var(--hairline); font-size: 12.5px; color: rgb(250 250 250 / 0.85);}
+.f-conflict span {flex: 1 1 auto;}
+.f-conflict .f-reset {font-size: 12.5px;}
 .f-key-bad {display: block; font-size: 12.5px; color: var(--error);}
 .f-cap {flex: none; min-width: 58px; height: 28px; padding: 0 9px; border-radius: 8px; background: rgb(250 250 250 / 0.08); font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--foreground); transition: background .12s;}
 .f-cap:hover {background: rgb(250 250 250 / 0.14);}
@@ -209,7 +290,7 @@ body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):h
 /* The dashboard's item pane, filling the box instead of the browser's right edge. */
 html.float .d-bar [data-step], html.float .d-bar [data-pin] {display: none;}
 html.float .detail {position: absolute; left: 0; top: 0; width: var(--f-content, 480px); height: calc(100% - 22px); background: var(--sunken); border: 1px solid rgb(250 250 250 / 0.14); border-radius: 16px; box-shadow: 0 10px 28px rgb(0 0 0 / 0.42); overflow: hidden; transform-origin: center bottom;}
-html.float .d-bar {flex: none; height: 48px; padding: 0 7px 0 16px; -webkit-user-select: none; user-select: none;}
+html.float .d-bar {flex: none; height: 48px; padding: 0 8px 0 16px; -webkit-user-select: none; user-select: none;}
 html.float .d-head {padding: 0 18px 2px;}
 html.float .d-state {font-size: 12.5px;}
 html.float .d-title {margin-top: 3px; font-size: 18px; line-height: 1.32; letter-spacing: -0.012em;}
@@ -260,3 +341,75 @@ body[data-backdrop="dim"] .f-drag {background: rgb(0 0 0 / 0.24); animation: f-d
 .lab-all {display: block; width: 100%; height: 72px; margin-top: 8px; padding: 9px 12px; resize: vertical;}
 .lab-foot {position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--background); border-top: 1px solid var(--hairline);}
 .lab-foot small {flex: 1; font-size: 12.5px; color: var(--muted-foreground);}
+
+/* Usage: Tool cards. One radius family: the panel is 16px, every block inside it 14px (the card,
+   the other tool's line, sheets, the add button, the notice), and only buttons are pills. */
+.u-body {padding-top: 2px;}
+.u-card {margin: 0 0 8px; padding: 12px; border-radius: 14px; border: 1px solid var(--hairline); background: rgb(250 250 250 / 0.02);}
+.u-card-h {display: flex; align-items: baseline; gap: 8px;}
+.u-card-h h2 {margin: 0; font: 400 20px/1 var(--display); letter-spacing: -0.01em;}
+.u-using {flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--muted-foreground);}
+.u-note {margin: 6px 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--muted-foreground); text-wrap: pretty;}
+/* Tight enough that "5-hour 100% left · back in 4h 59m" stays on one line at the default 380. */
+.u-row {display: flex; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--hairline);}
+.u-mid {flex: 1; min-width: 0; display: flex; flex-direction: column;}
+.u-side {display: flex; align-items: center; gap: 4px; flex: none;}
+.u-who {display: flex; align-items: center; gap: 7px; min-width: 0;}
+.u-email {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; line-height: 20px; color: var(--foreground);}
+.u-plan {flex: none; height: 18px; padding: 0 6px; border-radius: 6px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap;}
+.u-line {display: block; font-size: 12.5px; line-height: 18px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+.u-line .bad {color: var(--error);}
+.u-line.old {color: rgb(250 250 250 / 0.38);}
+/* Countdowns keep one width as they tick, so nothing beside them moves. */
+.u-until {font-variant-numeric: tabular-nums; white-space: nowrap;}
+/* A window's line breaks only between its parts: what is left, then when it comes back. */
+.u-part {white-space: nowrap;}
+.u-tick {display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap;}
+.u-tick .icon {width: 13px; height: 13px; stroke-width: 2.4;}
+.u-btn {display: inline-flex; align-items: center; justify-content: center; flex: none; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid rgb(250 250 250 / 0.14); font-size: 13px; font-weight: 500; white-space: nowrap; transition: background .12s;}
+.u-btn:hover {background: var(--hover);}
+html.float .u-x {width: 28px; height: 28px;}
+/* Rings: what is left as a fill, red at 10% or less, dimmed when the reading is old. */
+.u-ring {position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; font: 600 10.5px/1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;}
+.u-ring svg {position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); fill: none; stroke-width: 3; stroke-linecap: round;}
+.u-ring .track {stroke: rgb(250 250 250 / 0.14);}
+.u-ring .fill {stroke: var(--foreground);}
+.u-ring b {position: relative; font-weight: 600; text-box: trim-both cap alphabetic;}
+.u-ring.low {color: var(--error);}
+.u-ring.low .fill {stroke: var(--error);}
+.u-ring.low .track {stroke: rgb(248 113 113 / 0.35);}
+.u-ring.dim {opacity: .45;}
+.u-ring.u-none .track {stroke-dasharray: 3 4;}
+.u-add {display: flex; align-items: center; gap: 8px; width: 100%; height: 44px; margin-top: 4px; padding: 0 12px; border-radius: 14px; border: 1px dashed rgb(250 250 250 / 0.18); font-size: 13.5px; font-weight: 500; color: rgb(250 250 250 / 0.82); white-space: nowrap;}
+.u-add:hover {color: var(--foreground); background: var(--hover);}
+.u-add .icon {width: 15px; height: 15px;}
+.u-mini {display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border-radius: 14px; border: 1px solid var(--hairline); text-align: left; transition: background .12s;}
+.u-mini:hover {background: var(--hover);}
+.u-mini .u-mid {flex-direction: row; align-items: baseline; gap: 8px;}
+.u-mini-h {flex: none; font: 400 20px/1 var(--display); letter-spacing: -0.01em;}
+.u-empty {margin: 0; padding: 10px 0 4px; border-top: 1px solid var(--hairline); font-size: 12.5px; color: var(--muted-foreground);}
+/* A step opened in place: 12px from its edge to the ink on every side. */
+.u-sheet {margin: 0 0 10px; padding: 12px; border-radius: 14px; background: rgb(250 250 250 / 0.04); border: 1px solid var(--hairline); font-size: 13px; line-height: 1.5; color: rgb(250 250 250 / 0.78); overflow-wrap: anywhere;}
+.u-card > .u-sheet:last-child {margin: 4px 0 0;}
+.u-title {position: relative; font-size: 14px; font-weight: 500; line-height: 1.4; color: var(--foreground);}
+/* The 15px spinner sits on the capitals' centre, so the title is as tall with it as without. */
+.u-title:has(.u-spin) {padding-left: 24px;}
+.u-spin {position: absolute; left: 0; top: calc(50% - 7.5px); width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgb(250 250 250 / 0.18); border-top-color: var(--foreground); animation: u-spin .9s linear infinite;}
+@keyframes u-spin {to {transform: rotate(360deg);}}
+.u-sheet p {margin: 10px 0 0; text-wrap: pretty;}
+.u-send {display: flex; align-items: center; gap: 8px; margin-top: 14px;}
+.u-wide {flex: 1; min-width: 0; height: 44px; padding: 0 18px; border-radius: 999px; background: var(--foreground); color: var(--primary-foreground); font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .12s;}
+.u-wide:hover {background: rgb(250 250 250 / 0.9);}
+/* What just happened, with a way back: lighter than the panel, floating over its content, which
+   dissolves into it from 24px above rather than being cut. It never changes the box's height. */
+.u-toast {position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 11px; border-radius: 14px; background: var(--notice); border: 1px solid rgb(250 250 250 / 0.14); box-shadow: 0 12px 32px rgb(0 0 0 / 0.55);}
+/* The way back is a small pill, so the address keeps as much of its name as it can. */
+.u-toast .u-btn {height: 30px; padding: 0 11px; font-size: 12.5px;}
+.u-t-text {flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; line-height: 18px; color: rgb(250 250 250 / 0.88);}
+.u-t-title {display: flex; min-width: 0; font-size: 13px; font-weight: 500; line-height: 18px; color: var(--foreground); white-space: nowrap;}
+.u-t-lead, .u-t-domain {flex: none; white-space: pre;}
+.u-t-local {min-width: 0; overflow: hidden;}
+.u-t-body {overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+.u-sr {position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;}
+.u-veil {position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; pointer-events: none; background: linear-gradient(to bottom, rgb(9 9 11 / 0), var(--sunken) 24px);}
+@media (prefers-reduced-motion: reduce) {.u-spin {animation-duration: 3s;}}

@@ -8,10 +8,42 @@
 
 import AppKit
 import Carbon.HIToolbox
+import UniformTypeIdentifiers
 import WebKit
 
 func log(_ message: String) {
     FileHandle.standardError.write(Data("hq-float: \(message)\n".utf8))
+}
+
+/// A shortcut of modifiers alone has no key: its "key code" is this, and its modifiers are
+/// macOS's own flags, which tell left from right.
+let modifiersOnly = -1
+/// Each modifier as macOS reports it: its left key, its right key, either, and its symbol.
+let modifierKeys: [(left: UInt64, right: UInt64, any: UInt64, symbol: String)] = [
+    (0x01, 0x2000, 0x40000, "⌃"), (0x20, 0x40, 0x80000, "⌥"), (0x02, 0x04, 0x20000, "⇧"), (0x08, 0x10, 0x100000, "⌘"),
+]
+let modifierMask = modifierKeys.reduce(UInt64(0)) { $0 | $1.left | $1.right | $1.any }
+
+/// Two modifier keys or more, not only Shift, or one right-hand key: one left-hand key alone
+/// is tapped too often in passing to be a shortcut.
+func modifierChordAllowed(_ mask: UInt64) -> Bool {
+    var keys = 0, right = false, strong = false
+    for key in modifierKeys where mask & (key.left | key.right | key.any) != 0 {
+        keys += max((mask & key.left != 0 ? 1 : 0) + (mask & key.right != 0 ? 1 : 0), 1)
+        right = right || mask & key.right != 0
+        strong = strong || key.symbol != "⇧"
+    }
+    return strong && (keys >= 2 || right)
+}
+
+/// "⌃ + left ⌥": a side is named wherever a keyboard has two of that key. Most have one ⌃.
+func modifierLabel(_ mask: UInt64) -> String {
+    modifierKeys.flatMap { key -> [String] in
+        let left = mask & key.left != 0, right = mask & key.right != 0
+        if !left && !right { return mask & key.any != 0 ? [key.symbol] : [] }
+        let one = key.symbol == "⌃" ? "" : "left "
+        return (left ? ["\(one)\(key.symbol)"] : []) + (right ? ["right \(key.symbol)"] : [])
+    }.joined(separator: " + ")
 }
 
 /// A borderless window refuses key status by default. The pill must stay that
@@ -32,6 +64,58 @@ final class PanelWebView: WKWebView {
     // WebKit only accepts first mouse on scrollbars and selections, which would
     // eat the first click on a panel that is not key.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Files dragged from Finder. WebKit's own drop never reaches a page in a
+    /// non-activating panel this high, so the window takes file drags itself
+    /// and hands the page where they are and, on a drop, the files.
+    var onFileDrag: ((NSPoint?) -> Void)?
+    var onFileDrop: (([URL], NSPoint) -> Void)?
+
+    private func fileURLs(_ info: NSDraggingInfo?) -> [URL] {
+        guard let info else { return [] }
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        return urls as? [URL] ?? []
+    }
+
+    // The window covers the display, so the page's coordinates are the view's, top left.
+    private func pagePoint(_ info: NSDraggingInfo) -> NSPoint {
+        let p = convert(info.draggingLocation, from: nil)
+        return NSPoint(x: p.x, y: isFlipped ? p.y : bounds.height - p.y)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return super.draggingEntered(sender) }
+        onFileDrag?(pagePoint(sender))
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return super.draggingUpdated(sender) }
+        onFileDrag?(pagePoint(sender))
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        guard fileURLs(sender).isEmpty else { return onFileDrag?(nil) ?? () }
+        super.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        fileURLs(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(sender)
+        guard !urls.isEmpty else { return super.performDragOperation(sender) }
+        onFileDrag?(nil)
+        onFileDrop?(urls, pagePoint(sender))
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        guard fileURLs(sender).isEmpty else { return }
+        super.concludeDragOperation(sender)
+    }
 
     // Reloading would throw away unsent replies, which live in the page.
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
@@ -107,11 +191,24 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // CSS, so the window sets it, and keeps setting it, while the pointer is ours.
     private var cursorKind = "default", cursorEdge = ""
     private var lastPointer: NSPoint?
+    // A file dragged from another app, such as Finder. The panel sits above macOS's drag
+    // layer, so the dragged file would pass under it; while one is in flight it steps just
+    // below that layer, and catches the mouse only over the box.
+    private var fileDragging = false
+    private var menuOpen = false
+    private var dragBoardCount = NSPasteboard(name: .drag).changeCount
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var hotKeyActions: [UInt32: String] = [:]
     private var hotKeyHandler: EventHandlerRef?
     private var keyMonitor: Any?
+    // Shortcuts of modifiers alone, such as ⌃ with left ⌥, which macOS can't register: read
+    // from the keyboard's modifier state, which needs no permission, and fired on release.
+    private var modifierActions: [UInt64: String] = [:]
+    private var modifierTimer: Timer?
+    private var chordStart: TimeInterval?
+    private var chordPeak: UInt64 = 0
+    private var recordPeak: UInt64 = 0
 
     init(url: URL, stateURL: URL, benchURL: URL?) {
         self.url = url
@@ -192,6 +289,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         if #available(macOS 13.3, *), ProcessInfo.processInfo.environment["HQ_FLOAT_DEBUG"] != nil {
             view.isInspectable = true
         }
+        view.registerForDraggedTypes(view.registeredDraggedTypes + [.fileURL])
+        view.onFileDrag = { [weak self] point in
+            guard let self else { return }
+            if let point { self.send(["type": "fileDrag", "x": point.x, "y": point.y]) } else { self.send(["type": "fileDrag", "off": true]) }
+        }
+        view.onFileDrop = { [weak self] urls, point in self?.sendFiles(urls, at: point) }
         return view
     }
 
@@ -411,6 +514,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // reports hover and the cursor: WebKit gives a panel that is not key neither :hover
     // nor mouse moves.
     private func checkPointer() {
+        watchFileDrag()
         guard !hitRects.isEmpty, !dragging else {
             panel.ignoresMouseEvents = false
             if dragging { assertCursor() }
@@ -423,6 +527,12 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         // text past the edge. A drag from another app, such as a file from Finder, has to be
         // able to land on the box, so a window that was letting the mouse through starts
         // taking it as soon as the drag is over the box.
+        if fileDragging {
+            // Ours only over the box, a little generously, so a drop anywhere else reaches
+            // the app underneath.
+            panel.ignoresMouseEvents = !hitRects.contains { $0.insetBy(dx: -8, dy: -8).contains(local) }
+            return
+        }
         if NSEvent.pressedMouseButtons != 0 {
             if inside { panel.ignoresMouseEvents = false }
             // A resize that started on an edge keeps its cursor until the button comes up.
@@ -640,11 +750,39 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     // Menus and dropdowns are fixed at popUpMenu level, under the panel, so it steps
     // just below them for as long as one is open.
     @objc private func menuOpened() {
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue - 1)
+        menuOpen = true
+        applyLevel()
     }
 
     @objc private func menuClosed() {
-        panel.level = .screenSaver
+        menuOpen = false
+        applyLevel()
+    }
+
+    private func applyLevel() {
+        let dragLayer = Int(CGWindowLevelForKey(.draggingWindow))
+        let level = fileDragging ? dragLayer - 1
+            : menuOpen ? NSWindow.Level.popUpMenu.rawValue - 1 : NSWindow.Level.screenSaver.rawValue
+        if panel.level.rawValue != level { panel.level = NSWindow.Level(rawValue: level) }
+    }
+
+    /// A drag that started anywhere while the button is down changes the drag pasteboard.
+    private func watchFileDrag() {
+        let board = NSPasteboard(name: .drag)
+        guard NSEvent.pressedMouseButtons != 0 else {
+            dragBoardCount = board.changeCount
+            if fileDragging {
+                fileDragging = false
+                applyLevel()
+            }
+            return
+        }
+        guard !fileDragging, board.changeCount != dragBoardCount else { return }
+        dragBoardCount = board.changeCount
+        if board.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) {
+            fileDragging = true
+            applyLevel()
+        }
     }
 
     @objc private func panelResigned() {
@@ -677,35 +815,87 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         hotKeyRefs.forEach { UnregisterEventHotKey($0) }
         hotKeyRefs = []
         hotKeyActions = [:]
+        modifierActions = [:]
+        modifierTimer?.invalidate()
+        modifierTimer = nil
+        chordStart = nil
     }
 
+    /// Every key of every action gets its own registration, so one that macOS refuses (another
+    /// app holds it) is reported on its own, as "keyCode:modifiers", and the rest still work.
     private func registerHotKeys(_ entries: [[String: Any]]) {
         unregisterHotKeys()
         var failed: [String] = []
         for (index, entry) in entries.enumerated() {
             guard let action = entry["action"] as? String,
-                  let keyCode = (entry["keyCode"] as? NSNumber)?.uint32Value,
-                  let modifiers = (entry["modifiers"] as? NSNumber)?.uint32Value
+                  let code = (entry["keyCode"] as? NSNumber)?.intValue,
+                  let mods = (entry["modifiers"] as? NSNumber)?.int64Value, mods >= 0
             else { continue }
+            if code == modifiersOnly {
+                let mask = UInt64(mods) & modifierMask
+                if mask != 0, modifierActions[mask] == nil { modifierActions[mask] = action }
+                else { failed.append("\(code):\(mods)") }
+                continue
+            }
+            guard (0...0xFFFF).contains(code), mods <= 0xFFFF else { failed.append("\(code):\(mods)"); continue }
             let id = EventHotKeyID(signature: OSType(0x4851464C), id: UInt32(index + 1)) // "HQFL"
             var ref: EventHotKeyRef?
-            let status = RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref)
+            let status = RegisterEventHotKey(UInt32(code), UInt32(mods), id, GetApplicationEventTarget(), 0, &ref)
             if status == noErr, let ref {
                 hotKeyRefs.append(ref)
                 hotKeyActions[id.id] = action
             } else {
-                failed.append(action)
+                failed.append("\(code):\(mods)")
             }
         }
+        if !modifierActions.isEmpty {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.watchModifiers() }
+            RunLoop.main.add(timer, forMode: .common)
+            modifierTimer = timer
+        }
         send(["type": "hotkeysApplied", "failed": failed])
+    }
+
+    /// A modifier shortcut fires when its keys are let go: only those keys, pressed briefly,
+    /// with no other key, click or scroll in between, so ⌃⌥J or ⌃-click never set it off.
+    private func watchModifiers() {
+        let state = CGEventSourceStateID.combinedSessionState
+        let held = CGEventSource.flagsState(state).rawValue & modifierMask
+        let now = ProcessInfo.processInfo.systemUptime
+        if held != 0 {
+            if chordStart == nil { chordStart = now; chordPeak = 0 }
+            chordPeak |= held
+            return
+        }
+        guard let start = chordStart else { return }
+        chordStart = nil
+        let length = now - start
+        guard length < 1.5, let action = modifierActions[chordPeak] else { return }
+        let others: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+        let quiet = others.map { CGEventSource.secondsSinceLastEventType(state, eventType: $0) }.min() ?? .infinity
+        if quiet > length + 1.0 / 30 { send(["type": "hotkey", "action": action]) }
     }
 
     // While recording, the existing shortcuts stand down so pressing one can record it.
     private func recordKey(for action: String) {
         unregisterHotKeys()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        recordPeak = 0
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .flagsChanged {
+                // Modifiers pressed and let go with no key: a shortcut of modifiers alone.
+                let held = UInt64(event.modifierFlags.rawValue) & modifierMask
+                if held != 0 { self.recordPeak |= held; return event }
+                let peak = self.recordPeak
+                self.recordPeak = 0
+                if modifierChordAllowed(peak) {
+                    self.finishRecording(["type": "keyRecorded", "action": action,
+                                          "key": ["keyCode": modifiersOnly, "modifiers": Int(peak), "label": modifierLabel(peak)]])
+                }
+                return event
+            }
+            self.recordPeak = 0
             if Int(event.keyCode) == kVK_Escape {
                 self.finishRecording(["type": "keyRecorded", "action": action])
             } else if [kVK_Delete, kVK_ForwardDelete].contains(Int(event.keyCode)) {
@@ -815,6 +1005,68 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         }
         openExternally(target)
         decisionHandler(.cancel)
+    }
+
+    /// The paperclip's <input type=file>. Without this, WebKit on macOS ignores it.
+    func webView(
+        _: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame _: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let open = NSOpenPanel()
+        open.allowsMultipleSelection = parameters.allowsMultipleSelection
+        open.canChooseFiles = true
+        open.canChooseDirectories = false
+        open.resolvesAliases = true
+        // Above the panel, which sits at the screen saver's level.
+        open.level = NSWindow.Level(rawValue: panel.level.rawValue + 1)
+        NSApp.activate(ignoringOtherApps: true)
+        var answered = false
+        open.begin { [weak self] response in
+            guard !answered else { return }
+            answered = true
+            completionHandler(response == .OK ? open.urls : nil)
+            // The panel is still open, so it keeps the keyboard.
+            guard let self, self.panel.acceptsKey else { return }
+            self.panel.makeKey()
+            self.panel.makeFirstResponder(self.web)
+        }
+    }
+
+    /// Files dropped from Finder, read here and handed to the page: at most 10, each at
+    /// most 25 MB, with the reason for any left out.
+    private func sendFiles(_ urls: [URL], at point: NSPoint) {
+        let limit = 25 * 1024 * 1024
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var files: [[String: Any]] = []
+            for (index, url) in urls.enumerated() {
+                let name = url.lastPathComponent
+                guard index < 10 else {
+                    files.append(["name": name, "error": "10 files at most"])
+                    continue
+                }
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .fileSizeKey, .contentTypeKey])
+                if values?.isDirectory == true || values?.isPackage == true {
+                    files.append(["name": name, "error": "Folders can't be attached"])
+                    continue
+                }
+                if let size = values?.fileSize, size > limit {
+                    files.append(["name": name, "error": "Too big (max 25 MB)"])
+                    continue
+                }
+                guard let data = try? Data(contentsOf: url), data.count <= limit else {
+                    files.append(["name": name, "error": "Could not read it"])
+                    continue
+                }
+                let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? values?.contentType?.preferredMIMEType ?? "application/octet-stream"
+                files.append(["name": name, "type": type, "data": data.base64EncodedString()])
+            }
+            DispatchQueue.main.async {
+                self?.send(["type": "files", "x": point.x, "y": point.y, "files": files])
+            }
+        }
     }
 
     /// target="_blank" asks for a new window; hand it to the browser instead.

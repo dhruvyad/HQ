@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const elements = {'meta[name="hq-token"]': {content: 'test'}};
-const context = vm.createContext({URL, URLSearchParams, document: {
+const context = vm.createContext({URL, URLSearchParams, File, atob, document: {
   body: {dataset: {}},
   querySelector(selector) {return elements[selector] || null;},
   querySelectorAll() {return [];},
@@ -50,19 +50,23 @@ assert.equal(lane('d1'), 'done');
 assert.equal(lane('l1'), 'later');
 assert.equal(lane('q1'), 'agents'); // an open question leaves Needs you until answered
 
-// Needs you: pinned and due-soon lead, then project › workstream groups, most urgent first.
+// Needs you (Views + Groups): grouped by project by default, smart order inside each group.
+run('needsState = cleanNeeds(null, "project")');
 let html = run('needsPage().body');
-assert.ok(html.indexOf('Pinned') < html.indexOf('Due soon'));
-assert.ok(html.indexOf('Due soon') < html.indexOf('Restyle the inbox'));
-assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Human &lt;b&gt;action&lt;/b&gt;')); // rank 20 before 300
-assert.ok(html.includes('<span class="of">HQ</span><span class="of">›</span>Design'));
+assert.ok(html.includes('class="gh "') && html.indexOf('>HQ<') < html.indexOf('>NoClick<')); // projects by name
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('>NoClick<')); // HQ's own item sits under HQ
 assert.ok(!html.includes('<b>action</b>'));
 assert.ok(!html.includes('Agent action') && !html.includes('Snoozed') && !html.includes('Asked the agent'));
-run("sortMode = 'new'");
+run('needsState.group = "none"');
 html = run('needsPage().body');
-assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Pinned one')); // newest first, one feed
-assert.ok(html.includes('HQ › Design') && html.includes('10m ago'));
-run("sortMode = 'urgent'");
+// Smart: pinned first, then due soon, then priority (rank 20 before 300).
+assert.ok(html.indexOf('Pinned one') < html.indexOf('Due today') && html.indexOf('Due today') < html.indexOf('Restyle the inbox'));
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Human &lt;b&gt;action&lt;/b&gt;'));
+assert.ok(html.includes('NoClick › Support')); // ungrouped rows say where they live
+run('needsState.order = "newest"');
+html = run('needsPage().body');
+assert.ok(html.indexOf('Restyle the inbox') < html.indexOf('Pinned one')); // newest first
+run('needsState = cleanNeeds(null, "project")');
 
 // Workstream pages count each lane for that scope only.
 run("route = parseRoute('#/p/noclick/support?lane=waiting')");
@@ -344,8 +348,15 @@ assert.ok(run('feel.show') >= 10000); // the real list is never cut short
 html = run('floatListHTML(attention(), true)');
 assert.ok(html.includes('Newest &lt;b&gt;decision&lt;/b&gt;') && !html.includes('<b>decision</b>'));
 assert.ok(html.includes('data-item="f-new"') && html.includes('Decision') && html.includes('NoClick › Support'));
-assert.ok(html.includes('Reply failed') && html.includes('data-view="needs" aria-selected="true">Needs you<small>7</small>') && html.includes('data-more'));
-assert.ok(html.includes('data-view="agents" aria-selected="false">Agents<small>1 running</small>')); // the other list, beside it
+assert.ok(html.includes('Reply failed') && html.includes('<span class="h">Needs you</span><span class="count">7</span>') && html.includes('data-more'));
+// Agents is reached only from its circle, never from Needs you; Not acted on, a view of your own
+// decisions, is the view menu's plain last entry, and only when there is one.
+run('needsFilter().open = "view"');
+html = run('floatListHTML(attention(), true)');
+assert.ok(!html.includes('data-view="agents"') && !html.includes('>Agents<') && !html.includes('Elsewhere'));
+run('realStuck = stuckItems; stuckItems = () => [{id: "s1"}, {id: "s2"}]');
+assert.ok(run('floatListHTML(attention(), true)').includes('<div class="p-rule"></div><button class="g-opt" type="button" data-view="stuck"><span class="tick"></span><span class="o-text">Not acted on</span><span class="n">2</span></button></div>'));
+run('stuckItems = realStuck; needsFilter().open = null');
 assert.ok(!html.includes('data-collapse') && !html.includes('target="_blank"')); // one menu, not a cross and an arrow
 assert.ok(!html.includes('Reconnecting'));
 assert.ok(run('floatListHTML(attention(), false)').includes('Reconnecting'));
@@ -414,7 +425,8 @@ assert.equal(run("folderName('')"), 'No folder');
 // The panel shows the same folders, and an agent's own page lists its items to open.
 run(`savedSessions = state.sessions; state.sessions = agentSessions; listView = 'agents'`);
 html = run('agentsPanelHTML(attention(), true)');
-assert.ok(html.includes('data-view="agents" aria-selected="true"') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
+assert.ok(html.includes('<span class="f-headline"><h1>Agents</h1>') && html.includes('class="f-folder"') && html.includes('data-agent="c:bg"'));
+assert.ok(!html.includes('data-view="needs"') && (html.match(/role="tablist"/g) || []).length === 1 && html.includes('role="tablist" aria-label="Show"')); // no way across to Needs you but the pill; its only tabs are All and Not acted on
 assert.ok(html.includes('Old &lt;chat&gt;') === false && html.includes('data-agents-all>1 more, in 1 folder')); // quiet ones folded
 assert.ok(!html.includes('/Users/someone'));
 run("agentOpen = 'c:done'");
@@ -423,6 +435,86 @@ assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.inclu
 run("agentOpen = 'c:gone'");
 assert.ok(run('agentsPanelHTML(attention(), true)').includes('data-agent="c:bg"')); // a vanished agent falls back to the list
 run(`state.sessions = savedSessions; listView = 'needs'; agentOpen = null`);
+
+// Decisions agents hold. All shows a quiet count: what it has not heard, or, only once stuck,
+// what it heard and never closed. Not acted on lists every agent of any age holding one.
+const heldDecision = (id, sid, title, stage, stuck, ago, extra = {}) => ({...item({id, session_id: sid, title, status: 'answered', owner: 'agent', project: 'harbor', project_name: 'Harbor', answer: `Answer to ${title}`,
+  followup: {stage, stuck, adoptable: false, replied: clockNow - ago, heard: stage === 'acknowledged' ? clockNow - ago + 60 : null}, ...extra}), lane: 'agents'});
+context.heldItems_ = [
+  heldDecision('h1', 'c:old', 'Which archive format', 'delivering', 'unheard', 3 * 86400 + 7200),
+  heldDecision('h2', 'c:old', 'Backfill from 2021', 'delivering', 'unheard', 3 * 86400 + 3600),
+  heldDecision('h3', 'c:old', 'Drop the <duplicates>', 'delivering', 'unheard', 3 * 86400 + 600, {handoff: true}),
+  heldDecision('h4', 'c:old', 'Run it at night', 'acknowledged', 'unclosed', 4 * 86400),
+  heldDecision('h5', 'c:done', 'Rounding rule', 'acknowledged', null, 5400),
+  heldDecision('h6', 'x:run', 'Launch headline', 'delivering', null, 240),
+  heldDecision('h7', 'c:wait', 'Retry or alert', 'acknowledged', 'unclosed', 2 * 86400, {project: 'other', project_name: 'Other'}),
+  item({id: 'h8', session_id: 'c:done', title: 'Still open', status: 'open'}),
+];
+const heldOf = (sid) => `heldItems(heldItems_).filter((i) => i.session_id === '${sid}')`;
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldBy(${heldOf('c:old')}))`)), {unheard: 3, open: 1, total: 4, stuck: true, oldest: clockNow - 4 * 86400});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('c:old')}))`)), {n: 3, word: 'unheard', stuck: true});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('c:wait')}))`)), {n: 1, word: 'not closed', stuck: true}); // heard a day ago, never closed
+assert.equal(run(`heldCount(${heldOf('c:done')})`), null); // heard and still being worked on is normal
+assert.deepEqual(JSON.parse(run(`JSON.stringify(heldCount(${heldOf('x:run')}))`)), {n: 1, word: 'unheard', stuck: false});
+assert.equal(run("heldSplit({unheard: 3, open: 1})"), '3 unheard · 1 not closed');
+assert.equal(run("heldSplit({unheard: 0, open: 2})"), '2 not closed');
+// Not acted on: stuck first, then the most, then the longest waiting, in folders that keep their first agent's place.
+const unacted = JSON.parse(run(`JSON.stringify((() => {const v = unactedAgents(agentSessions, heldItems_, ${clockNow}); return {rows: v.rows.map((r) => [r.a.id, r.o.total, r.o.stuck]), folders: v.folders.map((f) => [f.name, f.rows.map((r) => r.a.id)]), total: v.total, most: v.most?.a.id, stuck: v.stuck};})())`));
+assert.deepEqual(unacted.rows, [['c:old', 4, true], ['c:wait', 1, true], ['c:done', 1, false], ['x:run', 1, false]]);
+assert.deepEqual(unacted.folders, [['harbor', ['c:old', 'c:done']], ['site', ['c:wait']], ['lantern', ['x:run']]]);
+assert.deepEqual([unacted.total, unacted.most, unacted.stuck], [7, 'c:old', true]);
+assert.ok(run(`unactedSummary(unactedAgents(agentSessions, heldItems_, ${clockNow}))`).startsWith('7 decisions not acted on, across 4 agents. <b>Old &lt;chat&gt;</b> holds 4 of them, and last ran 3d ago.'));
+// Nobody clearly heavier, nobody named.
+assert.equal(run(`unactedAgents(agentSessions, heldItems_.filter((i) => i.session_id !== 'c:old'), ${clockNow}).most`), null);
+assert.equal(run(`unactedSummary(unactedAgents(agentSessions, heldItems_.filter((i) => i.session_id !== 'c:old'), ${clockNow}))`), '3 decisions not acted on, across 3 agents.');
+// Where each one stands, in words.
+const stage = (id) => run(`heldStage(heldItems_.find((i) => i.id === '${id}'), ${clockNow})`);
+assert.equal(stage('h1'), 'You decided 3d ago · <span class="bad">not heard in 3 days</span>');
+assert.ok(stage('h4').endsWith('<span class="bad">heard, never closed</span>'));
+assert.ok(stage('h5').endsWith('· heard, not closed yet') && stage('h6').endsWith('· not heard yet'));
+assert.ok(run(`heldStage({...heldItems_[0], followup: {...heldItems_[0].followup, stuck: 'stopped'}})`).endsWith('agent stopped before hearing it</span>'));
+// The panel: All carries the quiet count; Not acted on its split and share; the filter says how many.
+run(`state.sessions = agentSessions; savedItems = state.items; state.items = heldItems_; model = derive(); listView = 'agents'; agentsAll = false; agentsShow = 'all'; heldSheet = null`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<button type="button" class="held-n stuck" data-held="c:wait" title="1 decision it heard a day ago and never closed"'));
+assert.ok(html.includes('data-held="x:run"') && html.includes('>1 unheard</button>') && !html.includes('data-held="c:done"'));
+assert.ok(html.includes('role="tab" data-agents-show="unacted" aria-selected="false" tabindex="-1">Not acted on<span class="n stuck">7</span>'));
+assert.ok(html.includes('<div class="f-agent" data-agent="x:run"><button class="f-hit" type="button" aria-label="Release build"></button>')); // the row opens the agent, its count the sheet
+run(`agentsShow = 'unacted'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<p class="ag-sum">7 decisions not acted on') && html.includes('data-agent="c:old"')); // older than a day, still here
+assert.ok(html.includes('>3 unheard · 1 not closed</button><span class="held-share most"><span class="held-meter" aria-hidden="true"><i style="width:57%"></i></span>holds 4 of 7</span>'));
+assert.ok(html.includes('Claude Code · last ran 3d ago') && html.includes('Codex · running now'));
+// The sheet: that agent's decisions, stuck and oldest first, your answer, where each stands, what you can do.
+run(`heldSheet = 'c:old'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('class="f-rows scroll" inert') && html.includes('class="ag-bar" inert')); // the list waits under it
+assert.ok(html.includes('role="dialog" aria-modal="true" aria-labelledby="held-title"') && html.includes('<b id="held-title">3 unheard · 1 not closed</b><span>Old &lt;chat&gt;</span>'));
+assert.deepEqual([...html.matchAll(/data-held-item="(h\d)"/g)].map((m) => m[1]), ['h4', 'h1', 'h2', 'h3']);
+assert.ok(html.includes('<div class="you">You: Answer to Drop the &lt;duplicates&gt;</div>') && !html.includes('<duplicates>'));
+assert.ok(html.includes('data-held-open="h1"') && html.includes('data-held-handoff="h1"') && html.includes('data-held-close="h1"'));
+assert.ok(html.includes('data-tip="Offered to the next agent in Harbor">Offered to the next agent</span>') && !html.includes('data-held-handoff="h3"')); // offered already
+run(`heldClosing = 'h2'; heldNote = 'Did it <by hand>'`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<input id="held-note" class="held-input" type="text" maxlength="2000" value="Did it &lt;by hand&gt;"') && html.includes('data-held-confirm="h2"') && !html.includes('data-held-close="h2"'));
+html = run(`heldSheetHTML({id: 'c:wait', name: 'Asks you first'}, heldItems_.filter((i) => i.id === 'h7'))`);
+assert.ok(!html.includes('data-held-handoff')); // nothing to hand an Other item to
+html = run(`heldSheetHTML({id: 'c:old', name: 'Old'}, Array.from({length: 33}, (_, n) => ({...heldItems_[0], id: 'm' + n})))`);
+assert.equal((html.match(/data-held-item=/g) || []).length, 30);
+assert.ok(html.includes('…and 3 more on <button type="button" class="held-link" data-held-page="c:old">the agent\'s page</button>'));
+// A sheet whose agent holds nothing any more closes itself.
+run(`heldSheet = 'c:nosig'; heldClosing = 'h1'; heldStill(heldItems_)`);
+assert.deepEqual([run('heldSheet'), run('heldClosing')], [null, null]);
+// Tab memory keeps the list chosen and an open sheet; anything odd starts clean.
+let keptAgents = run(`JSON.stringify(cleanTabs({view: 'agents', tabs: {agents: {show: 'unacted', sheet: 'c:old'}}}).tabs.agents)`);
+assert.deepEqual([JSON.parse(keptAgents).show, JSON.parse(keptAgents).sheet], ['unacted', 'c:old']);
+keptAgents = run(`JSON.stringify(cleanTabs({tabs: {agents: {show: '<odd>', sheet: 42}}}).tabs.agents)`);
+assert.deepEqual([JSON.parse(keptAgents).show, JSON.parse(keptAgents).sheet], ['all', null]);
+run(`tabState.tabs.agents = {...blankTab(), show: 'unacted', sheet: 'c:old'}; restoreTab('agents')`);
+assert.deepEqual([run('agentsShow'), run('heldSheet'), run('heldClosing')], ['unacted', 'c:old', null]);
+run(`restoreTab('needs')`);
+assert.equal(run('heldSheet'), null); // the sheet belongs to Agents
+run(`state.sessions = savedSessions; state.items = savedItems; model = derive(); listView = 'needs'; agentsShow = 'all'; heldSheet = null; heldClosing = null; heldNote = ''; tabState.tabs.agents = blankTab()`);
 
 // Opening and closing are quick: a spring that settles in about 200ms, with no long tail.
 assert.ok(run('springMs(SNAP)') >= 180 && run('springMs(SNAP)') <= 220, `snap spring lasts ${run('springMs(SNAP)')}ms`);
@@ -441,17 +533,15 @@ const action = (key, mode) => run(`panelAction(${JSON.stringify(key)}, ${JSON.st
 assert.equal(action('ArrowUp', 'list'), 'previous');
 assert.equal(action('ArrowDown', 'list'), 'next');
 assert.equal(action('ArrowRight', 'list'), 'open');
-assert.equal(action('Enter', 'list'), 'open');
-assert.equal(action('Enter', 'item'), null); // in an item, Enter belongs to whatever has focus
+assert.equal(action('Enter', 'list'), 'open'); // a default now, beside →
 assert.equal(action('ArrowLeft', 'item'), 'back');
-assert.equal(action('Escape', 'item'), 'back');
-assert.equal(action('Escape', 'list'), null); // the list's Escape collapses the panel, as before
+assert.equal(action('Escape', 'item'), 'back'); // a default now, beside ←
 assert.equal(action('ArrowDown', 'item'), 'next');
-assert.deepEqual(JSON.parse(run("JSON.stringify(cleanPanelKeys({back: 'h', open: null, next: 42}))")), {previous: 'ArrowUp', next: 'ArrowDown', open: null, back: 'h'});
+assert.deepEqual(JSON.parse(run("JSON.stringify(cleanPanelKeys({back: 'h', open: null, next: 42}))")), {previous: ['ArrowUp'], next: ['ArrowDown'], open: ['Enter'], back: ['h', 'Escape']});
 run("panelKeys = cleanPanelKeys({back: 'h'})");
 assert.equal(action('h', 'item'), 'back');
 assert.equal(action('ArrowLeft', 'item'), null); // rebound, so the old key does nothing
-assert.equal(action('Escape', 'item'), 'back'); // Escape always goes back
+assert.equal(action('Escape', 'item'), 'back'); // it always went back, so it still does
 run('panelKeys = cleanPanelKeys()');
 // While typing, the arrows and Enter belong to the text, and Escape first leaves the box.
 run(`floatOpen = true; customizing = false; route.item = 'a1'; stepped = []; went = [];
@@ -737,22 +827,22 @@ assert.equal(run('METRICS.needs.read([{}, {}]).tag'), '3 need you');
 run('flying = 0');
 
 // Shortcuts: the same key opens and closes, and what you set survives.
-const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved ?? null)}))`));
-assert.equal(shortcut().toggle.label, '⌃⌥H');
-assert.equal(shortcut().customize, null); // nothing bound unless you ask
+const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved)}))`));
+assert.equal(shortcut().toggle[0].label, '⌃⌥H');
+assert.deepEqual(shortcut().customize, []); // nothing bound unless you ask
 const mine = {keyCode: 49, modifiers: 2048, label: '⌥Space'};
-assert.deepEqual(shortcut({toggle: mine}).toggle, mine);
-assert.equal(shortcut({toggle: null}).toggle, null); // cleared stays cleared
-assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle.label, '⌃⌥H'); // a broken value falls back
+assert.deepEqual(shortcut({toggle: mine}).toggle, [mine]); // one key from before is a list of one
+assert.deepEqual(shortcut({toggle: null}).toggle, []); // cleared stays cleared
+assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle[0].label, '⌃⌥H'); // a broken value falls back
 assert.ok(!('gone' in shortcut({gone: mine})));
-assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: ${JSON.stringify(mine)}, next: null}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
-assert.equal(new Set(Object.values(shortcut()).filter(Boolean).map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [${JSON.stringify(mine)}], next: []}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
+assert.equal(new Set(Object.values(shortcut()).flat().map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
 assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {stuck: true, items: true, agents: false, usage: true});
 html = run('shortcutsHTML()');
-assert.ok(html.includes('Open or minimize the panel') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
-run("recording = 'toggle'; refused = ['next']");
+assert.ok(html.includes('Open or minimize the panel') && html.includes('⌃⌥H') && html.includes('data-record="toggle" data-index="0"') && html.includes('>Add</button>'));
+run("recording = {action: 'toggle', index: 0}; refused = ['38:6144']");
 html = run('shortcutsHTML()');
-assert.ok(html.includes('Press keys…') && html.includes('Another app is using this'));
+assert.ok(html.includes('Press keys…') && html.includes('In use by another app'));
 run("recording = null; refused = []");
 html = run('notifyHTML()');
 assert.ok(html.includes('data-notify="agents"') && html.includes('aria-checked="true"'));
@@ -954,7 +1044,7 @@ assert.equal(run("pillTarget('agents')"), 'agents');
 assert.equal(run("pillTarget('needs')"), 'needs');
 assert.equal(run("pillTarget('due')"), 'needs');
 assert.equal(run("pillTarget('stuck')"), 'stuck');
-assert.equal(run("pillTarget('claude')"), null);
+assert.equal(run("pillTarget('claude')"), 'usage'); // the usage circles open Usage
 assert.equal(run("pillTarget(null)"), null);
 assert.equal(run("pillTarget('needs', 'agents')"), 'agents'); // a notice about an agent opens Agents
 run(`setOpen(false); openTab('agents')`);
@@ -994,5 +1084,291 @@ html = run('settingsHTML(attention())');
 assert.ok(html.includes('aria-label="Pill size"') && html.includes('data-pill-size="34" aria-checked="true">Large') && html.includes('data-pill-size="24" aria-checked="false">Small'));
 run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}}; saveSettings(); delete globalThis.window; feel.size = 28`);
 assert.equal(run("posted.find((m) => m.type === 'settings').settings.pillSize"), 34);
+
+// Files from the window (Finder drops): base64 becomes a File, and one it refused keeps its reason.
+context.fromWindow = [{name: 'shot.png', type: 'image/png', data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 1, 2, 3]).toString('base64')},
+  {name: 'movie.mov', error: 'Too big (max 25 MB)'}, {name: 'odd'}];
+assert.deepEqual(JSON.parse(run('JSON.stringify(nativeFiles(fromWindow).map((f) => [f.name, f.type, f.size, f.error || null, f instanceof File]))')),
+  [['shot.png', 'image/png', 11, null, true], ['movie.mov', '', 0, 'Too big (max 25 MB)', false], ['odd', '', 0, 'Could not read it', false]]);
+run(`toasts = []; realToast = toast; toast = (m) => toasts.push(m); realUpload = uploadFile; uploadFile = () => new Promise(() => {});
+  setDraft('dq', {files: undefined}); addFiles('dq', 'text', nativeFiles(fromWindow))`);
+assert.deepEqual(JSON.parse(run("JSON.stringify(draftOf('dq').files.text.map((f) => [f.name, f.status, f.error || null]))")),
+  [['shot.png', 'uploading', null], ['movie.mov', 'error', 'Too big (max 25 MB)'], ['odd', 'error', 'Could not read it']]);
+// Dropped where no item can take them, they are not lost silently.
+run(`route.item = null; dropped = dropFilesAt(null, nativeFiles(fromWindow))`);
+assert.equal(run('dropped'), false);
+assert.deepEqual(Array.from(run('toasts')), ['Open an item to attach files']);
+run(`toast = realToast; uploadFile = realUpload; setDraft('dq', {files: undefined})`);
+
+// Views + Groups: views with counts, a search inside them, four orders, five groupings, folds
+// kept per grouping, Only this, and N of M with Clear.
+const gItem = (id, fields) => ({...item({id, title: id, ...fields}), lane: 'you'});
+context.gBase = [
+  gItem('g1', {title: 'Approve the staging certificate', kind: 'blocker', project: 'lantern', project_name: 'Lantern', session_id: 'codex:a', session_name: 'Deploy watcher', minutes: 1, rank: 20, created: now - 600}),
+  gItem('g2', {title: 'Choose the launch date', kind: 'question', project: 'harbor', project_name: 'Harbor', session_id: 'claude:c', session_name: 'Release planner', minutes: 2, rank: 40, created: now - 7200, pinned: true}),
+  gItem('g3', {title: 'Check the export totals', kind: 'todo', project: 'harbor', project_name: 'Harbor', session_id: 'codex:a', session_name: 'Deploy watcher', minutes: 6, rank: 250, created: now - 3 * 86400, due: run('today()')}),
+  gItem('g4', {title: 'Pick the partner list', kind: 'question', project: 'atlas', project_name: 'Atlas', session_id: 'claude:c', session_name: 'Release planner', minutes: 3, rank: 120, created: now - 86400 * 9}),
+  {...item({id: 'g5', title: 'Reply bounced', kind: 'question', project: 'atlas', project_name: 'Atlas', session_id: 'claude:c', session_name: 'Release planner', status: 'answered', bucket: 'waiting', delivery: 'failed', minutes: 1, created: now - 300}), lane: 'agents'},
+];
+const G = (code) => run(`(() => {const f = cleanNeeds(null, 'none'); ${code}})()`);
+assert.deepEqual(Array.from(G('return needsYou(gBase).map((i) => i.id)')), ['g1', 'g2', 'g3', 'g4', 'g5']); // a failed reply needs you again
+assert.deepEqual(Array.from(G('return narrowNeeds(gBase, f).map((i) => i.id)')), ['g2', 'g3', 'g1', 'g4', 'g5']); // smart: pinned, due, then priority
+assert.deepEqual(Array.from(G("f.order = 'newest'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g5', 'g1', 'g2', 'g3', 'g4']);
+assert.deepEqual(Array.from(G("f.order = 'oldest'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g4', 'g3', 'g2', 'g1', 'g5']);
+assert.deepEqual(Array.from(G("f.order = 'quick'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g1', 'g5', 'g2', 'g4', 'g3']);
+// Views and their counts, with the search applied.
+const viewIds = (view) => Array.from(G(`f.view = '${view}'; return narrowNeeds(gBase, f).map((i) => i.id)`));
+assert.deepEqual(viewIds('decision'), ['g2', 'g4', 'g5']);
+assert.deepEqual(viewIds('failed'), ['g5']);
+assert.deepEqual(viewIds('pinned'), ['g2']);
+assert.deepEqual(viewIds('quick'), ['g2', 'g1', 'g5']);
+assert.deepEqual(viewIds('due'), ['g3']);
+assert.deepEqual(viewIds('project:harbor'), ['g2', 'g3']);
+assert.deepEqual(viewIds('agent:codex:a'), ['g3', 'g1']);
+assert.deepEqual(Array.from(G("f.q = 'deploy watcher'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g3', 'g1']); // search reaches agents and places
+assert.deepEqual(Array.from(G("f.q = 'launch harbor'; return narrowNeeds(gBase, f).map((i) => i.id)")), ['g2']); // every word must match
+let pop = G("f.open = 'view'; f.q = 'the'; return needsPopHTML(f, gBase)");
+assert.ok(pop.includes('data-v="decision" role="menuitemradio" aria-checked="false"><span class="tick"></span><span class="o-text">Decisions</span><span class="n">2</span>'));
+assert.ok(pop.includes('By project') && pop.includes('data-v="project:atlas"') && pop.includes('By agent') && pop.includes('data-v="agent:claude:c"'));
+// Groups, each in its own order, and the order holding inside each group.
+const groupsOf = (group) => JSON.parse(G(`f.group = '${group}'; return JSON.stringify(needsGroups(narrowNeeds(gBase, f), f, gBase).map((x) => [x.name, x.rows.map((i) => i.id)]))`));
+assert.deepEqual(groupsOf('project'), [['Atlas', ['g4', 'g5']], ['Harbor', ['g2', 'g3']], ['Lantern', ['g1']]]);
+assert.deepEqual(groupsOf('kind'), [['Blockers', ['g1']], ['Decisions', ['g2', 'g4', 'g5']], ['Actions', ['g3']]]);
+assert.deepEqual(groupsOf('due').map((x) => x[0]), ['Today', 'No due date']);
+assert.deepEqual(groupsOf('agent'), [['Deploy watcher', ['g3', 'g1']], ['Release planner', ['g2', 'g4', 'g5']]]);
+// Folds belong to each grouping; ⌥-click folds or opens them all; Only this narrows to one.
+html = G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'harbor'}}, {}, gBase); return needsBodyHTML(f, gBase, (i) => '<row ' + i.id + '>', () => '')`);
+assert.ok(html.includes('class="gh shut" data-g="fold" data-v="harbor"') && !html.includes('<row g2>') && html.includes('<row g4>'));
+assert.deepEqual(JSON.parse(G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'harbor'}}, {}, gBase); f.group = 'kind'; return JSON.stringify([foldsOf(f).size, f.folds.project])`)), [0, ['harbor']]);
+assert.equal(G(`f.group = 'project'; needsAct(f, 'fold', {dataset: {v: 'atlas'}}, {altKey: true}, gBase); return foldsOf(f).size`), 3); // ⌥-click on an open group folds all
+assert.equal(G(`f.group = 'project'; needsAct(f, 'foldall', {dataset: {}}, {}, gBase); needsAct(f, 'foldall', {dataset: {}}, {}, gBase); return foldsOf(f).size`), 0); // the header toggle opens them again
+assert.deepEqual(Array.from(G(`f.group = 'kind'; needsAct(f, 'only', {dataset: {v: 'question', name: 'Decisions'}}, {}, gBase); return narrowNeeds(gBase, f).map((i) => i.id)`)), ['g2', 'g4', 'g5']);
+html = G(`f.group = 'kind'; needsAct(f, 'only', {dataset: {v: 'question', name: 'Decisions'}}, {}, gBase); return needsHeadHTML(f, gBase)`);
+assert.ok(html.includes('<b>3</b> of 5') && html.includes('Only Decisions') && html.includes('data-g="clear">Clear'));
+assert.ok(!G('return needsHeadHTML(f, gBase)').includes('g-tally')); // nothing narrowed, no tally
+assert.ok(G('return needsHeadHTML(f, gBase)').includes('<span class="h">Needs you</span><span class="count">5</span>'));
+assert.equal(G(`f.view = 'failed'; f.q = 'x'; f.only = {group: 'kind', v: 'todo', label: 'Actions'}; needsAct(f, 'clear', {dataset: {}}, {}, gBase); return JSON.stringify([f.view, f.q, f.only])`), '["all","",null]');
+// Kept per tab, without the search text; anything odd in storage starts clean.
+assert.deepEqual(JSON.parse(G(`f.q = 'secret words'; f.view = 'pinned'; return JSON.stringify(keptNeeds(f))`)), {view: 'pinned', order: 'smart', group: 'none', folds: {}, only: null});
+const cleaned = JSON.parse(run(`JSON.stringify(cleanNeeds({view: '<script>', order: 'random', group: 'colour', folds: {project: ['harbor', 42], kind: 'nope'}, only: {group: 'kind', v: 'todo'}}, 'none'))`));
+assert.deepEqual([cleaned.view, cleaned.order, cleaned.group, cleaned.folds, cleaned.only], ['all', 'smart', 'none', {project: ['harbor']}, {group: 'kind', v: 'todo', label: 'todo'}]);
+assert.equal(run("cleanNeeds({view: 'project:harbor'}).view"), 'project:harbor');
+assert.equal(run("cleanTabs({tabs: {needs: {filter: {group: 'agent', view: 'due'}}}}).tabs.needs.filter.group"), 'agent');
+
+// Change marks: a signed badge for two minutes after a run of changes (a burst nets into one),
+// then a dot until the list is opened; hover lists the last few. Amber is more, green fewer.
+assert.equal(run("signedDelta(3)"), '+3');
+assert.equal(run("signedDelta(-1)"), '−1');
+assert.equal(run("signedDelta(0)"), '±0');
+assert.equal(run("signedDelta(-8, '%')"), '−8%');
+assert.deepEqual(['needs', 'stuck', 'agents', 'claude'].map((m) => [run(`markTone('${m}', 2)`), run(`markTone('${m}', -2)`)]),
+  [['more', 'fewer'], ['more', 'fewer'], ['same', 'same'], ['fewer', 'more']]); // usage going down is the worse way
+run(`markLog = []; marks.log = markLog; recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Choose the launch date'},
+  {group: 'items', metric: 'needs', delta: 1, title: 'Pick a subject line'}, {group: 'items', metric: 'decisions', delta: 1, title: 'not a marked circle'},
+  {group: 'usage', metric: 'claude', delta: 0, title: 'no change'}], 1000);
+  recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Review the release notes'}], 1030);
+  recordMarks([{group: 'items', metric: 'needs', delta: -1, title: 'Approve the certificate'}], 1100)`);
+assert.equal(run('marks.log.length'), 4); // only circles that mark, and only real changes
+const markAt = (now, seen = 0, wanted = '') => JSON.parse(run(`JSON.stringify(markOf(marks.log, 'needs', ${seen}, ${now}${wanted}))`));
+let m = markAt(1110);
+assert.deepEqual([m.kind, m.text, m.tone, m.opacity], ['badge', '+2', 'more', 1]); // +1 +1 +1 −1 nets to +2, amber
+m = markAt(1100 + 105);
+assert.ok(m.kind === 'badge' && m.opacity > 0.4 && m.opacity < 0.6); // fades over its last 30 seconds
+m = markAt(1100 + 121);
+assert.deepEqual([m.kind, m.tone], ['dot', 'more']); // then a dot, coloured by the net since you looked
+assert.equal(markAt(1100 + 3600).kind, 'dot'); // the dot waits for you, however long
+assert.equal(markAt(1110, 1110), null); // opening the list clears both
+m = markAt(1110, 1000 + 1);
+assert.deepEqual([m.text, m.tone], ['±0', 'same']); // only what came after you looked: +1 then −1
+assert.equal(markAt(1110, 0, ", (e) => e.group !== 'items'"), null); // off in Notify me about, nothing marks
+run(`recordMarks([{group: 'items', metric: 'needs', delta: -1, title: 'Upload the signed file'}], 1400)`);
+m = markAt(1410);
+assert.deepEqual([m.kind, m.text, m.tone], ['badge', '−1', 'fewer']); // a new run starts after two quiet minutes
+// Hover: what happened, since when, and the last three with their times.
+const hist = JSON.parse(run('JSON.stringify(markHistory(marks.log, "needs", 1410))'));
+assert.ok(/^3 added, 2 done since \d{1,2}:\d{2}/.test(hist.summary), hist.summary);
+assert.deepEqual(hist.list.map((e) => [e.text, e.tone, e.label]), [['−1', 'fewer', 'Upload the signed file'], ['−1', 'fewer', 'Approve the certificate'], ['+1', 'more', 'Review the release notes']]);
+assert.equal(run('markHistory(marks.log, "agents", 1410)'), null);
+assert.equal(run('JSON.stringify(markHistory(marks.log, "needs", 1000 + 601 + 400))'), JSON.stringify(null)); // ten minutes of history
+run(`recordMarks([{group: 'usage', metric: 'claude', delta: -3, title: 'Claude is nearly out'}], 1500)`);
+assert.equal(JSON.parse(run('JSON.stringify(markOf(marks.log, "claude", 0, 1510))')).text, '−3%');
+assert.ok(run('markHistory(marks.log, "claude", 1510).summary').startsWith('3% used since'));
+// The panel's own tooltips: words, then a key hint after two spaces; below the control, above
+// near the bottom, beside it when neither fits, and always inside the visible area.
+assert.deepEqual(JSON.parse(run(`JSON.stringify(tipParts('Fold all groups  ⌥←'))`)), {label: 'Fold all groups', key: '⌥←'});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(tipParts('Done'))`)), {label: 'Done', key: ''});
+const tipArea = {x: 0, y: 33, width: 1728, height: 994};
+const tipAt = (r) => JSON.parse(run(`JSON.stringify(placeTip(${JSON.stringify(r)}, {width: 120, height: 26}, ${JSON.stringify(tipArea)}))`));
+assert.deepEqual(tipAt({left: 600, right: 632, top: 300, bottom: 332, width: 32, height: 32}), {x: 556, y: 338}); // centred below
+assert.deepEqual(tipAt({left: 600, right: 632, top: 990, bottom: 1022, width: 32, height: 32}), {x: 556, y: 958}); // no room below: above
+assert.deepEqual(tipAt({left: 1690, right: 1722, top: 300, bottom: 332, width: 32, height: 32}), {x: 1604, y: 338}); // kept off the right edge
+assert.deepEqual(tipAt({left: 600, right: 640, top: 40, bottom: 1020, width: 40, height: 980}), {x: 646, y: 517}); // neither: beside it
+// The agents circle: who is running, newest first, five at most and "+N more"; none, the last to finish.
+run(`savedSessions = state.sessions; state.sessions = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n, at) => ({id: 'r:' + n, name: 'Run ' + n, provider: at % 2 ? 'codex' : 'claude-code', cwd: '/x', last_active: ${clockNow},
+  activity: {state: 'active', source: at === 2 ? 'background' : 'live', since: ${clockNow} - (at + 1) * 600}})); model = derive()`);
+html = run('spotHTML("agents")');
+assert.deepEqual([...html.matchAll(/<span class="n" aria-hidden="true">([^<]+)<\/span>/g)].map((m) => m[1]), ['Run a', 'Run b', 'Run c', 'Run d', 'Run e']);
+assert.ok(html.startsWith('<b>7 agents running</b>') && html.includes('<span class="f-spot-more">+2 more</span>'));
+assert.ok(html.includes('<small aria-hidden="true">Claude · 10m</small>') && html.includes('<small aria-hidden="true">Claude · ↻ 30m</small>') && html.includes('<small aria-hidden="true">Codex · 40m</small>'));
+assert.ok(html.includes('aria-label="Run a, Claude Code, running 10m"') && html.includes('aria-label="Run c, Claude Code, in the background 30m"')); // full words for VoiceOver
+assert.ok(!html.includes('f-spot-rule')); // no history, no hairline
+run(`recordMarks([{group: 'agents', metric: 'agents', delta: 1, title: 'Run a started'}])`);
+assert.ok(run('spotHTML("agents")').includes('+2 more</span><span class="f-spot-rule" aria-hidden="true"></span><span class="f-spot-sum">1 started since'));
+run(`marks.log = []; state.sessions = state.sessions.map((s, at) => ({...s, last_active: ${clockNow} - (at + 1) * 3600, activity: {state: 'idle'}})); model = derive()`);
+html = run('spotHTML("agents")');
+assert.ok(html.startsWith('<b>No agents running</b><span class="f-spot-sum">Run a finished 1h ago</span>'), html);
+run('state.sessions = savedSessions; model = derive()');
+// The dot sits inside the circle, before the number, so the number still rolls and the capsule keeps its size.
+html = run("circleHTML({value: 164}, 'attention', {kind: 'dot', tone: 'more'})");
+assert.ok(html.includes('<span class="f-mark-dot more"></span><span>164</span></span>') && html.includes('wide'));
+assert.ok(!run("circleHTML({value: 164}, 'attention', {kind: 'badge', tone: 'more', text: '+3'})").includes('f-mark'));
+// Through the pill: five minutes on, the rail carries the dot; a kind turned off in Notify me
+// about leaves nothing; open, nothing marks at all.
+run(`marks.log = []; marks.seen = 0; recordMarks([{group: 'items', metric: 'needs', delta: 1, title: 'Choose the launch date'}], Date.now() / 1000 - 300)`);
+assert.ok(run('pillHTML(attention(), true, markMap())').includes('<span class="f-mark-dot more"></span>'));
+assert.ok(run('pillLabel(attention(), true)').includes('1 added since')); // and says so to VoiceOver
+run('notify.items = false');
+assert.ok(!run('pillHTML(attention(), true, markMap())').includes('f-mark-dot'));
+run('notify.items = true; floatOpen = true');
+assert.equal(run('Object.keys(markMap()).length'), 0);
+run('floatOpen = false; marks.seen = Date.now() / 1000');
+assert.ok(!run('pillHTML(attention(), true, markMap())').includes('f-mark-dot')); // seen once opened
+assert.ok(run('spotHTML("needs")').includes('<span class="f-spot-sum">1 added since') && run('spotHTML("needs")').includes('Choose the launch date')); // hover still tells
+run('marks.log = []; marks.seen = 0');
+
+// An item's source ("worktree · task"): just before the time in Needs you, at the end of the line
+// where there is no time, shortened only past 40 characters, and nothing when empty.
+const sourced = (source, extra = {}) => ({...item({id: 'src1', title: 'Sourced', created: now - 7200, source, ...extra}), lane: 'you'});
+context.srcItem = sourced('noclick5 · Airtable tests');
+assert.ok(run("metaHTML(srcItem, {where: true, age: true, kind: true, source: true})").endsWith('<span class="src">noclick5 · Airtable tests</span><span class="sep">·</span>2h ago'));
+assert.ok(run("metaHTML(srcItem, {where: true, source: true})").endsWith('<span class="sep">·</span><span class="src">noclick5 · Airtable tests</span>'));
+assert.ok(!run("metaHTML(srcItem, {where: true, age: true})").includes('src')); // only where asked for
+context.srcItem = sourced('noclick-support-worktree-seven · Reconcile the Stripe webhook retries');
+assert.equal(run("sourceText(srcItem)"), 'noclick-support-worktree-seven · Reconc…');
+assert.equal(run("sourceText(srcItem)").length, 40);
+context.srcItem = sourced('   ');
+assert.ok(!run("metaHTML(srcItem, {age: true, source: true})").includes('src'));
+// On the item, it shares the crumb line, after the crumbs; none, nothing.
+context.srcItem = {...sourced('noclick5 · <Airtable>'), project: 'harbor', project_name: 'Harbor', workstream: 'other', workstream_name: 'Other'};
+html = run('detailHTML(srcItem)');
+assert.ok(/<div class="crumbs"><span class="c-path">.*Harbor<\/button><\/span><span class="c-src"><span class="sep">·<\/span>noclick5 · &lt;Airtable&gt;<\/span><\/div>/.test(html));
+assert.ok(!run("detailHTML({...srcItem, source: ''})").includes('c-src'));
+
+// Several keys per action. One saved key from before becomes a one-key list; null was "none";
+// junk and duplicates go, and no key is ever on two actions.
+const KH = {keyCode: 4, modifiers: 6144, label: '⌃⌥H'}, KJ = {keyCode: 38, modifiers: 6144, label: '⌃⌥J'}, KX = {keyCode: 7, modifiers: 6144, label: '⌃⌥X'};
+Object.assign(context, {KH, KJ, KX});
+let keysClean = JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify({toggle: KH, next: null, previous: [KX, KX, {keyCode: 'x'}, KJ], dashboard: 'junk'})}))`));
+assert.deepEqual(keysClean.toggle, [KH]);
+assert.deepEqual(keysClean.next, []); // cleared before stays cleared
+assert.deepEqual(keysClean.previous, [KX, KJ]); // duplicates and junk dropped
+assert.deepEqual(keysClean.dashboard, [{keyCode: 2, modifiers: 6144, label: '⌃⌥D'}]); // a broken value falls back to the default
+assert.deepEqual(keysClean.customize, []);
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanShortcuts())')).next, [KJ]); // nothing saved: the defaults
+keysClean = JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify({toggle: [KH], next: [KH, KJ]})}))`));
+assert.deepEqual([keysClean.toggle, keysClean.next], [[KH], [KJ]]); // one key, one action
+// Inside the panel: the defaults are what already worked; one key from before keeps Enter or Escape too.
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanPanelKeys())')), {previous: ['ArrowUp'], next: ['ArrowDown'], open: ['ArrowRight', 'Enter'], back: ['ArrowLeft', 'Escape']});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanPanelKeys({previous: 'k', next: 'j', open: 'l', back: null}))`)), {previous: ['k'], next: ['j'], open: ['l', 'Enter'], back: ['Escape']});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanPanelKeys({open: ['Enter', 'Enter', '', 7], back: ['Enter', 'h']}))`)).back, ['h']);
+// What the window registers: every key of every action.
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [KH, KX], next: [KJ], customize: []}))`)),
+  [{action: 'toggle', keyCode: 4, modifiers: 6144}, {action: 'toggle', keyCode: 7, modifiers: 6144}, {action: 'next', keyCode: 38, modifiers: 6144}]);
+// Modifiers alone (⌃ with left ⌥) are kept and registered like any key, and never match ⌃⌥ with a key.
+const KMOD = {keyCode: -1, modifiers: 786465, label: '⌃ + left ⌥'};
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanShortcuts({toggle: [KH, ${JSON.stringify(KMOD)}]}))`)).toggle, [KH, KMOD]);
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [${JSON.stringify(KMOD)}]}))`)), [{action: 'toggle', keyCode: -1, modifiers: 786465}]);
+assert.equal(run(`sameHotkey(${JSON.stringify(KMOD)}, KH_)`.replace('KH_', JSON.stringify(KH))), false);
+// Panel keys find their action in any of its keys.
+run(`savedPanelKeys = panelKeys; panelKeys = cleanPanelKeys({open: ['ArrowRight', 'Enter', 'l']})`);
+assert.deepEqual(['l', 'Enter', 'ArrowRight', 'Escape', 'q'].map((k) => run(`panelAction('${k}', 'list')`)), ['open', 'open', 'open', 'back', null]);
+run('panelKeys = savedPanelKeys');
+// Adding, re-recording and removing chips; a key taken by another action moves, never doubles.
+let keysNow = JSON.parse(run(`JSON.stringify(placeKey({toggle: [KH], next: [KJ]}, 'toggle', null, ${JSON.stringify(KX)}, sameHotkey))`));
+assert.deepEqual(keysNow, {toggle: [KH, KX], next: [KJ]});
+keysNow = JSON.parse(run(`JSON.stringify(placeKey({toggle: [KH, KX], next: [KJ]}, 'toggle', 0, ${JSON.stringify(KJ)}, sameHotkey))`));
+assert.deepEqual(keysNow, {toggle: [KJ, KX], next: []}); // re-recorded in place, and taken from Next
+assert.deepEqual(JSON.parse(run(`JSON.stringify(dropKey({toggle: [KH, KX]}, 'toggle', 0))`)), {toggle: [KX]});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(keyOwner({toggle: [KH], next: [KJ]}, ${JSON.stringify({...KJ, label: 'other'})}, sameHotkey))`)), {action: 'next', at: 0});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(resetKeys({toggle: [KJ], next: []}, 'next', SHORTCUTS, sameHotkey))`)), {toggle: [], next: [KJ]});
+// Recording a key another action has asks first; Move takes it, Cancel leaves both as they were.
+run(`savedShortcuts = shortcuts; shortcuts = cleanShortcuts({toggle: [KH], next: [KJ]}); window = {webkit: {messageHandlers: {hq: {postMessage: () => {}}}}};
+  recordedKey('global', {action: 'toggle', index: null}, KJ)`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(keyConflict)')), {kind: 'global', action: 'toggle', index: null, key: KJ, from: 'next'});
+html = run('settingsHTML(attention())');
+assert.ok(html.includes('⌃⌥J is used by Next item. Move it here?') && html.includes('data-move-key') && html.includes('data-move-cancel'));
+run(`keptRender = render; render = () => {}; moveKey(); render = keptRender`);
+assert.deepEqual(JSON.parse(run('JSON.stringify([shortcuts.toggle, shortcuts.next, keyConflict])')), [[KH, KJ], [], null]);
+// A key macOS refused shows on its own chip, the others still fine.
+run(`refused = ['38:6144']`);
+html = run('settingsHTML(attention())');
+assert.ok(/<span class="f-chip bad"><button type="button" class="f-cap " data-record="toggle" data-index="1"[^>]*title="In use by another app">⌃⌥J<\/button>/.test(html));
+assert.ok(html.includes('<small class="f-key-bad">⌃⌥J is in use by another app</small>') && !/f-chip bad"><button[^>]*data-index="0"/.test(html));
+run(`refused = []; shortcuts = savedShortcuts; keyConflict = null; recording = null; delete globalThis.window`);
+
+// The age has its own column on the right, so ages line up; the meta line no longer carries it.
+context.agedItem = {...item({id: 'ag1', title: 'Aged', created: now - 7200, source: 'noclick5 · Airtable tests'}), lane: 'you'};
+html = run("rowHTML(agedItem, {where: true, age: true, kind: true, source: true})");
+assert.ok(html.startsWith('<button class="row aged"') && html.endsWith('<span class="age">2h ago</span></button>'));
+assert.ok(/<span class="meta">[^]*noclick5 · Airtable tests<\/span><\/span><span class="age">/.test(html) && !/ ago<\/span><span class="age">/.test(html)); // the source ends the meta now
+assert.ok(!run("rowHTML(agedItem, {where: true})").includes('class="age"')); // no age shown, no column
+context.agedItem = {...context.agedItem, status: 'answered', followup: {stage: 'delivering', stuck: 'stopped', replied: now - 3 * 86400}};
+html = run("rowHTML(agedItem, {stuck: true})");
+assert.ok(html.includes('<span class="age">3d ago</span>') && !html.includes('decided'));
+
+// Usage, as Tool cards. The accounts API in its own shape becomes the view's; without it, today's
+// single reading per tool is the account signed in now.
+const acct = (key, email, plan, extra = {}) => ({key, email, plan, org: '', active: false, saved: true, state: 'ok', added: now - 86400, last_used: null,
+  usage: {windows: [{name: '5-hour', left: 60, resets_at: now + 3600}, {name: 'weekly', left: 80, resets_at: now + 5 * 86400}], as_of: now - 120}, ...extra});
+context.accountsRaw = {
+  claude: {active: 'c1', adding: null, accounts: [acct('c1', 'studio@example.com', 'Max', {active: true}), acct('c2', 'personal@example.com', 'Pro'),
+    acct('c3', 'team@example.com', 'Team', {state: 'expired', usage: {windows: [{name: '5-hour', left: 54, resets_at: now + 3000}], as_of: now - 2 * 3600}}),
+    acct('c4', 'old@example.com', 'Pro', {state: 'needs sign-in', usage: null})]},
+  codex: {active: 'x1', adding: null, running: 2, accounts: [acct('x1', 'work@example.com', 'Plus', {active: true, saved: false}), acct('x2', 'side@example.com', 'Pro')]},
+};
+let usage = JSON.parse(run('JSON.stringify(usageModel(accountsRaw))'));
+assert.equal(usage.live, true);
+assert.deepEqual(usage.claude.accounts.map((a) => [a.key, a.active, a.state]), [['c1', true, 'ok'], ['c2', false, 'ok'], ['c3', false, 'expired'], ['c4', false, 'needs sign-in']]);
+assert.deepEqual(usage.claude.accounts[0].windows[0], {name: '5-hour', left: 60, resetsAt: now + 3600});
+assert.equal(usage.codex.running, 2);
+usage = JSON.parse(run(`JSON.stringify(usageModel(null, {claude: {windows: [{name: '5-hour', left: 33, resets_at: ${now + 600}}], as_of: ${now - 60}}}))`));
+assert.deepEqual([usage.live, usage.claude.accounts.length, usage.claude.accounts[0].windows[0].left, usage.codex.accounts.length], [false, 1, 33, 0]); // today's reading, no API
+// The card: the active one first with Active; the others Use and a remove button; a lapsed login
+// offers Sign in again; an expired one keeps its numbers as of when they were read.
+html = run("usageCardHTML(usageModel(accountsRaw), 'claude')");
+assert.ok(html.includes('<h2>Claude</h2><span class="u-using">uses studio@example.com</span>') && html.includes('<p class="u-note">Every Claude session moves to the one you pick.</p>'));
+assert.deepEqual([...html.matchAll(/data-acct="(c\d)"/g)].map((m) => m[1]), ['c1', 'c2', 'c3', 'c4']);
+assert.ok(/data-acct="c1">.*Active<\/span><\/div>/.test(html.split('data-acct="c2"')[0]) && !html.split('data-acct="c2"')[0].includes('data-u="ask-remove"'));
+assert.ok(html.includes('data-u="use" data-key="c2"') && html.includes('data-u="ask-remove" data-key="c2"'));
+assert.ok(html.includes('data-u="again" data-key="c4">Sign in again') && html.includes('<span class="bad">Needs sign-in</span> · its saved login lapsed'));
+assert.ok(/data-acct="c3".*As of 2h ago/.test(html) && /data-acct="c3"><div class="u-row"><span class="u-ring\s+dim/.test(html));
+assert.ok(html.includes('data-u="add" data-tool="claude"') && html.includes('<span class="u-mini-h">Codex</span><span class="u-using">uses work@example.com · 2 accounts</span>'));
+assert.ok(run("usageCardHTML(usageModel(accountsRaw), 'codex')").includes('Open Codex sessions keep the old account until restarted.'));
+html = run(`usageCardHTML(usageModel(null, {claude: {windows: [{name: '5-hour', left: 33}], as_of: ${now - 60}}}), 'claude')`);
+assert.ok(!html.includes('data-u="use"') && !html.includes('data-u="add"') && html.includes('33% left')); // no API: readings only
+// Steps in place: add, waiting with its spinner (browser or Terminal), sign in again, remove.
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: null, step: 'intro'})`);
+assert.ok(html.includes('Add a Claude account') && html.includes('Nothing changes for Claude Code until you switch to it.') && !html.includes('data-u="add"'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: null, step: 'waiting', job: {terminal: true}})`);
+assert.ok(html.includes('<span class="u-spin" aria-hidden="true"></span>Waiting for you to sign in…') && html.includes('Finish in the Terminal window HQ opened.'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: 'c4', step: 'intro'})`);
+assert.ok(html.includes('Sign old@example.com in again') && html.includes('Claude Code stays signed in as studio@example.com.'));
+html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'remove', tool: 'claude', key: 'c2'})`);
+assert.ok(html.includes('Remove personal@example.com from HQ?') && html.includes('data-u="remove" data-key="c2"'));
+// The notice: the address on the first line in parts (so its name gives way and its domain stays),
+// and the second line: Claude's note, or Codex's warning without the words the first line says.
+html = run(`usageToastHTML({lead: 'Switched to ', email: 'alexandra@example.com', body: 'Every Claude session moves to it.'}, {label: 'Switch back'})`);
+assert.ok(html.includes('<span class="u-t-lead">Switched to </span><span class="u-t-local" data-full="alexandra">alexandra</span><span class="u-t-domain">@example.com</span>') && html.includes('>Switch back</button>'));
+const bodies = (tool, reply) => JSON.parse(run(`JSON.stringify(switchedBody('${tool}', ${JSON.stringify(reply)}))`));
+assert.deepEqual(bodies('claude', {note: 'Every open Claude session moves to it at its next message'}), ['Every Claude session moves to it.']); // the short form, always
+assert.deepEqual(bodies('codex', {warning: 'Switched to side@example.com. Restart the 2 open Codex sessions to use it.'}),
+  ['Restart the 2 open Codex sessions to use it.', 'Restart 2 open Codex sessions to use it.', 'Restart 2 Codex sessions to use it.', 'Restart Codex to use it.']);
+assert.deepEqual(bodies('codex', {warning: 'Restart the 1 open Codex session to use it.'}).slice(1, 3), ['Restart 1 open Codex session to use it.', 'Restart 1 Codex session to use it.']);
+assert.deepEqual(bodies('codex', {warning: null, note: ''}), []);
+// Usage is a tab of its own, reached from its circles, keeping the tool you left.
+assert.equal(run("pillTarget('claude')"), 'usage');
+assert.equal(run("pillTarget('codex')"), 'usage');
+assert.equal(run("cleanTabs({tabs: {usage: {tool: 'codex'}}}).tabs.usage.tool"), 'codex');
+assert.equal(run("cleanTabs({tabs: {usage: {tool: '<x>'}}}).tabs.usage.tool"), 'claude');
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

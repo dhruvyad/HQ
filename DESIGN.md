@@ -44,9 +44,13 @@ The source HSL values are retained so updates can be compared directly.
 | Hairline | foreground at 8% | Group boundary |
 | Hover | foreground at 3% | Item rows |
 | Error | red-400 (`#f87171`) | Failed delivery/errors only |
+| Live | green-400 (`#4ade80`, `--live`) | Running agents; the pill's change mark when fewer need you |
+| More | amber-400 (`#fbbf24`, `--more`) | The pill's change mark when more need you (or usage drops) |
 
 Success and pending states use neutral text/icons. Keep colours out of general
 navigation and workstream tags. Preserve separate idle, selected, and hover fills.
+Amber means "more need you than a moment ago", never an error: it marks a change,
+so it appears only on the pill's change badge and dot and in their hover history.
 
 ## Typography and layout
 
