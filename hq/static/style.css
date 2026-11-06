@@ -85,7 +85,8 @@ a {color: inherit; text-decoration: none;}
 .dot.waiting {background: var(--foreground);}
 .dot.idle {border: 1.5px solid rgb(250 250 250 / 0.45);}
 .dot.offline {border: 1.5px solid rgb(250 250 250 / 0.18);}
-.dot.unknown {border: 1.5px dashed rgb(250 250 250 / 0.3);}
+/* No live signal: a small, dim dot. A dashed ring this size read as a broken one. */
+.dot.unknown {background: rgb(250 250 250 / 0.3); scale: 0.72;}
 .dot.err {background: var(--error);}
 
 /* Page */
@@ -223,6 +224,23 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .agent-row .a-side {font-size: 13px;}
 .group.folder .group-head {height: 34px;}
 .group.folder .f-name {font: 400 21px/1.1 var(--display); letter-spacing: -0.01em; color: var(--foreground);}
+/* A folder folds from its name: a quiet chevron after it, turned while folded, with a count instead of rows. */
+.f-fold {display: inline-flex; align-items: center; gap: 6px; border-radius: 6px;}
+.f-fold .icon {width: 14px; height: 14px; stroke-width: 2; color: var(--muted-foreground); opacity: 0.35; transition: opacity .15s, transform .35s cubic-bezier(.16,1,.3,1);}
+.group.folder .group-head:hover .f-fold .icon, .f-fold:focus-visible .icon {opacity: 1;}
+.group.folder.shut .f-fold .icon {transform: rotate(-90deg);}
+.group.folder.shut .f-name {color: var(--muted-foreground);}
+.f-count {margin-left: 2px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+/* Putting agents away: on hover only, where an agent with nothing open has no counts. */
+.f-away, .a-back {padding: 4px 8px; border-radius: 6px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); transition: opacity .15s, color .15s, background .15s;}
+.f-away {margin-left: 6px; opacity: 0;}
+.group.folder .group-head:hover .f-away, .f-away:focus-visible {opacity: 1;}
+.f-away:hover, .a-back:hover, .a-away:hover {color: var(--foreground); background: rgb(250 250 250 / 0.06);}
+.a-away, .a-back {position: relative; z-index: 1; pointer-events: auto;}
+.a-away {display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--muted-foreground); opacity: 0; transition: opacity .15s, color .15s, background .15s;}
+.agent-row:hover .a-away, .a-away:focus-visible {opacity: 1;}
+.ag-archived .agent-row .a-main, .ag-archived .agent-row .dot {opacity: 0.6;}
+@media (hover: none) {.f-away, .a-away {opacity: 1;}}
 .fold {display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; font-size: 13.5px; color: var(--muted-foreground); border-radius: 12px;}
 .fold:hover {color: var(--foreground); background: rgb(250 250 250 / 0.04);}
 

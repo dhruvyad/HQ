@@ -8,6 +8,7 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   plug: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
+  archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
   clip: '<path d="m21.4 11-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6a4 4 0 1 1 5.7 5.7l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
   stuck: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/>',
@@ -44,8 +45,10 @@ let state = {sessions: [], items: []}, model = null, snapshotSignature = '';
 let liveHealthy = false, lastLive = 0, streamController = null, loading = null, booted = false;
 const seenInstances = new Set();
 const drafts = new Map();
-let search = '', doneLimit = 40, sheetOpen = false, openMove = null, showQuiet = false;
+let search = '', doneLimit = 40, sheetOpen = false, openMove = null, showQuiet = false, showArchived = false;
 const folded = new Set(remember('hq-folded') || []);
+// Agent folders you folded, by folder path; kept in this browser only.
+const agentFolds = new Set(remember('hq-agent-folds') || []);
 const seen = new Set(remember('hq-seen') || []);
 let sortMode = remember('hq-sort') || 'urgent';
 let route = parseRoute();
@@ -585,22 +588,27 @@ function ranFor(seconds) {
 function agentOf(s, items) {
   const mine = items.filter((i) => i.session_id === s.id && i.lane !== 'done'), st = agentState(s);
   return {id: s.id, name: s.name, harness: harness(s.provider), folder: s.cwd || '', state: st,
-    since: s.activity?.since || null, last: s.last_active || null,
+    since: s.activity?.since || null, last: s.last_active || null, archived: s.archived || 0,
     background: st === 'active' && s.activity?.source === 'background',
-    you: mine.filter((i) => i.lane === 'you').length, open: mine.length};
+    you: mine.filter((i) => i.lane === 'you').length, open: mine.length,
+    held: items.filter((i) => i.session_id === s.id && i.status === 'answered' && i.followup).length};
 }
+// Nothing open, nothing of yours held, and not at work: an agent you can put away.
+const archivable = (a) => !a.open && !a.held && !['active', 'waiting'].includes(a.state);
+// Put away, and nothing since: it comes back by itself once it runs or has something open.
+const putAway = (a) => a.archived > 0 && archivable(a) && (a.last || 0) <= a.archived;
+// When an agent last ran: running now is the most recent of all.
+const lately = (a) => (a.state === 'active' ? Infinity : Math.max(a.last || 0, a.state === 'waiting' ? a.since || 0 : 0));
+const byLately = (x, y) => (lately(y) - lately(x)) || ((y.since || 0) - (x.since || 0));
 function agentFolders(sessions, items, now = Date.now() / 1000) {
-  const all = sessions.map((s) => agentOf(s, items));
+  const everyone = sessions.map((s) => agentOf(s, items));
+  const archived = everyone.filter(putAway).sort(byLately), all = everyone.filter((a) => !putAway(a));
   const recent = (a) => Boolean(a.last) && now - a.last < AGENT_WINDOW;
-  const newest = (key) => (x, y) => (y[key] || 0) - (x[key] || 0);
-  const running = all.filter((a) => a.state === 'active').sort(newest('since'));
-  const waiting = all.filter((a) => a.state === 'waiting').sort(newest('since'));
-  const finished = all.filter((a) => ['idle', 'offline'].includes(a.state) && recent(a)).sort(newest('last'));
-  // No live signal is never shown as finished: only that it was seen running lately.
-  const unsure = all.filter((a) => a.state === 'unknown' && recent(a)).sort(newest('last'));
-  const shown = [...running, ...waiting, ...finished, ...unsure];
-  const quiet = all.filter((a) => !shown.includes(a)).sort(newest('last'));
-  // Folders keep the order of their first agent, so the folder with work running leads.
+  // Running and waiting on you always show; the rest while they ran in the last day. No live
+  // signal is never shown as finished: only that it was seen running lately.
+  const shown = all.filter((a) => ['active', 'waiting'].includes(a.state) || recent(a)).sort(byLately);
+  const quiet = all.filter((a) => !shown.includes(a)).sort(byLately);
+  // Each folder lists its agents by when they last ran, and takes the place of its most recent one.
   const group = (list) => {
     const folders = new Map();
     for (const a of list) {
@@ -611,7 +619,9 @@ function agentFolders(sessions, items, now = Date.now() / 1000) {
     }
     return [...folders.values()];
   };
-  return {all, groups: group(shown), quiet: group(quiet), running: running.length, finished: finished.length, quietCount: quiet.length};
+  return {all: everyone, groups: group(shown), quiet: group(quiet), archived: group(archived), archivedCount: archived.length,
+    running: shown.filter((a) => a.state === 'active').length,
+    finished: shown.filter((a) => ['idle', 'offline'].includes(a.state)).length, quietCount: quiet.length};
 }
 const sinceTick = (a, now) => (a.since ? `<span class="tick" data-since="${a.since}">${ranFor(now - a.since)}</span>` : '');
 // The line under an agent's name.
@@ -882,18 +892,30 @@ function agentsPage() {
   heldStill();
   const v = unactedAgents(state.sessions, model.items, now);
   // The whole row opens the agent; its count, above that link, opens the sheet instead.
-  const row = (a, side = agentSideHTML(a, v.held.get(a.id)), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
+  // Put away from the row itself, only an agent with nothing open; brought back from Archived.
+  const away = (a) => (archivable(a) ? `<button type="button" class="a-away" data-archive="${esc(a.id)}" title="Archive: hide it until it runs again or has something open" aria-label="${esc(`Archive ${a.name}`)}">${icon('archive', 'sm')}</button>` : '');
+  const row = (a, side = agentSideHTML(a, v.held.get(a.id)) + away(a), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
     `<div class="row agent-row" data-session="${esc(a.id)}"><a class="a-hit" href="${esc(href({page: 'agent', agent: a.id, lane: 'you', item: null}))}" aria-label="${esc(a.name)}"></a>${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${meta}</span></span><span class="a-side">${side}</span></div>`;
-  const folder = (f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="n">running</span>' : ''}</div>${f.agents.map((a) => row(a)).join('')}</section>`;
+  // A folder folds to its name and a count; one with several agents to put away offers that on hover.
+  const folder = (f, {restore = false} = {}) => {
+    // Archived folders fold on their own, apart from the same folder above.
+    const key = restore ? `archived:${f.key}` : f.key, shut = agentFolds.has(key), spare = restore ? [] : f.agents.filter(archivable);
+    const running = f.agents.filter((a) => a.state === 'active').length;
+    const count = shut ? `<span class="f-count">${f.agents.length} ${f.agents.length === 1 ? 'agent' : 'agents'}${running ? ` · ${running} running` : ''}</span>` : '';
+    const all = spare.length > 1 ? `<button type="button" class="f-away" data-archive="${esc(spare.map((a) => a.id).join(' '))}">Archive ${spare.length} with nothing open</button>` : '';
+    const rows = restore ? f.agents.map((a) => row(a, `<button type="button" class="a-back" data-unarchive="${esc(a.id)}">Restore</button>`, `${esc(a.harness)} · ${esc(lastRan(a))}`)) : f.agents.map((a) => row(a));
+    return `<section class="group folder ${shut ? 'shut' : ''}"><div class="group-head"><button type="button" class="f-fold" data-agent-fold="${esc(key)}" aria-expanded="${!shut}"><span class="f-name">${esc(f.name)}</span>${icon('down', 'sm')}</button>${count}${all}${f.running && !shut ? '<span class="n">running</span>' : ''}</div>${shut ? '' : rows.join('')}</section>`;
+  };
   const desc = [view.running ? `${view.running} running` : '', view.finished ? `${view.finished} finished in the last day` : ''].filter(Boolean).join(' · ');
   let body;
   if (agentsShow === 'unacted') {
     body = v.rows.length ? `<p class="ag-sum">${unactedSummary(v)}</p>${v.folders.map((f) => `<section class="group folder"><div class="group-head"><span class="f-name">${esc(f.name)}</span></div>${f.rows.map((r) => row(r.a, unactedSide(r, v), `${esc(r.a.harness)} · ${esc(lastRan(r.a))}`)).join('')}</section>`).join('')}`
       : `<div class="empty ag-empty">${UNACTED_EMPTY}</div>`;
   } else {
-    const fold = view.quiet.length ? (showQuiet ? view.quiet.map(folder).join('')
+    const fold = view.quiet.length ? (showQuiet ? view.quiet.map((f) => folder(f)).join('')
       : `<button class="fold" data-quiet>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}${icon('chev', 'sm')}</button>`) : '';
-    body = view.groups.map(folder).join('') + fold || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`;
+    const archived = view.archivedCount ? `<button class="fold" data-archived aria-expanded="${showArchived}">${view.archivedCount} archived${icon(showArchived ? 'down' : 'chev', 'sm')}</button>${showArchived ? `<div class="ag-archived">${view.archived.map((f) => folder(f, {restore: true})).join('')}</div>` : ''}` : '';
+    body = view.groups.map((f) => folder(f)).join('') + fold + archived || `<div class="empty"><h3>No agents yet</h3><p>Connect an agent, then tell it to register this conversation in HQ.</p></div>`;
   }
   const held = heldSheet && v.held.get(heldSheet), who = held && view.all.find((a) => a.id === heldSheet);
   return {title: 'Agents', desc: esc(desc), body: `${agentsShowHTML(agentsShow, v)}<div class="ag-body">${body}</div>`,
@@ -1634,6 +1656,20 @@ function bind() {
   main.querySelectorAll('[data-sort]').forEach((el) => (el.onclick = () => {sortMode = el.dataset.sort; remember('hq-sort', sortMode); render();}));
   const quiet = main.querySelector('[data-quiet]');
   if (quiet) quiet.onclick = () => {showQuiet = true; render();};
+  const shelf = main.querySelector('[data-archived]');
+  if (shelf) shelf.onclick = () => {showArchived = !showArchived; render();};
+  main.querySelectorAll('[data-agent-fold]').forEach((el) => (el.onclick = () => {
+    const key = el.dataset.agentFold;
+    if (agentFolds.has(key)) agentFolds.delete(key);
+    else agentFolds.add(key);
+    remember('hq-agent-folds', [...agentFolds]);
+    render();
+  }));
+  // Putting away is only a view, so it is never asked about: Archived brings it back.
+  const archive = (ids, archived) => api('sessions/archive', {ids, archived}).then(() => refresh(true))
+    .catch((error) => toast(error.message));
+  main.querySelectorAll('[data-archive]').forEach((el) => (el.onclick = () => archive(el.dataset.archive.split(' '), true)));
+  main.querySelectorAll('[data-unarchive]').forEach((el) => (el.onclick = () => archive([el.dataset.unarchive], false)));
   const more = main.querySelector('[data-more]');
   if (more) more.onclick = () => {doneLimit += 200; render();};
   const menu = $('#menu');

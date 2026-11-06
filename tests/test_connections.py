@@ -185,6 +185,82 @@ class HookTests(unittest.TestCase):
         self.assertIn("HQ hook unavailable", error.getvalue())
         self.assertEqual(self.store.item(item["id"])["delivery"], "pending")
 
+    def codex(self, event, thread="t1", transcript="/x/rollout.jsonl", title=lambda thread: None):
+        payload = {"session_id": thread, "cwd": "/src/noclick", "hook_event_name": event}
+        if transcript is not ...:
+            payload["transcript_path"] = transcript
+        handle("codex", payload, self.store, [].append, title=title)
+
+    def names(self):
+        return {s["id"]: s["name"] for s in self.store.snapshot()["sessions"] if s["provider"] == "codex"}
+
+    def test_codex_helper_conversations_it_never_saves_are_not_agents(self):
+        for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
+            self.codex(event, thread="helper", transcript=None)
+        self.assertEqual(self.names(), {})
+        # An older Codex that sends no transcript field at all still registers.
+        self.codex("SessionStart", thread="old", transcript=...)
+        self.assertEqual(self.names(), {"codex:old": "Codex · noclick"})
+
+    def test_a_codex_conversation_goes_by_the_name_codex_shows(self):
+        titles = {}
+        title = lambda thread: titles.get(thread)
+        self.codex("SessionStart", title=title)
+        self.assertEqual(self.names(), {"codex:t1": "Codex · noclick"})  # Not named until its first message.
+        titles["t1"] = "Find the best Reddit ban appeal"
+        self.codex("PostToolUse", title=title)  # Tool steps never look it up.
+        self.assertEqual(self.names()["codex:t1"], "Codex · noclick")
+        self.codex("Stop", title=title)
+        self.assertEqual(self.names()["codex:t1"], "Find the best Reddit ban appeal")
+        titles["t1"] = "Appeal the Reddit ban"  # Renamed in ChatGPT.
+        self.codex("UserPromptSubmit", title=title)
+        self.assertEqual(self.names()["codex:t1"], "Appeal the Reddit ban")
+
+    def test_a_claude_conversation_takes_the_title_you_set(self):
+        handle("claude-code", self.event("UserPromptSubmit", session_title="  crisp   support "), self.store, [].append)
+        self.assertEqual(self.store.session(self.sid)["name"], "crisp support")
+        # Without one (Claude Code keeps its generated title to itself), the name stays.
+        handle("claude-code", self.event("UserPromptSubmit"), self.store, [].append)
+        handle("claude-code", self.event("Stop", session_title=7), self.store, [].append)
+        self.assertEqual(self.store.session(self.sid)["name"], "crisp support")
+
+    def test_codex_title_reads_codexs_metadata_and_never_writes_it(self):
+        from contextlib import closing
+        import sqlite3
+        from hq.hooks import codex_title
+        home = Path(self.temp.name) / "codex"
+        home.mkdir()
+        with closing(sqlite3.connect(home / "state_5.sqlite")) as db:
+            db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, name TEXT)")
+            db.executemany("INSERT INTO threads VALUES (?,?,?)", [
+                ("named", "My Reddit account was banned yesterday. Can you appeal it?", "Find the best Reddit ban appeal"),
+                ("unnamed", "Fix the export totals\nthen tell me what changed", None),
+                ("long", "x" * 200, ""), ("blank", "", None)])
+            db.commit()
+        (home / "state_4.sqlite").write_text("an older, unreadable copy")
+        before = (home / "state_5.sqlite").read_bytes()
+        self.assertEqual(codex_title("named", home), "Find the best Reddit ban appeal")
+        self.assertEqual(codex_title("unnamed", home), "Fix the export totals")
+        self.assertEqual(codex_title("long", home), "x" * 79 + "…")
+        self.assertIsNone(codex_title("blank", home))
+        self.assertIsNone(codex_title("missing", home))
+        self.assertIsNone(codex_title("named", Path(self.temp.name) / "nowhere"))
+        self.assertEqual((home / "state_5.sqlite").read_bytes(), before)
+
+    def test_an_ended_conversation_stays_ended_until_it_is_seen_again(self):
+        sid = "codex:t1"
+        self.codex("UserPromptSubmit")
+        self.codex("SessionEnd")
+        with self.store.db() as db:  # Long after its end was said.
+            db.execute("UPDATE activity SET expires=?,observed=observed-600 WHERE session_id=?", (time.time() - 1, sid))
+        self.assertEqual(self.activity(sid), "offline")
+        self.codex("UserPromptSubmit")
+        self.assertEqual(self.activity(sid), "active")
+        # Without an end, an expired signal is only unknown.
+        with self.store.db() as db:
+            db.execute("UPDATE activity SET expires=? WHERE session_id=?", (time.time() - 1, sid))
+        self.assertEqual(self.activity(sid), "unknown")
+
 
 class SetupTests(unittest.TestCase):
     def test_chatgpt_tunnel_uses_key_reference_and_requires_observed_health(self):

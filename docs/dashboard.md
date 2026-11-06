@@ -17,6 +17,15 @@ report, or from the item's tags through `hq/workstreams.py`. Every project,
 workstream and agent page has the same tabs: Needs you, With agents, Waiting,
 Later, Done. Items open in a pane on the right; j/k steps through them.
 
+**Agents** groups conversations by the folder they work in. Within a folder the
+most recent run comes first, and the folder with the latest run leads. Click a
+folder's name to fold it to a count. An agent with nothing open can be archived
+from its row, or all of a folder's at once from its name on hover. That only hides
+it, here and in the pill: it comes back by itself when it runs again or has
+something open, and **Archived** at the bottom brings it back by hand. A Codex
+conversation goes by the name ChatGPT gave it; a Claude Code one by a title you
+set with `/rename`.
+
 Pinned items and items due within two days lead every list. Unranked items sort
 blockers, then decisions, then actions. A dot marks items added in the last day
 that you have not opened, and **Newest** turns a list into a feed. Search covers

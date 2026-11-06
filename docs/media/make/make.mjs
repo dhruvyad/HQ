@@ -31,9 +31,12 @@ const FPS = 30, SCALE = Number(process.env.HQ_MEDIA_SCALE || 2);
 const PYTHON = process.env.PYTHON || execFileSync('/bin/sh', ['-c', 'command -v python3']).toString().trim();
 export async function startHQ({accounts = false} = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hq-media-')), fake = accounts ? mkdtempSync(join(tmpdir(), 'hq-media-home-')) : null;
+  // An empty Claude folder of its own, so the server never sees your real sessions and lists
+  // them beside the made-up ones.
+  const claude = mkdtempSync(join(tmpdir(), 'hq-media-claude-'));
   const env = accounts
     ? {HOME: fake, CLAUDE_CONFIG_DIR: join(fake, '.claude'), CODEX_HOME: join(fake, '.codex'), PATH: '/usr/bin:/bin', HQ_HOME: home}
-    : {...process.env, HQ_HOME: home, HQ_FLOAT_LAB: '1'};
+    : {...process.env, CLAUDE_CONFIG_DIR: claude, HQ_HOME: home, HQ_FLOAT_LAB: '1'};
   const fixtures = (...args) => execFileSync(PYTHON, [join(HERE, 'fixtures.py'), ...args], {env});
   fixtures('seed');
   if (accounts) fixtures('accounts', fake);
@@ -55,6 +58,7 @@ export async function startHQ({accounts = false} = {}) {
   const stop = () => {
     server.kill();
     rmSync(home, {recursive: true, force: true});
+    rmSync(claude, {recursive: true, force: true});
     if (fake) rmSync(fake, {recursive: true, force: true});
   };
   return {origin, fixtures, stop};

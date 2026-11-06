@@ -24,7 +24,7 @@ OFFLINE_FOR = 3600           # a session gone from a live inventory stays offlin
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 KEEP_FILES = 30 * 86400      # files on an item are deleted this long after it is done
-SCHEMA = 9                   # PRAGMA user_version once every migration below has run
+SCHEMA = 10                  # PRAGMA user_version once every migration below has run
 
 
 def data_dir():
@@ -147,6 +147,9 @@ class Store:
             for table in ("replies", "comments"):
                 if "attachments" not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            # When you put an agent away; it comes back by itself once it runs or reports again.
+            if "archived" not in {r["name"] for r in db.execute("PRAGMA table_info(sessions)")}:
+                db.execute("ALTER TABLE sessions ADD COLUMN archived REAL NOT NULL DEFAULT 0")
             # An inbox that ran an early build of accounts has the table without these.
             kept = {r["name"] for r in db.execute("PRAGMA table_info(accounts)")}
             for name, declared in (("last_used", "REAL"), ("expires", "REAL"), ("refresh_expires", "REAL"),
@@ -218,6 +221,18 @@ class Store:
         with self.db() as db:
             db.execute("UPDATE sessions SET connection='offline',lease_until=0 WHERE id=? AND connection=?", (id, connection))
 
+    def archive(self, ids, archived=True):
+        """Put agents away in the dashboard and the pill, or bring them back. Only a view: nothing
+        is deleted, and an agent comes back by itself once it runs or has something open."""
+        if not isinstance(ids, list):
+            raise ValueError("ids must be a list of session ids")
+        ids = [required(id, "session id", 200) for id in ids]
+        if not 0 < len(ids) <= 500:
+            raise ValueError("Archive between 1 and 500 agents at once")
+        with self.db() as db:
+            db.executemany("UPDATE sessions SET archived=? WHERE id=?", [(time.time() if archived else 0, id) for id in ids])
+        return {"archived": bool(archived), "sessions": ids}
+
     def watch_codex(self, endpoint=None):
         with self.db() as db:
             db.execute("INSERT INTO codex_connections VALUES (?,?) ON CONFLICT(endpoint) DO UPDATE SET updated=excluded.updated",
@@ -278,8 +293,13 @@ class Store:
             # Expired observations still say when an agent last ran, from any source.
             last_active = {r["session_id"]: r["last"] for r in db.execute(
                 "SELECT session_id,MAX(last_active) AS last FROM activity GROUP BY session_id")}
+            # An agent whose last word was that it ended stays ended until it is seen again, rather
+            # than turning into no signal once that word expires. Background work only adds to a state.
+            ended = {r["session_id"]: dict(r) for r in db.execute("""SELECT a.* FROM activity a JOIN
+                (SELECT session_id,MAX(observed) AS observed FROM activity WHERE source!='background' GROUP BY session_id) m
+                ON m.session_id=a.session_id AND m.observed=a.observed WHERE a.state='offline' AND a.source!='background'""")}
         for session in sessions:
-            observation = observations.get(session["id"])
+            observation = observations.get(session["id"]) or ended.get(session["id"])
             # A conversation whose subagents are still running is at work, even when its own
             # turn has ended. Offline or waiting on you still says more than that.
             if session["id"] in background and (not observation or observation["state"] in {"idle", "unknown"}):

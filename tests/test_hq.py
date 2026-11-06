@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 from hq.adapters import CodexClient, Dispatcher
 from hq.discovery import discover
 from hq.server import Server
-from hq.store import Store
+from hq.store import SCHEMA, Store
 
 ROOT = Path(__file__).resolve().parents[1]
 # The readable shape every agent item that needs the human must carry.
@@ -108,7 +108,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.item(question["id"])["answer"], "Annual")
             self.assertEqual(store.inbox("a")[0]["state"], "pending")
         with self.store.db() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA)
 
     def test_cli_reports_and_updates_one_of_many_items(self):
         def cli(*args):
@@ -550,6 +550,24 @@ class HTTPTests(unittest.TestCase):
             item = json.load(response)
         with self.request(f"/api/items/{item['id']}/reply", {"text": "Yes"}, headers) as response:
             self.assertEqual(json.load(response)["answer"], "Yes")
+
+    def test_archive_agents_and_bring_them_back(self):
+        headers = {"X-HQ-Token": self.server.token}
+        self.store.register("b", "Other agent")
+        with self.request("/api/sessions/archive", {"ids": ["a", "b"], "archived": True}, headers) as response:
+            self.assertEqual(json.load(response), {"archived": True, "sessions": ["a", "b"]})
+        archived = {s["id"]: s["archived"] for s in self.store.snapshot()["sessions"]}
+        self.assertTrue(all(archived.values()))
+        with self.request("/api/sessions/archive", {"ids": ["b"], "archived": False}, headers):
+            pass
+        self.assertEqual({s["id"]: bool(s["archived"]) for s in self.store.snapshot()["sessions"]}, {"a": True, "b": False})
+        for bad in ({"ids": ["a"], "archived": "yes"}, {"ids": [], "archived": True}, {"ids": "a b", "archived": True}):
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                self.request("/api/sessions/archive", bad, headers)
+            self.assertEqual(refused.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as refused:  # Never without the dashboard's token.
+            self.request("/api/sessions/archive", {"ids": ["b"], "archived": True})
+        self.assertEqual(refused.exception.code, 403)
 
     def test_authenticated_stream_initial_state_live_change_and_reconnect(self):
         def read_event(response):
