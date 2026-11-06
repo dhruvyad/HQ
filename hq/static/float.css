@@ -224,7 +224,7 @@ html.float .g-empty {padding: 24px 8px;}
 :where(html.float) .agent-row {flex-direction: row; align-items: center;}
 .f-rows .row {gap: 2px; min-height: 0; padding: 9px 8px; border-radius: 10px;}
 .f-rows .row .title {font-size: 14.5px;}
-.f-rows .row .new {left: -1px; top: 18px; width: 5px; height: 5px;}
+.f-rows .row .new {left: -6.5px; top: 18px; width: 5px; height: 5px;}
 /* The row the keys are on: the hover look, plus a quiet mark at its left. */
 /* The row the keys are on: a fill and a small → at its right, which is what → does. While
    the keys drive, the other rows step back; the mouse brings them forward again. Every row
@@ -241,6 +241,13 @@ html.float .g-empty {padding: 24px 8px;}
 .f-rows .row.aged {padding-right: 70px;}
 :where(html.float) .row.aged .age {position: absolute; right: 8px; top: 9px; width: 54px; font-size: 12.5px; line-height: calc(14.5px * 1.4); pointer-events: none;}
 .f-rows .row.aged::after {top: auto; bottom: 8px;}
+/* A new item: an amber dot beside its age, the column you read for freshness, and the age
+   brighter, so titles keep their place. Centred on the digits: flex centres it on the line, half
+   a pixel below them, measured. */
+.f-rows .row.aged .new {display: none;}
+.f-rows .row.aged:has(.new) {padding-right: 82px;}
+.f-rows .row.aged:has(.new) .age {display: flex; align-items: center; justify-content: flex-end; gap: 6px; width: auto; color: var(--foreground); font-weight: 500;}
+.f-rows .row.aged:has(.new) .age::before {content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--more); translate: 0 -0.5px;}
 body[data-keys] .f-rows .row:not(.hl), body[data-keys] .f-agent:not(.hl) {opacity: .45;}
 body[data-keys] .f-rows .row:not(.hl):hover, body[data-keys] .f-agent:not(.hl):hover {background: none;}
 .f-empty {padding: 18px 8px 22px; text-align: center; font-size: 14px; color: var(--muted-foreground);}
