@@ -324,6 +324,11 @@ def read_over_socket():
 
 def read_over_stdio(binary, timeout=CODEX_TIMEOUT):
     """Start a server just for this one read. Codex reads its own login; HQ never sees it."""
+    return ask_over_stdio(binary, "account/rateLimits/read", {}, timeout)
+
+
+def ask_over_stdio(binary, method, params, timeout=CODEX_TIMEOUT):
+    """One request to a Codex app-server started for it, and stopped once it answers."""
     process = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     # A hung server must not hang the worker: killing it ends the reads below.
@@ -351,7 +356,7 @@ def read_over_stdio(binary, timeout=CODEX_TIMEOUT):
         send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "hq", "title": "HQ", "version": "0.1.0"}}})
         answer(1)
         send({"method": "initialized"})
-        send({"id": 2, "method": "account/rateLimits/read", "params": {}})
+        send({"id": 2, "method": method, "params": params})
         return answer(2)
     finally:
         timer.cancel()

@@ -119,7 +119,7 @@ class SetupTests(HomeTest):
         script.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {self.log}\n")
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
 
-    def run_setup(self, yes=True, answer=None):
+    def run_setup(self, yes=True, answer=None, trust=lambda: None):
         installed = {"claude-code": "configured", "codex": "unchanged"}
         install = Mock(side_effect=lambda agent: {"clients": [{
             "client": agent, "status": installed[agent],
@@ -127,7 +127,7 @@ class SetupTests(HomeTest):
         launch = Mock()
         out = io.StringIO()
         with contextlib.redirect_stdout(out), patch.object(onboard, "ask", return_value=answer) as ask:
-            code = onboard.setup(4399, yes=yes, install=install, launch=launch)
+            code = onboard.setup(4399, yes=yes, install=install, launch=launch, trust=trust)
         return code, out.getvalue(), install, launch, ask
 
     def test_shows_the_plan_for_the_agents_you_have_before_changing_anything(self):
@@ -152,8 +152,16 @@ class SetupTests(HomeTest):
         launch.assert_called_once_with(4399)
         self.assertIn("Claude Code: tools added", out)
         self.assertIn("Codex: tools already there", out)
-        self.assertIn("trust HQ's hooks", out)
+        self.assertIn("type /hooks, and trust the hooks that run hq hook codex", out)
         self.assertIn("hq setup --undo", out)
+
+    def test_says_to_trust_codex_hooks_until_codex_does(self):
+        self.agent("codex")
+        events = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"]
+        _, out, *_ = self.run_setup(trust=lambda: {**dict.fromkeys(events, "trusted"), "Stop": "modified"})
+        self.assertIn("Until you do, Codex skips them and its conversations do not show in HQ", out)
+        _, out, *_ = self.run_setup(trust=lambda: dict.fromkeys(events, "trusted"))
+        self.assertNotIn("type /hooks", out)
 
     def test_with_no_agents_it_says_so_and_still_opens_the_dashboard(self):
         code, out, install, launch, _ = self.run_setup()

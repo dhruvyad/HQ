@@ -73,6 +73,40 @@ def install_hooks(provider):
                 else "Restart or resume Claude Code to load HQ hooks."}
 
 
+TRUST_TIMEOUT = 10
+
+
+def codex_hook_trust(ask=None):
+    """How Codex itself rates each of HQ's hooks, {event: status}, or None when it cannot say.
+
+    Codex runs a hook only once you trust it in /hooks, and asks again whenever the hook
+    changes. Its own hooks/list answers trusted, untrusted, modified or managed for each; a
+    hook turned off there is "off". This only reads: it starts a Codex app-server for the one
+    question and stops it."""
+    from .usage import READ_ERRORS, ask_over_stdio, codex_binary
+    if ask is None:
+        binary = codex_binary()
+        if not binary:
+            return None
+        ask = lambda method, params: ask_over_stdio(binary, method, params, TRUST_TIMEOUT)
+    try:
+        result = ask("hooks/list", {"cwds": [str(Path.home())]})
+    except READ_ERRORS:
+        return None
+    inventories = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(inventories, list):
+        return None
+    found = {}
+    for inventory in inventories:
+        for hook in inventory.get("hooks", []) if isinstance(inventory, dict) else []:
+            if not is_hq_hook(hook, "codex"):
+                continue
+            event = str(hook.get("eventName") or "")
+            event = event[:1].upper() + event[1:]
+            found[event] = "off" if hook.get("enabled") is False else str(hook.get("trustStatus") or "unknown")
+    return found
+
+
 def claude_settings():
     path = Path.home() / ".claude/settings.json"
     try:
