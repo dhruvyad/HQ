@@ -45,7 +45,7 @@ import urllib.request
 import uuid
 from datetime import datetime
 
-from .usage import (CLAUDE_USAGE_URL, IDLE, READ_ERRORS, parse_claude_login_usage, parse_codex_usage,
+from .usage import (CLAUDE_USAGE_URL, IDLE, READ_ERRORS, open_token_url, parse_claude_login_usage, parse_codex_usage,
                     valid_reading)
 
 SECURITY = "/usr/bin/security"
@@ -368,9 +368,15 @@ def flocked(path, wait=LOCK_WAIT, sleep=time.sleep, clock=time.monotonic):
 
 
 def write_atomic(path, text, mode=0o600):
-    """Temp file, flushed, renamed over, and the folder flushed, so a crash leaves old or new."""
+    """Temp file, flushed, renamed over, and the folder flushed, so a crash leaves old or new.
+    A symlinked file (a dotfiles setup) is written where it points, and stays a link."""
+    path = Path(os.path.realpath(path))
     temp = path.with_name(path.name + ".hq-tmp")
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.unlink(temp)  # a leftover from a crash, or anything planted there
+    except FileNotFoundError:
+        pass
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, "w") as file:
         file.write(text)
         file.flush()
@@ -417,7 +423,7 @@ class Job:
 
 class Accounts:
     def __init__(self, store, places=None, keychain=None, run=subprocess.run, spawn=subprocess.Popen,
-                 open_url=urllib.request.urlopen, clock=time.monotonic, sleep=time.sleep, rand=random.uniform,
+                 open_url=open_token_url, clock=time.monotonic, sleep=time.sleep, rand=random.uniform,
                  which=shutil.which, temp_root=None, on_switch=None, log=None, stop=stop_group):
         self.store = store
         self.places = places or Places()
@@ -433,6 +439,7 @@ class Accounts:
         self.cached = {tool: {"active": None, "count": 0} for tool in TOOLS}
         self.seen_active = {}
         self.next_at, self.backoff, self.next_any = {}, {}, -math.inf
+        self.sign_ins = Path(store.path).parent / "sign-ins.json"
 
     # -- What is signed in now, read from each tool's own files ------------------------
 
@@ -830,6 +837,39 @@ class Accounts:
 
     # -- Adding ------------------------------------------------------------------------
 
+    # -- Temporary sign-ins -------------------------------------------------------------
+    # A Claude sign-in finished in Terminal can land after HQ gave up on it (cancelled, timed out,
+    # HQ restarted), leaving a login in a temporary Keychain item nothing would remove. Every
+    # temporary folder is written down until it is gone, and what is left is swept: when HQ starts
+    # and before each new sign-in.
+
+    def recorded(self):
+        try:
+            folders = json.loads(self.sign_ins.read_text())
+            return [f for f in folders if isinstance(f, str)] if isinstance(folders, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def record(self, folders):
+        try:
+            write_atomic(self.sign_ins, json.dumps(sorted(set(folders))))
+        except OSError:
+            self.log("Could not note the temporary sign-in folders")
+
+    def sweep_sign_ins(self, keep=()):
+        left = []
+        for folder in self.recorded():
+            if folder in keep:
+                left.append(folder)
+                continue
+            try:
+                self.keychain.delete(claude_item(folder), self.keychain.user)
+            except AccountError:
+                left.append(folder)  # try again next time
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+        self.record(left)
+
     def adding(self, tool):
         with self.lock:
             for job in self.jobs.values():
@@ -845,7 +885,9 @@ class Accounts:
             return running
         job = Job(tool)
         with self.lock:
+            busy = [j.folder for j in self.jobs.values() if j.state in {"starting", "waiting"} and getattr(j, "folder", None)]
             self.jobs[job.id] = job
+        self.sweep_sign_ins(keep=busy)
         thread = threading.Thread(target=self.sign_in, args=(job,), daemon=True)
         thread.start()
         if wait:
@@ -889,6 +931,9 @@ class Accounts:
     def sign_in(self, job):
         tool = job.tool
         folder = Path(tempfile.mkdtemp(prefix=f"hq-{tool}-sign-in-", dir=self.temp_root))
+        job.folder = str(folder)
+        if tool == "claude":
+            self.record(self.recorded() + [str(folder)])
         process, outcome = None, None
         try:
             binary = self.which("claude" if tool == "claude" else "codex")
@@ -941,12 +986,19 @@ class Accounts:
         finally:
             if process and process.poll() is None:
                 self.stop(process)
+            # A sign-in left running in Terminal can still land later: the sweep takes that one.
+            lingering = job.terminal and (outcome or ("failed",))[0] != "added"
             if tool == "claude":
                 try:
                     self.keychain.delete(claude_item(str(folder)), self.keychain.user)
+                    if not lingering:
+                        self.record([f for f in self.recorded() if f != str(folder)])
                 except AccountError:
                     self.log("Could not remove the temporary sign-in from the Keychain")
-            shutil.rmtree(folder, ignore_errors=True)
+            if not lingering:
+                shutil.rmtree(folder, ignore_errors=True)
+            if lingering and outcome:
+                outcome = (outcome[0], outcome[1] + ". You can close the Terminal window HQ opened")
             try:
                 self.refresh()
             except Exception:

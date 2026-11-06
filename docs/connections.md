@@ -179,6 +179,10 @@ health, and readiness before reporting the tunnel connected. It preserves an
 existing `hq` alias pointing to another tunnel. It does not expose the dashboard
 or create account resources without the supplied tunnel and runtime key.
 
+ChatGPT is a remote model, so through the tunnel it sees and acts on only the
+conversations it registered itself: never another agent's items, or your answers
+to them.
+
 This path has setup/protocol coverage; a real ChatGPT account connection still
 needs credentials and client setup. A tunnel enables tools, not arbitrary chat
 injection. [MCP events](https://developers.openai.com/plugins/build/mcp-events)

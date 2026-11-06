@@ -147,9 +147,20 @@ class Parser(argparse.ArgumentParser):
         return parsed
 
 
+class Version(argparse.Action):
+    """Worked out only when asked: hooks parse arguments on every tool call and must stay quick."""
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, help="Show which build of HQ this is")
+
+    def __call__(self, parser, *_):
+        from .version import describe
+        print(describe())
+        parser.exit()
+
+
 def parser():
     root = Parser(prog="hq", description="Your local inbox for AI agents. Run hq to open the dashboard.")
-    root.add_argument("--version", action="version", version="hq 0.1.0")
+    root.add_argument("--version", action=Version)
     commands = root.add_subparsers(dest="command")
     start = commands.add_parser("start", help="Start HQ in the background and open the dashboard")
     start.add_argument("--port", type=int, default=4310)
@@ -187,9 +198,10 @@ def parser():
             action.add_argument("--option", action="append", default=[])
             action.add_argument("--timeout", type=float, default=3600)
             action.add_argument("--no-wait", action="store_true")
-    update = commands.add_parser("update", help="Update one existing open item")
-    update.add_argument("item_id")
-    update.add_argument("--session", required=True)
+    update = commands.add_parser("update", help="Update HQ to its latest version and restart what is running; "
+                                                "with an item id, update one existing open item instead")
+    update.add_argument("item_id", nargs="?", help="The item to update; leave it out to update HQ itself")
+    update.add_argument("--session")
     update.add_argument("--owner", choices=["human", "agent", "external"])
     update.add_argument("--waiting-on")
     update.add_argument("--defer-until", help="YYYY-MM-DD; empty clears deferral")
@@ -270,6 +282,9 @@ def parser():
     onboarding.add_argument("--yes", action="store_true", help="Do not ask first")
     onboarding.add_argument("--no-pill", action="store_true", help="Skip the floating pill")
     onboarding.add_argument("--port", type=int, default=4310)
+    doctor = commands.add_parser("doctor", help="Check this setup and print a report to paste to whoever helps you; "
+                                                "it changes nothing and shows no secrets")
+    doctor.add_argument("--json", action="store_true")
     plan = commands.add_parser("usage", help="Show subscription usage left; install connects Claude Code's status line, "
                                              "login reads Claude usage with Claude Code's saved login instead")
     plan.add_argument("action", nargs="?", default="status", choices=["status", "install", "uninstall", "login", "logout"])
@@ -392,6 +407,17 @@ def main():
             return output(usage_command(args.action))
         if args.command == "accounts":
             return output(accounts_command(args))
+        if args.command == "doctor":
+            from . import doctor
+            return sys.exit(doctor.run(args.json))
+        item_fields = ("owner", "waiting_on", "defer_until", "title", "detail")
+        if args.command == "update" and args.item_id is None:
+            if args.session or any(getattr(args, key) is not None for key in item_fields):
+                raise ValueError("Say which item: hq update ITEM_ID --session SESSION ...")
+            from .version import update as update_hq
+            return sys.exit(update_hq(running, stop_service))
+        if args.command == "update" and not args.session:
+            raise ValueError("Updating an item needs --session, the conversation that owns it")
         store = Store()
         if args.command == "instructions":
             print(AGENT_INSTRUCTIONS)
@@ -431,7 +457,7 @@ def main():
         if args.command == "await":
             return output(store.wait(args.item_id, args.session, args.timeout))
         if args.command == "update":
-            changes = {key: getattr(args, key) for key in ("owner", "waiting_on", "defer_until", "title", "detail") if getattr(args, key) is not None}
+            changes = {key: getattr(args, key) for key in item_fields if getattr(args, key) is not None}
             return output(store.update(args.item_id, args.session, **changes))
         if args.command == "list":
             return output(store.snapshot(args.session, args.tag, args.status, args.bucket)["items"])

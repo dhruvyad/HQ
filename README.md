@@ -12,6 +12,10 @@ macOS, with Claude Code or Codex. It installs the `hq` command, then `hq setup` 
 use, puts the pill on screen and opens the dashboard. It shows each change before making it, and
 `hq setup --undo` reverses it.
 
+**Update:** `hq update`, or run the install line again. `hq --version` says which build you have.
+If something seems off, `hq doctor` checks your setup and prints a report to paste to whoever is
+helping you.
+
 <p align="center"><img src="docs/media/hero.webp" width="800" alt="A new decision arrives on the pill. The arrow keys pick it from the list, one click answers it, and it flies back into the count."></p>
 
 Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask

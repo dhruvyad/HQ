@@ -1,10 +1,13 @@
 """Live metadata only; a missing or broken observer must never imply idle."""
 import json
+import math
 import os
+from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 
 
 def codex_source(endpoint=None):
@@ -23,25 +26,90 @@ def codex_activity(status):
     return {"idle": "idle", "notLoaded": "offline"}.get(status.get("type"), "unknown")
 
 
+# Each open Claude Code conversation keeps a small status file, <config>/sessions/<pid>.json,
+# saying whether it is busy or idle. Reading those costs next to nothing, so they are looked at
+# every second. `claude agents` starts all of Claude Code (about 0.15 s of CPU) and is only needed
+# for dispatched background agents, which have no such file, so it runs every BACKGROUND seconds.
+BACKGROUND = 20
+LEASE = 60      # how long a reading stands unrenewed; the server going away lets it lapse
+RENEW = 25      # an unchanged reading is written again this often, well inside its lease
+
+
+def valid(row):
+    return (isinstance(row, dict) and isinstance(row.get("sessionId"), str) and 0 < len(row["sessionId"]) <= 150
+            and not any(row.get(key) is not None and not isinstance(row[key], str) for key in ("name", "status", "state", "cwd")))
+
+
 class ClaudePresence:
-    def __init__(self, store):
+    def __init__(self, store, folder=None, background=BACKGROUND, clock=time.monotonic):
         self.store = store
         self.stop = threading.Event()
         self.command = shutil.which("claude") or str(os.path.expanduser("~/.local/bin/claude"))
+        config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+        self.folder = Path(folder) if folder else Path(config) / "sessions"
+        self.background, self.clock = background, clock
+        self.asked, self.agents = -math.inf, []
+        self.files = {}    # path -> ((mtime, size), record), so an unchanged file is not read again
+        self.written = {}  # session -> (state, when written), so an unchanged state is not written again
 
-    def sample(self):
+    def session_files(self):
+        """The status files of open conversations; None when this Claude Code keeps none."""
+        if not self.folder.is_dir():
+            return None
+        records, seen = [], set()
+        for path in self.folder.glob("*.json"):
+            seen.add(path)
+            try:
+                info = path.stat()
+                stamp = (info.st_mtime_ns, info.st_size)
+                cached = self.files.get(path)
+                if cached and cached[0] == stamp:
+                    record = cached[1]
+                else:
+                    record = json.loads(path.read_text())
+                    self.files[path] = (stamp, record)
+            except (OSError, ValueError):
+                continue  # mid-write or just removed: next second
+            if valid(record) and isinstance(record.get("pid"), int):
+                records.append(record)
+        for path in set(self.files) - seen:
+            del self.files[path]
+        return records
+
+    def background_agents(self):
         result = subprocess.run([self.command, "agents", "--json"], capture_output=True,
                                 text=True, timeout=2, check=True)
         records = json.loads(result.stdout)
         if not isinstance(records, list):
             raise ValueError("Claude did not provide a live session inventory")
-        present = set()
         # Validate the entire inventory before expiring absent sessions.
-        for row in records:
-            if (not isinstance(row, dict) or not isinstance(row.get("sessionId"), str)
-                    or not 0 < len(row["sessionId"]) <= 150
-                    or any(row.get(key) is not None and not isinstance(row[key], str) for key in ("name", "status", "state", "cwd"))):
-                raise ValueError("Invalid Claude session metadata")
+        if not all(valid(row) for row in records):
+            raise ValueError("Invalid Claude session metadata")
+        return records
+
+    def observe(self, sid, state):
+        now = self.clock()
+        last = self.written.get(sid)
+        if last and last[0] == state and now - last[1] < RENEW:
+            return
+        self.store.observe_activity(sid, state, "claude-live", lease=LEASE)
+        self.written[sid] = (state, now)
+
+    def sample(self):
+        files = self.session_files()
+        if files is None or self.clock() - self.asked >= self.background:
+            try:
+                self.agents = self.background_agents()
+            except (OSError, ValueError, subprocess.SubprocessError):
+                if files is None:
+                    raise
+                self.agents = []  # background agents unknown until the next ask; conversations still read
+            self.asked = self.clock()
+        # A conversation's own file says more than the inventory, so it wins.
+        records = list(files or [])
+        mine = {row["sessionId"] for row in records}
+        records += [row for row in self.agents if row["sessionId"] not in mine]
+        present = set()
         for row in records:
             sid = "claude-code:" + row["sessionId"]
             pid = row.get("pid")
@@ -64,8 +132,10 @@ class ClaudePresence:
             # Dispatched background sessions report "state" where interactive ones say "status".
             status = row.get("status") or row.get("state")
             state = {"busy": "active", "running": "active", "idle": "idle", "blocked": "waiting"}.get(status, "unknown")
-            self.store.observe_activity(sid, state, "claude-live", lease=4)
+            self.observe(sid, state)
             present.add(sid)
+        for sid in set(self.written) - present:
+            del self.written[sid]
         self.store.expire_activity("claude-live", missing=present)
 
     def unverified(self, sid, present):
@@ -73,7 +143,7 @@ class ClaudePresence:
             self.store.session(sid)
         except ValueError:
             return
-        self.store.observe_activity(sid, "unknown", "claude-live", lease=4)
+        self.observe(sid, "unknown")
         present.add(sid)
 
     def run(self):
@@ -81,6 +151,8 @@ class ClaudePresence:
             try:
                 self.sample()
             except (OSError, ValueError, subprocess.SubprocessError, sqlite3.Error):
+                self.written.clear()
+                self.asked = -math.inf  # ask again next time rather than trust an old inventory
                 try:
                     self.store.expire_activity("claude-live")
                 except sqlite3.Error:

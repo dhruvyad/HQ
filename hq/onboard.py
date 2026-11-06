@@ -148,6 +148,7 @@ def setup(port, yes=False, pill=True, install=None, launch=None):
     if placed:
         say("  Hover the pill to see what each circle counts; click it to see what needs you.")
     say("  Claude usage in the pill is opt-in: hq usage login")
+    say("  Update HQ later: hq update")
     say("  Undo all of this: hq setup --undo")
     return 0
 

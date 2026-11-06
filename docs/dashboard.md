@@ -40,5 +40,6 @@ service on `http://127.0.0.1:4310` and opens your browser. `hq stop` stops it;
 Use `hq start --port 4311` if that port is already occupied.
 
 All items and responses live at `~/.local/share/hq/hq.sqlite3`. Set `HQ_HOME`
-to use a separate inbox. Back up that directory with the service stopped.
+to use a separate inbox. Back up that directory with the service stopped. Beside it,
+`install.json` records which build the installer put in place, for `hq --version`.
 The browser is a view onto SQLite, not the source of truth.

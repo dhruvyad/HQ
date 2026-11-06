@@ -86,7 +86,10 @@ Claude Code itself then does, as an argument, briefly visible to programs runnin
 at login (`hq float uninstall` undoes that). It needs macOS and Xcode's command line tools
 (`xcode-select --install`), because it compiles one small Swift file the first time it runs.
 That file only moves the window; the panel is an ordinary local page at `/float`, inside
-the same localhost, origin and token boundary as the dashboard.
+the same localhost, origin and token boundary as the dashboard. `hq update` restarts the pill
+if it is running, and it compiles that file again only when it changed. `hq doctor` says
+whether the pill is running, whether it is built for this version, and how your displays are
+arranged.
 
 ## Design lab
 

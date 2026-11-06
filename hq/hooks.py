@@ -70,6 +70,8 @@ def handle(provider, payload, store, emit):
             f"This exact conversation is registered in HQ as {sid}. "
             "Use this session id with all HQ CLI/MCP calls. Read hq_reporting_guide or `hq instructions`; "
             "report every unfinished action/blocker separately with workstream tags and the right owner. "
+            "When you need the user to decide, approve or do something, ask it in HQ (hq_report: a question with "
+            "options, or a todo) and say in the chat that it is waiting there; the user may not be watching this chat. "
             "Keep existing items updated. Check and answer HQ clarification threads before finishing. "
             f"CLI: hq list --session {quoted}; hq comments --session {quoted} --pending; hq inbox --session {quoted}."
         )

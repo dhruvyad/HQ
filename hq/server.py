@@ -18,6 +18,7 @@ from .store import Store, data_dir
 from .presence import ClaudePresence
 from .stream import StateFeed
 from .usage import SampleUsage, Usage, UsageWorker
+from .version import build
 
 STATIC = Path(__file__).parent / "static"
 
@@ -37,6 +38,8 @@ class Server(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.feed = StateFeed(self.store, self.usage, self.accounts)
+        # The build it started from, so hq doctor can tell a server left running on old code.
+        self.commit = ""
 
     def server_close(self):
         self.feed.close()
@@ -81,8 +84,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == "/api/health":
-            return self.output(200, {"app": "hq", "version": __version__, "instance": self.server.instance,
-                                     "pid": os.getpid()})
+            return self.output(200, {"app": "hq", "version": __version__, "commit": self.server.commit,
+                                     "instance": self.server.instance, "pid": os.getpid()})
         if path == "/api/state":
             if self.allowed(token=True):
                 self.output(200, self.server.feed.current())
@@ -266,6 +269,7 @@ def serve(port=4310):
         except BlockingIOError:
             raise ValueError("HQ is already running; use hq to open it") from None
         server = Server(port)
+        server.commit = build().get("commit") or ""
         state = home / "server.json"
         state.write_text(json.dumps({"pid": os.getpid(), "port": server.server_port, "instance": server.instance}))
         os.chmod(state, 0o600)
@@ -273,6 +277,8 @@ def serve(port=4310):
             server.store.sweep_files()
         except OSError:
             pass  # Leftover uploads are tidied next start.
+        if server.accounts:
+            server.accounts.sweep_sign_ins()  # a sign-in left in Terminal that landed after HQ gave up
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
         workers = []

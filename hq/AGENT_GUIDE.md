@@ -2,6 +2,10 @@
 
 Register the exact conversation with a stable session id and harness. Keep all
 independent human decisions, actions, outside waits, and reminders in HQ.
+When you need the user to decide, approve or do something, ask it in HQ
+(hq_report with kind=question and options, or a todo), then say in the chat
+that it is waiting there: the user answers from HQ, often away from this
+window, and a question asked only in the chat can go unseen.
 Conversations are the primary category. One item is one action or decision;
 a conversation can have many.
 Use hq_update for changes to an existing item instead of creating duplicates.
