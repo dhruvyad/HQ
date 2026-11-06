@@ -122,7 +122,7 @@ let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = nul
 let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [], keyConflict = null;
 let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
 let lastItems = null, lastUsage = null, lastStuck = null, pending = [], notice = null;
-let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null, fallbackIndex = null, pendingScroll = null;
+let listView = 'needs', agentOpen = null, agentsAll = false, agentsArchived = false, listMotion = null, fallbackIndex = null, pendingScroll = null;
 const agentMemory = new Map();
 
 // A global key is its key code and modifiers; its label is only how it reads.
@@ -592,17 +592,28 @@ function agentsPanelHTML(items, live = liveHealthy) {
   heldStill();
   const v = unactedAgents(state.sessions, model.items, now);
   // The whole row opens the agent; its count, above that button, opens the sheet instead.
-  const agent = (a, side = agentSideHTML(a, v.held.get(a.id)), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
+  // As on the dashboard: an agent with nothing open can be archived from its row, beside its arrow.
+  const away = (a) => (archivable(a) ? `<button class="f-away-one" type="button" data-archive="${esc(a.id)}" title="Archive: hide it until it runs again or has something open" aria-label="${esc(`Archive ${a.name}`)}">${icon('archive', 'sm')}</button>` : '');
+  const agent = (a, side = agentSideHTML(a, v.held.get(a.id)) + away(a), meta = `${esc(a.harness)} · ${agentMeta(a, now)}`) =>
     `<div class="f-agent" data-agent="${esc(a.id)}"><button class="f-hit" type="button" aria-label="${esc(a.name)}"></button>${agentDot(a)}<span class="a-main"><span class="a-name">${esc(a.name)}</span><span class="a-meta">${meta}</span></span><span class="a-side">${side}</span></div>`;
-  const folder = (f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span>${f.running ? '<span class="f-run">running</span>' : ''}</div>${f.agents.map((a) => agent(a)).join('')}</div>`;
+  // A folder folds from its name to a count, and offers on hover to archive its agents with nothing open.
+  const folder = (f, {restore = false} = {}) => {
+    const key = folderKey(f.key, restore), shut = agentFolds.has(key), spare = restore ? [] : f.agents.filter(archivable);
+    const running = f.agents.filter((a) => a.state === 'active').length;
+    const count = shut ? `<span class="f-fold-n">${f.agents.length} ${f.agents.length === 1 ? 'agent' : 'agents'}${running ? ` · ${running} running` : ''}</span>` : '';
+    const all = spare.length > 1 && !shut ? `<button class="f-away-all" type="button" data-archive="${esc(spare.map((a) => a.id).join(' '))}" title="Archive the ${spare.length} with nothing open">Archive ${spare.length}</button>` : '';
+    const rows = restore ? f.agents.map((a) => agent(a, `<button class="f-back" type="button" data-unarchive="${esc(a.id)}">Restore</button>`, `${esc(a.harness)} · ${esc(lastRan(a))}`)) : f.agents.map((a) => agent(a));
+    return `<div class="f-folder${shut ? ' shut' : ''}"><div class="f-top"><button class="f-fold" type="button" data-agent-fold="${esc(key)}" aria-expanded="${!shut}"><span class="f-name">${esc(f.name)}</span>${icon('down', 'sm')}</button>${count}${all}${f.running && !shut ? '<span class="f-run">running</span>' : ''}</div>${shut ? '' : rows.join('')}</div>`;
+  };
   let body;
   if (agentsShow === 'unacted') {
     body = v.rows.length ? `<p class="ag-sum">${unactedSummary(v)}</p>${v.folders.map((f) => `<div class="f-folder"><div class="f-top"><span class="f-name">${esc(f.name)}</span></div>${f.rows.map((r) => agent(r.a, unactedSide(r, v), `${esc(r.a.harness)} · ${esc(lastRan(r.a))}`)).join('')}</div>`).join('')}`
       : `<div class="f-empty ag-empty">${UNACTED_EMPTY}</div>`;
   } else {
-    const quiet = view.quiet.length ? (agentsAll ? view.quiet.map(folder).join('')
+    const quiet = view.quiet.length ? (agentsAll ? view.quiet.map((f) => folder(f)).join('')
       : `<button class="f-quiet" type="button" data-agents-all>${view.quietCount} more, in ${view.quiet.length} ${view.quiet.length === 1 ? 'folder' : 'folders'}</button>`) : '';
-    body = (view.groups.map(folder).join('') || '<div class="f-empty">No agent has run in the last day</div>') + quiet;
+    const archived = view.archivedCount ? `<button class="f-quiet" type="button" data-archived aria-expanded="${agentsArchived}">${view.archivedCount} archived${icon(agentsArchived ? 'down' : 'chev', 'sm')}</button>${agentsArchived ? `<div class="f-archived">${view.archived.map((f) => folder(f, {restore: true})).join('')}</div>` : ''}` : '';
+    body = (view.groups.map((f) => folder(f)).join('') || '<div class="f-empty">No agent has run in the last day</div>') + quiet + archived;
   }
   const held = heldSheet && v.held.get(heldSheet), who = held && view.all.find((a) => a.id === heldSheet);
   const shut = who ? ' inert' : '';
@@ -2112,6 +2123,11 @@ function bootFloat() {
     else if (circle && !circle.disabled) setCircles(toggleCircle(circles, circle.dataset.circle));
     else if (shift && !shift.disabled) setCircles(moveCircle(circles, shift.dataset.id, Number(shift.dataset.circleMove)));
     else if (e.target.closest('[data-view]')) showList(e.target.closest('[data-view]').dataset.view);
+    // Inside an agent's row, so before opening it: archive, restore, fold.
+    else if (e.target.closest('[data-archive]')) archiveAgents(e.target.closest('[data-archive]').dataset.archive.split(' '), true);
+    else if (e.target.closest('[data-unarchive]')) archiveAgents([e.target.closest('[data-unarchive]').dataset.unarchive], false);
+    else if (e.target.closest('[data-agent-fold]')) {toggleAgentFold(e.target.closest('[data-agent-fold]').dataset.agentFold); render();}
+    else if (e.target.closest('[data-archived]')) {agentsArchived = !agentsArchived; render();}
     else if (e.target.closest('[data-agent]')) showList('agents', e.target.closest('[data-agent]').dataset.agent);
     else if (e.target.closest('[data-back]')) backToList();
     else if (e.target.closest('[data-pill-size]')) {

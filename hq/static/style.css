@@ -230,7 +230,7 @@ h1 {margin: 0; font: 400 34px/1.15 var(--display); letter-spacing: -0.015em;}
 .group.folder .group-head:hover .f-fold .icon, .f-fold:focus-visible .icon {opacity: 1;}
 .group.folder.shut .f-fold .icon {transform: rotate(-90deg);}
 .group.folder.shut .f-name {color: var(--muted-foreground);}
-.f-count {margin-left: 2px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
+.group.folder .f-fold-n {margin-left: 2px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); font-variant-numeric: tabular-nums;}
 /* Putting agents away: on hover only, where an agent with nothing open has no counts. */
 .f-away, .a-back {padding: 4px 8px; border-radius: 6px; font-size: 13px; font-weight: 400; color: var(--muted-foreground); transition: opacity .15s, color .15s, background .15s;}
 .f-away {margin-left: 6px; opacity: 0;}

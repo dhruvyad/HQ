@@ -600,6 +600,12 @@ const putAway = (a) => a.archived > 0 && archivable(a) && (a.last || 0) <= a.arc
 // Putting away is only a view, so it is never asked about: Archived brings it back. The live
 // feed carries the change to the dashboard and the pill alike.
 const archiveAgents = (ids, archived) => api('sessions/archive', {ids, archived}).catch((error) => toast(error.message));
+// A folder's fold is kept by a short hash of its path, so the path itself never reaches the page.
+function folderKey(path, archived = false) {
+  let h = 5381;
+  for (const c of String(path)) h = ((h << 5) + h + c.codePointAt(0)) | 0;
+  return `${archived ? 'archived:' : ''}f${(h >>> 0).toString(36)}`;
+}
 function toggleAgentFold(key) {
   if (agentFolds.has(key)) agentFolds.delete(key);
   else agentFolds.add(key);
@@ -907,9 +913,9 @@ function agentsPage() {
   // A folder folds to its name and a count; one with several agents to put away offers that on hover.
   const folder = (f, {restore = false} = {}) => {
     // Archived folders fold on their own, apart from the same folder above.
-    const key = restore ? `archived:${f.key}` : f.key, shut = agentFolds.has(key), spare = restore ? [] : f.agents.filter(archivable);
+    const key = folderKey(f.key, restore), shut = agentFolds.has(key), spare = restore ? [] : f.agents.filter(archivable);
     const running = f.agents.filter((a) => a.state === 'active').length;
-    const count = shut ? `<span class="f-count">${f.agents.length} ${f.agents.length === 1 ? 'agent' : 'agents'}${running ? ` · ${running} running` : ''}</span>` : '';
+    const count = shut ? `<span class="f-fold-n">${f.agents.length} ${f.agents.length === 1 ? 'agent' : 'agents'}${running ? ` · ${running} running` : ''}</span>` : '';
     const all = spare.length > 1 ? `<button type="button" class="f-away" data-archive="${esc(spare.map((a) => a.id).join(' '))}">Archive ${spare.length} with nothing open</button>` : '';
     const rows = restore ? f.agents.map((a) => row(a, `<button type="button" class="a-back" data-unarchive="${esc(a.id)}">Restore</button>`, `${esc(a.harness)} · ${esc(lastRan(a))}`)) : f.agents.map((a) => row(a));
     return `<section class="group folder ${shut ? 'shut' : ''}"><div class="group-head"><button type="button" class="f-fold" data-agent-fold="${esc(key)}" aria-expanded="${!shut}"><span class="f-name">${esc(f.name)}</span>${icon('down', 'sm')}</button>${count}${all}${f.running && !shut ? '<span class="n">running</span>' : ''}</div>${shut ? '' : rows.join('')}</section>`;
