@@ -1815,7 +1815,10 @@ function runShortcut(action) {
 
 // Drag, after OpenFlow's flow bar: past a small threshold the window grows to the whole
 // display, a ghost follows the cursor, the nearest target lights up, and a drop glides in.
-const pointer = (e) => (display ? {x: e.screenX - display.x, y: e.screenY - display.y} : {x: e.clientX, y: e.clientY});
+// The window covers its whole display from the display's corner, so the page's own coordinates
+// are the display's. Not screenX: WebKit flips it against the window's screen rather than the
+// main one, which put the ghost off an external display.
+const pointer = (e) => ({x: e.clientX, y: e.clientY});
 function armDrag(e) {
   if (e.button !== 0 || drag) return;
   const startX = e.screenX, startY = e.screenY, limit = feel.threshold * feel.threshold;
