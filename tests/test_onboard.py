@@ -20,6 +20,14 @@ def hook(command):
     return {"type": "command", "command": command, "timeout": 5}
 
 
+class InstallScriptTests(unittest.TestCase):
+    def test_no_variable_runs_into_a_non_ascii_character(self):
+        # macOS's sh, in a UTF-8 locale, reads "$source…" as one name and stops the install.
+        import re
+        script = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+        self.assertEqual(re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]", script), [])
+
+
 class HookOwnershipTests(unittest.TestCase):
     def test_recognizes_hq_wherever_it_was_installed_from(self):
         self.assertTrue(is_hq_hook(hook(f"/usr/bin/python3 {CHECKOUT} hook claude-code"), "claude-code"))

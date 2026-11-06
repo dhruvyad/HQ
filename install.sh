@@ -41,7 +41,8 @@ case "$0" in
 esac
 source="${HQ_SOURCE:-$source}"
 
-say "Installing hq from $source…"
+# Braces matter: macOS's sh, in a UTF-8 locale, reads "…" after $source as part of its name.
+say "Installing hq from ${source}…"
 if ! uv tool install --quiet --reinstall --python 3.12 --from "$source" hq-local; then
   case "$source" in
     https://*) die "Could not download HQ. If you were given access to the private repository:

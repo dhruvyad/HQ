@@ -27,13 +27,17 @@ jobs:
       - uses: actions/checkout@v4
       - run: swiftc -typecheck hq/FloatPanel.swift
   install:
-    # The one-line install a friend runs, from a fresh home with no uv, stopping before setup.
-    runs-on: ubuntu-latest
+    # The one-line install a friend runs, piped to sh from a fresh home with no uv, in the
+    # locale a Mac's Terminal uses, stopping before setup.
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - run: sh -n install.sh
       - name: Install into an empty home
         run: |
           home="$(mktemp -d)"
-          env -i HOME="$home" PATH=/usr/bin:/bin HQ_SOURCE="$PWD" HQ_NO_SETUP=1 sh install.sh
+          env -i HOME="$home" PATH=/usr/bin:/bin LANG=en_US.UTF-8 HQ_SOURCE="$PWD" HQ_NO_SETUP=1 sh < install.sh
           env -i HOME="$home" PATH=/usr/bin:/bin "$home/.local/bin/hq" setup --help
