@@ -84,6 +84,9 @@ def run(provider="other", channel=False, session_id=None):
     write_lock, closed, initialized = threading.Lock(), threading.Event(), threading.Event()
     cancellations = {}
     bound_id = session_id or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID") or "connection:" + str(uuid.uuid4())
+    # A remote model (ChatGPT, through the tunnel) is outside this Mac's trust: it sees and acts on
+    # only the conversations it registered itself, never another agent's items or the user's answers.
+    remote, owned = provider == "chatgpt" and not channel, set()
 
     def send(value):
         with write_lock:
@@ -102,13 +105,33 @@ def run(provider="other", channel=False, session_id=None):
         if name == "hq_reporting_guide":
             return {"instructions": AGENT_INSTRUCTIONS, "projects": workstreams.index(store.snapshot()["items"])}
         if name == "hq_register_session":
-            args["id"] = args.pop("session_id")
-            args.setdefault("provider", provider)
-            result = store.register(**args)
+            sid = args.get("session_id")
+            try:
+                existing = store.session(sid)
+            except ValueError:
+                existing = None
+            if remote and existing and sid not in owned:
+                raise ValueError("That conversation belongs to another agent")
+            # Only what the tool declares, and an existing conversation keeps how it is reached
+            # and resumed: its provider, id and folder are set by its own runtime, not by a caller.
+            fields = {"id": sid, "name": args.get("name")}
+            if existing:
+                fields["provider"] = existing["provider"]
+            else:
+                fields.update(provider=args.get("provider") or provider, external_id=args.get("external_id"), cwd=args.get("cwd"))
+            result = store.register(**fields)
             store.heartbeat(result["id"])
+            owned.add(result["id"])
             return result
+        if remote and name != "hq_reporting_guide":
+            id = args.setdefault("session_id", next(iter(owned), None)) if name == "hq_list" else id
+            if id not in owned:
+                raise ValueError("Register this conversation with hq_register_session first, and use its session_id")
         if name == "hq_list":
-            return store.snapshot(**args)
+            snapshot = store.snapshot(**args)
+            if remote:
+                snapshot["sessions"] = [s for s in snapshot["sessions"] if s["id"] in owned]
+            return snapshot
         if id:
             store.heartbeat(id)
         if name in {"hq_report", "hq_request_input"}:

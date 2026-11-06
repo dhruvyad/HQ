@@ -29,6 +29,18 @@ import urllib.request
 from .adapters import CodexClient
 from .store import data_dir
 
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A login token goes only to the host it was written for. urllib would carry the
+    Authorization header across a redirect to any host, even down to http, so none is followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Every request that carries a login token opens through this.
+open_token_url = urllib.request.build_opener(NoRedirects).open
+
 # Usage moves only while you use an agent, so ask often while one is at work and rarely
 # otherwise, at random within each range so nothing ever asks in lockstep. Claude's usage
 # endpoint rate-limits hard: after a refusal, wait as long as it says, or back off from
@@ -170,7 +182,7 @@ def set_claude_login(enabled):
 class ClaudeLogin:
     """Reads Claude usage with Claude Code's own login, only when the user turned it on."""
 
-    def __init__(self, enabled=claude_login_enabled, run=subprocess.run, open_url=urllib.request.urlopen, now=time.time):
+    def __init__(self, enabled=claude_login_enabled, run=subprocess.run, open_url=open_token_url, now=time.time):
         self.enabled, self.run, self.open_url, self.now = enabled, run, open_url, now
         self.token, self.expires = None, 0
         self.retry_after = None

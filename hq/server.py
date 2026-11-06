@@ -273,6 +273,8 @@ def serve(port=4310):
             server.store.sweep_files()
         except OSError:
             pass  # Leftover uploads are tidied next start.
+        if server.accounts:
+            server.accounts.sweep_sign_ins()  # a sign-in left in Terminal that landed after HQ gave up
         # The lab's throwaway HQ holds only fixtures: nothing may discover a real
         # conversation into it, or deliver from it.
         workers = []

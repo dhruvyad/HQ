@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.request
 from unittest.mock import Mock, patch
 
 from hq import cli, connections, usage
@@ -791,3 +792,43 @@ class ClaudeLoginTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenRedirectTests(unittest.TestCase):
+    def test_a_login_token_never_follows_a_redirect_to_another_host(self):
+        import http.server
+        from hq.usage import open_token_url
+        seen = []
+
+        class Elsewhere(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        other = http.server.HTTPServer(("127.0.0.1", 0), Elsewhere)
+        target = f"http://127.0.0.1:{other.server_port}/steal"
+
+        class Redirecting(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        first = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+        for server in (other, first):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        request = urllib.request.Request(f"http://127.0.0.1:{first.server_port}/usage", headers={"Authorization": "Bearer secret"})
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            open_token_url(request, timeout=5)
+        self.assertEqual(raised.exception.code, 302)
+        raised.exception.close()
+        self.assertEqual(seen, [])  # the other host never heard from it, token or not

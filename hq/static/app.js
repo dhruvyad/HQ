@@ -1117,10 +1117,12 @@ function progressHTML(i) {
 }
 // The exact command to pick the conversation back up, where HQ knows enough to write it.
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+// An id as it is when it is only safe characters, as real ones are; quoted when anything else is in it.
+const shellArg = (s) => (/^[A-Za-z0-9._:@%+=,\/-]+$/.test(String(s)) ? String(s) : shellQuote(s));
 function resumeCommand(session) {
   if (!session?.external_id) return '';
-  if (session.provider === 'claude-code') return `${session.cwd ? `cd ${shellQuote(session.cwd)} && ` : ''}claude --resume ${session.external_id}`;
-  if (session.provider === 'codex') return `codex resume ${session.external_id}`;
+  if (session.provider === 'claude-code') return `${session.cwd ? `cd ${shellQuote(session.cwd)} && ` : ''}claude --resume ${shellArg(session.external_id)}`;
+  if (session.provider === 'codex') return `codex resume ${shellArg(session.external_id)}`;
   return '';
 }
 function decidedHTML(i, draft) {
