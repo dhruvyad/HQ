@@ -465,6 +465,19 @@ assert.ok(html.includes('<span class="f-headline"><h1>Agents</h1>') && html.incl
 assert.ok(!html.includes('data-view="needs"') && (html.match(/role="tablist"/g) || []).length === 1 && html.includes('role="tablist" aria-label="Show"')); // no way across to Needs you but the pill; its only tabs are All and Not acted on
 assert.ok(html.includes('Old &lt;chat&gt;') === false && html.includes('data-agents-all>1 more, in 1 folder')); // quiet ones folded
 assert.ok(!html.includes('/Users/someone'));
+// Folders fold from their name, as on the dashboard, kept by a hash of the path, never the path.
+assert.equal(run("folderKey('/Users/someone/code/harbor')"), run("folderKey('/Users/someone/code/harbor')"));
+assert.notEqual(run("folderKey('/Users/someone/code/harbor')"), run("folderKey('/Users/someone/code/harbor', true)"));
+assert.ok(html.includes(`data-agent-fold="${run("folderKey('/Users/someone/code/harbor')")}"`));
+run("agentFolds.add(folderKey('/Users/someone/code/harbor'))");
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('<div class="f-folder shut">') && html.includes('<span class="f-fold-n">2 agents · 1 running</span>'));
+assert.ok(!html.includes('data-agent="c:bg"')); // its rows go with it
+run("agentFolds.clear()");
+// An agent with nothing open can be archived from its row; one running or waiting on you cannot.
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(html.includes('data-archive="c:nofolder"') && !html.includes('data-archive="c:wait"') && !html.includes('data-archive="x:run"'));
+assert.ok(!html.includes(' archived')); // nothing archived, so no Archived fold
 run("agentOpen = 'c:done'");
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.includes('<dt>Folder</dt><dd>harbor</dd>'));
