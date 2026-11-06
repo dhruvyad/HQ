@@ -1406,7 +1406,9 @@ function geometry(mode = document.body.dataset.mode) {
   return {room: roomOf(display), rest, pill, box: mode === 'pill' ? null : boxRect(dock, rest, boxSize(mode), area)};
 }
 function placeWindow(rect, flags) {
-  const message = {type: 'place', ...rect, ...flags}, signature = JSON.stringify(message);
+  // The rect is local to its display, so two displays of one size share it: which display
+  // it is belongs in the signature too, or moving to a twin monitor would never be sent.
+  const message = {type: 'place', ...rect, ...flags}, signature = JSON.stringify([message, display?.x, display?.y]);
   if (signature === placed) return;
   placed = signature;
   native(message);
@@ -1943,6 +1945,22 @@ function endDrag() {
   }));
 }
 
+// The cursor moved to another display: the pill appears in its place there with a short fade,
+// rather than springing across from where it sat on the last one.
+const ARRIVE_MS = 180;
+function arrive() {
+  const pill = $('#pill'), box = $('#box');
+  pill.classList.add('instant');
+  box.classList.add('instant');
+  layout();
+  pill.getBoundingClientRect();
+  if (!calm()) pill.animate([{opacity: 0, scale: '.97'}, {opacity: 1, scale: '1'}], {duration: ARRIVE_MS, easing: 'ease-out'});
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    pill.classList.remove('instant');
+    if (!box.classList.contains('folded')) box.classList.remove('instant');
+  }));
+}
+
 // From the native window
 function receive(message) {
   if (message.type === 'start') {
@@ -1957,8 +1975,10 @@ function receive(message) {
     applyShortcuts();
     render();
   } else if (message.type === 'display') {
+    const arriving = message.changed && display && !drag;
     display = message;
     if (drag?.phase === 'dragging') coverDisplay();
+    else if (arriving) arrive();
     else layout();
   } else if (message.type === 'cancelDrag') cancelDrag();
   else if (message.type === 'saved') saved(message.dock, message.ok);
