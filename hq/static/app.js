@@ -1336,7 +1336,7 @@ function hydrateFiles(root) {
 // Full size, over the dashboard; the panel hands it to the dashboard instead.
 async function openFile(id, type) {
   const url = await fileURL(id).catch(() => null);
-  if (!url) return toast('That file is no longer here');
+  if (!url) return toast('That file is gone: HQ keeps files 30 days after their item is done');
   if (!ATTACH.shown.has(type)) return window.open(url, '_blank', 'noreferrer');
   let box = $('#lightbox');
   if (!box) {

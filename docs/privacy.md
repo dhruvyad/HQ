@@ -22,6 +22,8 @@ What HQ reads, and when:
   app's is ever written. See [several accounts](pill.md#several-accounts).
 - **Replies:** HQ never says a reply was received until the agent acknowledges it, and pending
   replies survive disconnects.
+- **Files you attach:** kept in HQ's private folder, readable only by you. A file you upload
+  but never send is deleted after a day, and the files on an item 30 days after it is done.
 - **`hq doctor`:** changes nothing. It opens the inbox read-only and reads Claude Code's and
   Codex's config files only for HQ's own entries. It reads no login and nothing from the
   Keychain, and its report has no token, email or message text, so it is safe to paste.
