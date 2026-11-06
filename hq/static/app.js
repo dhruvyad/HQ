@@ -588,7 +588,7 @@ function ranFor(seconds) {
 function agentOf(s, items) {
   const mine = items.filter((i) => i.session_id === s.id && i.lane !== 'done'), st = agentState(s);
   return {id: s.id, name: s.name, harness: harness(s.provider), folder: s.cwd || '', state: st,
-    since: s.activity?.since || null, last: s.last_active || null, archived: s.archived || 0,
+    since: s.activity?.since || null, last: s.last_active || null, archived: s.archived || 0, created: s.created || 0,
     background: st === 'active' && s.activity?.source === 'background',
     you: mine.filter((i) => i.lane === 'you').length, open: mine.length,
     held: items.filter((i) => i.session_id === s.id && i.status === 'answered' && i.followup).length};
@@ -597,9 +597,24 @@ function agentOf(s, items) {
 const archivable = (a) => !a.open && !a.held && !['active', 'waiting'].includes(a.state);
 // Put away, and nothing since: it comes back by itself once it runs or has something open.
 const putAway = (a) => a.archived > 0 && archivable(a) && (a.last || 0) <= a.archived;
-// Putting away is only a view, so it is never asked about: Archived brings it back. The live
-// feed carries the change to the dashboard and the pill alike.
-const archiveAgents = (ids, archived) => api('sessions/archive', {ids, archived}).catch((error) => toast(error.message));
+// Putting away is only a view, so it is never asked about: Archived brings it back. It happens on
+// the page at once, then is saved; the live feed carries it to the other page. If saving fails, the
+// agent comes back and you are told.
+function archiveAgents(ids, archived) {
+  const at = archived ? Date.now() / 1000 : 0, before = new Map();
+  for (const s of state.sessions) {
+    if (ids.includes(s.id)) {
+      before.set(s.id, s.archived || 0);
+      s.archived = at;
+    }
+  }
+  render();
+  return api('sessions/archive', {ids, archived}).catch((error) => {
+    for (const s of state.sessions) if (before.has(s.id)) s.archived = before.get(s.id);
+    render();
+    toast(error.message);
+  });
+}
 // A folder's fold is kept by a short hash of its path, so the path itself never reaches the page.
 function folderKey(path, archived = false) {
   let h = 5381;
@@ -611,18 +626,29 @@ function toggleAgentFold(key) {
   else agentFolds.add(key);
   remember('hq-agent-folds', [...agentFolds]);
 }
-// When an agent last ran: running now is the most recent of all.
-const lately = (a) => (a.state === 'active' ? Infinity : Math.max(a.last || 0, a.state === 'waiting' ? a.since || 0 : 0));
-const byLately = (x, y) => (lately(y) - lately(x)) || ((y.since || 0) - (x.since || 0));
+// When an agent last ran, in bands coarse enough that the list holds still: running, waiting on
+// you, or done in the last ten minutes is now; then within the hour, the day, and before. An agent
+// at work goes busy and idle every turn, so exact times would swap rows and folders constantly.
+const RAN_BANDS = [600, 3600, 86400];
+function ranBand(a, now) {
+  if (a.state === 'active' || a.state === 'waiting') return 0;
+  const band = RAN_BANDS.findIndex((limit) => now - (a.last || 0) < limit);
+  return band === -1 ? RAN_BANDS.length : band;
+}
+// Now holds a fixed order, the newest conversation first; earlier bands go by when each last ran,
+// which no longer changes. A folder takes the place of its first agent.
+const byLately = (now) => (x, y) => (ranBand(x, now) - ranBand(y, now))
+  || (ranBand(x, now) === 0 ? (y.created || 0) - (x.created || 0) : (y.last || 0) - (x.last || 0))
+  || String(x.id).localeCompare(String(y.id));
 function agentFolders(sessions, items, now = Date.now() / 1000) {
-  const everyone = sessions.map((s) => agentOf(s, items));
-  const archived = everyone.filter(putAway).sort(byLately), all = everyone.filter((a) => !putAway(a));
+  const everyone = sessions.map((s) => agentOf(s, items)), byLatelyNow = byLately(now);
+  const archived = everyone.filter(putAway).sort(byLatelyNow), all = everyone.filter((a) => !putAway(a));
   const recent = (a) => Boolean(a.last) && now - a.last < AGENT_WINDOW;
   // Running and waiting on you always show; the rest while they ran in the last day. No live
   // signal is never shown as finished: only that it was seen running lately.
-  const shown = all.filter((a) => ['active', 'waiting'].includes(a.state) || recent(a)).sort(byLately);
-  const quiet = all.filter((a) => !shown.includes(a)).sort(byLately);
-  // Each folder lists its agents by when they last ran, and takes the place of its most recent one.
+  const shown = all.filter((a) => ['active', 'waiting'].includes(a.state) || recent(a)).sort(byLatelyNow);
+  const quiet = all.filter((a) => !shown.includes(a)).sort(byLatelyNow);
+  // Each folder lists its agents in that order, and takes the place of its first one.
   const group = (list) => {
     const folders = new Map();
     for (const a of list) {
@@ -1544,7 +1570,7 @@ function applyState(next) {
     seenInstances.add(next.instance);
   }
   setLive(true);
-  const signature = JSON.stringify({items: next.items, usage: next.usage, sessions: next.sessions.map((s) => [s.id, s.name, s.provider, s.connection, s.route, s.activity?.state, s.activity?.source])});
+  const signature = JSON.stringify({items: next.items, usage: next.usage, sessions: next.sessions.map((s) => [s.id, s.name, s.provider, s.connection, s.route, s.activity?.state, s.activity?.source, s.archived])});
   state = next;
   if (signature !== snapshotSignature) {
     snapshotSignature = signature;
@@ -1673,8 +1699,8 @@ function bind() {
   const shelf = main.querySelector('[data-archived]');
   if (shelf) shelf.onclick = () => {showArchived = !showArchived; render();};
   main.querySelectorAll('[data-agent-fold]').forEach((el) => (el.onclick = () => {toggleAgentFold(el.dataset.agentFold); render();}));
-  main.querySelectorAll('[data-archive]').forEach((el) => (el.onclick = () => archiveAgents(el.dataset.archive.split(' '), true).then(() => refresh(true))));
-  main.querySelectorAll('[data-unarchive]').forEach((el) => (el.onclick = () => archiveAgents([el.dataset.unarchive], false).then(() => refresh(true))));
+  main.querySelectorAll('[data-archive]').forEach((el) => (el.onclick = () => archiveAgents(el.dataset.archive.split(' '), true)));
+  main.querySelectorAll('[data-unarchive]').forEach((el) => (el.onclick = () => archiveAgents([el.dataset.unarchive], false)));
   const more = main.querySelector('[data-more]');
   if (more) more.onclick = () => {doneLimit += 200; render();};
   const menu = $('#menu');

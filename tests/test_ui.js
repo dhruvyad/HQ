@@ -385,9 +385,9 @@ const clockNow = Math.floor(Date.now() / 1000); // ago() reads the real clock
 context.agentSessions = [
   {id: 'c:old', name: 'Old <chat>', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'idle'}, last_active: clockNow - 3 * 86400},
   {id: 'c:done', name: 'Docs pass', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'idle'}, last_active: clockNow - 2 * 3600},
-  {id: 'x:run', name: 'Release build', provider: 'codex', cwd: '/Users/someone/code/lantern/', activity: {state: 'active', source: 'codex-live', since: clockNow - 65}, last_active: clockNow},
-  {id: 'c:bg', name: 'Research with subagents', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'active', source: 'background', since: clockNow - 3725}, last_active: clockNow},
-  {id: 'c:wait', name: 'Asks you first', provider: 'claude-code', cwd: '/Users/someone/code/site', activity: {state: 'waiting', since: clockNow - 30}, last_active: clockNow - 40},
+  {id: 'x:run', name: 'Release build', provider: 'codex', cwd: '/Users/someone/code/lantern/', activity: {state: 'active', source: 'codex-live', since: clockNow - 65}, last_active: clockNow, created: clockNow - 100},
+  {id: 'c:bg', name: 'Research with subagents', provider: 'claude-code', cwd: '/Users/someone/code/harbor', activity: {state: 'active', source: 'background', since: clockNow - 3725}, last_active: clockNow, created: clockNow - 200},
+  {id: 'c:wait', name: 'Asks you first', provider: 'claude-code', cwd: '/Users/someone/code/site', activity: {state: 'waiting', since: clockNow - 30}, last_active: clockNow - 40, created: clockNow - 300},
   {id: 'c:nosig', name: 'No signal', provider: 'claude-code', cwd: '/Users/someone/code/site', activity: {state: 'unknown'}, last_active: clockNow - 600},
   {id: 'c:nofolder', name: 'Desktop chat', provider: 'claude-desktop', activity: {state: 'idle'}, last_active: clockNow - 1200},
 ];
@@ -422,20 +422,30 @@ assert.equal(run("agentSide({you: 2, open: 3})"), '<b>2</b> for you');
 assert.equal(run("agentSide({you: 0, open: 3})"), '3 open');
 assert.equal(run("folderName('/Users/someone/code/HQ/')"), 'HQ');
 assert.equal(run("folderName('')"), 'No folder');
-// Within a folder, by when each last ran: running now, then the most recent, whatever its state.
-// Waiting on you counts from when it began waiting.
+// Within a folder, by when each last ran, in bands that hold still: running, waiting on you or done
+// in the last ten minutes is now, in a fixed order, the newest conversation first; then within the
+// hour, the day and before, by when each last ran.
 const at = (minutes) => clockNow - minutes * 60;
 context.recencySessions = [
-  {id: 'r:wait', name: 'Waiting an hour', provider: 'codex', cwd: '/c/noclick', activity: {state: 'waiting', since: at(60)}, last_active: at(61)},
-  {id: 'r:done', name: 'Finished 5m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'idle'}, last_active: at(5)},
-  {id: 'r:nosig', name: 'Seen 1m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'unknown'}, last_active: at(1)},
-  {id: 'r:run', name: 'Running', provider: 'codex', cwd: '/c/noclick', activity: {state: 'active', since: at(30)}, last_active: clockNow},
-  {id: 'r:other', name: 'Elsewhere, 2m ago', provider: 'codex', cwd: '/c/harbor', activity: {state: 'idle'}, last_active: at(2)},
-  {id: 'r:ended', name: 'Ended 3m ago', provider: 'codex', cwd: '/c/ledger', activity: {state: 'offline'}, last_active: at(3)},
+  {id: 'r:wait', name: 'Waiting an hour', provider: 'codex', cwd: '/c/noclick', activity: {state: 'waiting', since: at(60)}, last_active: at(61), created: at(300)},
+  {id: 'r:done', name: 'Finished 5m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'idle'}, last_active: at(5), created: at(200)},
+  {id: 'r:nosig', name: 'Seen 1m ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'unknown'}, last_active: at(1), created: at(100)},
+  {id: 'r:run', name: 'Running', provider: 'codex', cwd: '/c/noclick', activity: {state: 'active', since: at(30)}, last_active: clockNow, created: at(50)},
+  {id: 'r:other', name: 'Elsewhere, 2m ago', provider: 'codex', cwd: '/c/harbor', activity: {state: 'idle'}, last_active: at(2), created: at(400)},
+  {id: 'r:ended', name: 'Ended 3m ago', provider: 'codex', cwd: '/c/ledger', activity: {state: 'offline'}, last_active: at(3), created: at(500)},
+  {id: 'r:hour', name: 'Done half an hour ago', provider: 'codex', cwd: '/c/noclick', activity: {state: 'idle'}, last_active: at(30), created: at(20)},
+  {id: 'r:day', name: 'Done this morning', provider: 'codex', cwd: '/c/noclick', activity: {state: 'idle'}, last_active: at(300), created: at(10)},
 ];
-const recency = JSON.parse(run(`JSON.stringify(agentFolders(recencySessions, [], ${clockNow}))`));
-assert.deepEqual(recency.groups.map((f) => [f.name, f.agents.map((a) => a.id)]),
-  [['noclick', ['r:run', 'r:nosig', 'r:done', 'r:wait']], ['harbor', ['r:other']], ['ledger', ['r:ended']]]);
+const order = (sessions) => JSON.parse(run(`JSON.stringify(agentFolders(${JSON.stringify(sessions)}, [], ${clockNow}).groups.map((f) => [f.name, f.agents.map((a) => a.id)]))`));
+const settled = [['noclick', ['r:run', 'r:nosig', 'r:done', 'r:wait', 'r:hour', 'r:day']], ['harbor', ['r:other']], ['ledger', ['r:ended']]];
+assert.deepEqual(order(context.recencySessions), settled);
+// An agent pausing between turns, or one starting a new turn, keeps its place: nothing flips.
+const between = context.recencySessions.map((s) => s.id === 'r:run' ? {...s, activity: {state: 'idle'}, last_active: clockNow}
+  : s.id === 'r:nosig' ? {...s, activity: {state: 'active', since: clockNow}, last_active: clockNow} : s);
+assert.deepEqual(order(between), settled);
+// Only crossing a band moves it: done eleven minutes ago, it steps behind the ones at work now.
+assert.deepEqual(order(context.recencySessions.map((s) => s.id === 'r:nosig' ? {...s, last_active: at(11)} : s))[0][1],
+  ['r:run', 'r:done', 'r:wait', 'r:nosig', 'r:hour', 'r:day']);
 // Archived: put away until it runs again, has something open, or waits on you. Only a view.
 const archivedAt = at(10);
 const shelf = (changes, items = []) => {
@@ -446,10 +456,10 @@ const shelf = (changes, items = []) => {
 let put = shelf({});
 // Running, waiting on you, and anything that ran after it was archived stay; the rest are put away.
 assert.deepEqual(put.groups.flatMap((f) => f.agents.map((a) => a.id)), ['r:run', 'r:nosig', 'r:done', 'r:wait', 'r:other', 'r:ended']);
-assert.equal(put.archivedCount, 0);
+assert.deepEqual(put.archived.map((f) => [f.name, f.agents.map((a) => a.id)]), [['noclick', ['r:hour', 'r:day']]]);
 put = shelf({'r:nosig': {last_active: at(20)}, 'r:done': {last_active: at(25)}, 'r:other': {last_active: at(15)}});
-assert.deepEqual(put.archived.map((f) => [f.name, f.agents.map((a) => a.id)]), [['harbor', ['r:other']], ['noclick', ['r:nosig', 'r:done']]]);
-assert.equal(put.archivedCount, 3);
+assert.deepEqual(put.archived.map((f) => [f.name, f.agents.map((a) => a.id)]), [['harbor', ['r:other']], ['noclick', ['r:nosig', 'r:done', 'r:hour', 'r:day']]]);
+assert.equal(put.archivedCount, 5);
 assert.ok(!put.groups.flatMap((f) => f.agents).some((a) => ['r:nosig', 'r:done', 'r:other'].includes(a.id)));
 // Something open, or a decision of yours it holds, brings it back.
 put = shelf({'r:done': {last_active: at(20)}}, [item({id: 'o1', session_id: 'r:done', title: 'Check it'})]);
@@ -478,6 +488,12 @@ run("agentFolds.clear()");
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(html.includes('data-archive="c:nofolder"') && !html.includes('data-archive="c:wait"') && !html.includes('data-archive="x:run"'));
 assert.ok(!html.includes(' archived')); // nothing archived, so no Archived fold
+// Archiving shows at once, before the server answers; the feed's later copy of it also repaints.
+run(`realApi = api; api = () => new Promise(() => {}); realRender = render; render = () => {}`);
+run(`archiveAgents(['c:nofolder'], true)`);
+html = run('agentsPanelHTML(attention(), true)');
+assert.ok(!html.includes('data-agent="c:nofolder"') && html.includes('data-archived') && html.includes('1 archived'));
+run(`state.sessions.find((s) => s.id === 'c:nofolder').archived = 0; api = realApi; render = realRender`);
 run("agentOpen = 'c:done'");
 html = run('agentsPanelHTML(attention(), true)');
 assert.ok(html.includes('data-back') && html.includes('Docs pass') && html.includes('<dt>Folder</dt><dd>harbor</dd>'));
