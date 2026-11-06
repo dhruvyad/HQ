@@ -1426,6 +1426,18 @@ assert.ok(html.includes('data-u="add" data-tool="claude"') && html.includes('<sp
 assert.ok(run("usageCardHTML(usageModel(accountsRaw), 'codex')").includes('Open Codex sessions keep the old account until restarted.'));
 html = run(`usageCardHTML(usageModel(null, {claude: {windows: [{name: '5-hour', left: 33}], as_of: ${now - 60}}}), 'claude')`);
 assert.ok(!html.includes('data-u="use"') && !html.includes('data-u="add"') && html.includes('33% left')); // no API: readings only
+// A saved account read at 0% before its weekly reset, with a login HQ can no longer read with:
+// once the reset time passes it is full again, says when it reset, and keeps its as-of line.
+context.resetRaw = {...context.accountsRaw, claude: {...context.accountsRaw.claude, accounts: [context.accountsRaw.claude.accounts[0],
+  acct('c5', 'spent@example.com', 'Max', {state: 'expired', usage: {windows: [{name: 'weekly', left: 0, resets_at: now - 3600}], as_of: now - 5 * 3600}})]}};
+html = run("usageCardHTML(usageModel(resetRaw), 'claude')").split('data-acct="c5"')[1];
+assert.ok(html.includes('weekly 100% left</span> · <span class="u-part">reset 1h ago</span>') && html.includes('As of 5h ago'));
+assert.ok(html.includes('aria-label="100% left"') && !html.includes('0m 00s') && !html.includes('class="bad"'));
+// The pill's own circle does the same for the account at work.
+run(`savedUsage = state.usage; state.usage = {claude: {windows: [{name: '5-hour', left: 2, resets_at: ${now - 60}}, {name: 'weekly', left: 40, resets_at: ${now + 86400}}], as_of: ${now - 7200}}}`);
+assert.deepEqual(JSON.parse(run("JSON.stringify(readUsage('claude', 'Claude'))")).value, 40);
+assert.equal(run("readUsage('claude', 'Claude').low"), false);
+run('state.usage = savedUsage');
 // Steps in place: add, waiting with its spinner (browser or Terminal), sign in again, remove.
 html = run(`usageCardHTML(usageModel(accountsRaw), 'claude', {kind: 'add', tool: 'claude', key: null, step: 'intro'})`);
 assert.ok(html.includes('Add a Claude account') && html.includes('Nothing changes for Claude Code until you switch to it.') && !html.includes('data-u="add"'));
