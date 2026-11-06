@@ -1096,11 +1096,14 @@ function slideList(motion) {
 // While the list stays put, agents that move by themselves glide to their new place. After your own
 // change the next paint sets stillNext, so nothing springs under your hand.
 let stillNext = false;
-const agentTops = () => new Map([...document.querySelectorAll('#main [data-agent]')].map((el) => [el.dataset.agent, el.getBoundingClientRect().top]));
+// Where a row sits in the list, not on screen: each paint rebuilds the list, which starts unscrolled
+// until the scroll is put back, so screen positions would make every row spring by the scroll.
+const listTop = (el) => el.getBoundingClientRect().top + (el.closest('.f-rows')?.scrollTop || 0);
+const agentTops = () => new Map([...document.querySelectorAll('#main [data-agent]')].map((el) => [el.dataset.agent, listTop(el)]));
 function glideAgents(before) {
   if (!before || calm()) return;
   for (const el of document.querySelectorAll('#main [data-agent]')) {
-    const was = before.get(el.dataset.agent), at = el.getBoundingClientRect().top;
+    const was = before.get(el.dataset.agent), at = listTop(el);
     if (was === undefined) el.animate([{opacity: 0, transform: 'translateY(6px)'}, {opacity: 1, transform: 'none'}], {duration: 380, easing: spring('--f-soft')});
     else if (Math.abs(was - at) > 1) el.animate([{transform: `translateY(${was - at}px)`}, {transform: 'none'}], {duration: 520, easing: spring('--f-soft')});
   }
