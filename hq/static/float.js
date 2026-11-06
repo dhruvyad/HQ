@@ -37,21 +37,23 @@ const BURST_WINDOW = 350, FOLD_FOR = 640, ROLL_AFTER = 260, HOLD_TICK = 100;
 // Agents flip between busy and idle on every turn, so a change has to hold before it is news.
 const AGENT_START_HOLD = 3, AGENT_STOP_HOLD = 8;
 const CONTROL_OPTION = 6144;
+// Each action can have several keys. These work from any app.
 const SHORTCUTS = {
-  toggle: {name: 'Open or minimize the panel', key: {keyCode: 4, modifiers: CONTROL_OPTION, label: '⌃⌥H'}},
-  next: {name: 'Next item', key: {keyCode: 38, modifiers: CONTROL_OPTION, label: '⌃⌥J'}},
-  previous: {name: 'Previous item', key: {keyCode: 40, modifiers: CONTROL_OPTION, label: '⌃⌥K'}},
-  dashboard: {name: 'Open the dashboard', key: {keyCode: 2, modifiers: CONTROL_OPTION, label: '⌃⌥D'}},
-  customize: {name: 'Customize the pill', key: null},
+  toggle: {name: 'Open or minimize the panel', keys: [{keyCode: 4, modifiers: CONTROL_OPTION, label: '⌃⌥H'}]},
+  next: {name: 'Next item', keys: [{keyCode: 38, modifiers: CONTROL_OPTION, label: '⌃⌥J'}]},
+  previous: {name: 'Previous item', keys: [{keyCode: 40, modifiers: CONTROL_OPTION, label: '⌃⌥K'}]},
+  dashboard: {name: 'Open the dashboard', keys: [{keyCode: 2, modifiers: CONTROL_OPTION, label: '⌃⌥D'}]},
+  customize: {name: 'Customize the pill', keys: []},
 };
-// Keys inside the open panel, separate from the hotkeys that work from any app. Enter also
-// opens and Escape also goes back; these four can be changed or cleared.
+// Keys inside the open panel, separate from the hotkeys that work from any app. The defaults are
+// what already worked: Enter opens as → does, and Escape goes back as ← does.
 const PANEL_KEYS = {
-  previous: {name: 'Previous', key: 'ArrowUp'},
-  next: {name: 'Next', key: 'ArrowDown'},
-  open: {name: 'Open', key: 'ArrowRight'},
-  back: {name: 'Back', key: 'ArrowLeft'},
+  previous: {name: 'Previous', keys: ['ArrowUp']},
+  next: {name: 'Next', keys: ['ArrowDown']},
+  open: {name: 'Open', keys: ['ArrowRight', 'Enter']},
+  back: {name: 'Back', keys: ['ArrowLeft', 'Escape']},
 };
+const KEYS_PER_ACTION = 8;
 const NOTIFY = {items: 'Items added or removed', agents: 'Agents starting or stopping', usage: 'Usage running low', stuck: 'Decisions an agent did not act on'};
 const USAGE_LOW = 10, USAGE_STALE = 3600;
 ICONS.more = '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>';
@@ -116,17 +118,27 @@ function moveCircle(list, id, delta) {
 let floatOpen = false, dock = DEFAULT_DOCK, display = null, drag = null, placed = '';
 let swallowClick = false, customizing = false, hovering = false, circles = [...DEFAULT_CIRCLES];
 let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
-let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [];
+// Recording is {action, index}: index is the chip being re-recorded, or null for a new one.
+let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [], keyConflict = null;
 let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
 let lastItems = null, lastUsage = null, lastStuck = null, pending = [], notice = null;
 let listView = 'needs', agentOpen = null, agentsAll = false, listMotion = null, fallbackIndex = null, pendingScroll = null;
 const agentMemory = new Map();
 
+// A global key is its key code and modifiers; its label is only how it reads.
+function hotkeyId(key) {return `${key.keyCode}:${key.modifiers}`;}
+function sameHotkey(a, b) {return hotkeyId(a) === hotkeyId(b);}
+// Saved keys, as lists. One key from before becomes a list of one, and null (none) an empty list;
+// nothing saved means the defaults. Junk and repeats go, and a key stays on its first action only.
 function cleanShortcuts(saved) {
-  const valid = (key) => Number.isInteger(key?.keyCode) && Number.isInteger(key?.modifiers) && typeof key?.label === 'string';
+  const valid = (key) => Number.isInteger(key?.keyCode) && Number.isInteger(key?.modifiers) && typeof key?.label === 'string' && key.label.length <= 40;
+  const taken = new Set();
   return Object.fromEntries(Object.entries(SHORTCUTS).map(([action, entry]) => {
     const chosen = saved?.[action];
-    return [action, chosen === null ? null : valid(chosen) ? chosen : entry.key];
+    const list = chosen === undefined ? entry.keys : chosen === null ? [] : Array.isArray(chosen) ? chosen : valid(chosen) ? [chosen] : entry.keys;
+    const keys = list.filter(valid).map(({keyCode, modifiers, label}) => ({keyCode, modifiers, label}))
+      .filter((key) => !taken.has(hotkeyId(key)) && Boolean(taken.add(hotkeyId(key))));
+    return [action, keys.slice(0, KEYS_PER_ACTION)];
   }));
 }
 // A key as one string: modifiers in a fixed order, then the key, such as Alt+ArrowLeft or k.
@@ -136,21 +148,50 @@ function keyCombo(e) {
 }
 const KEY_LABELS = {ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Enter: '↵', Escape: 'Esc', Tab: '⇥', ' ': 'Space', Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘'};
 const keyLabel = (combo) => combo.split('+').map((part) => KEY_LABELS[part] || part.toUpperCase()).join('');
+// The same for keys inside the panel. One key from before also had Enter (Open) or Escape (Back)
+// working beside it, so those join it.
 function cleanPanelKeys(saved) {
   const valid = (key) => typeof key === 'string' && key.length > 0 && key.length <= 40;
+  const taken = new Set();
   return Object.fromEntries(Object.entries(PANEL_KEYS).map(([action, entry]) => {
     const chosen = saved?.[action];
-    return [action, chosen === null ? null : valid(chosen) ? chosen : entry.key];
+    let list = chosen === undefined ? entry.keys : chosen === null ? [] : Array.isArray(chosen) ? chosen : valid(chosen) ? [chosen] : entry.keys;
+    // One key or none from before: Enter (Open) and Escape (Back) always worked beside it, so they stay.
+    if ((typeof chosen === 'string' || chosen === null) && (action === 'open' || action === 'back')) list = [...list, action === 'open' ? 'Enter' : 'Escape'];
+    return [action, list.filter(valid).filter((key) => !taken.has(key) && Boolean(taken.add(key))).slice(0, KEYS_PER_ACTION)];
   }));
 }
 // What a key does in the open panel, wherever focus is not in a text box.
-function panelAction(combo, mode) {
-  const bound = Object.keys(panelKeys).find((action) => panelKeys[action] === combo);
-  if (bound) return bound;
-  if (combo === 'Enter' && mode === 'list') return 'open';
-  if (combo === 'Escape' && mode === 'item') return 'back';
+function panelAction(combo) {
+  return Object.keys(panelKeys).find((action) => panelKeys[action].includes(combo)) || null;
+}
+// Which action holds a key already.
+function keyOwner(chosen, key, same = (a, b) => a === b) {
+  for (const [action, keys] of Object.entries(chosen)) {
+    const at = keys.findIndex((k) => same(k, key));
+    if (at >= 0) return {action, at};
+  }
   return null;
 }
+// A key onto an action: in place of the chip being re-recorded, or after the others. Taken from
+// any other action that had it, so no key ever does two things.
+function placeKey(chosen, action, index, key, same = (a, b) => a === b) {
+  const was = Number.isInteger(index) ? chosen[action][index] : null;
+  const next = Object.fromEntries(Object.entries(chosen).map(([name, keys]) => [name, keys.filter((k) => !same(k, key))]));
+  const at = was ? next[action].findIndex((k) => same(k, was)) : -1;
+  if (at >= 0) next[action][at] = key;
+  else next[action].push(key);
+  next[action] = next[action].slice(0, KEYS_PER_ACTION);
+  return next;
+}
+const dropKey = (chosen, action, index) => ({...chosen, [action]: chosen[action].filter((_, n) => n !== index)});
+// Back to an action's own defaults, taking them from wherever else they went.
+function resetKeys(chosen, action, defaults, same = (a, b) => a === b) {
+  const wanted = defaults[action].keys;
+  return Object.fromEntries(Object.entries(chosen).map(([name, keys]) => [name, name === action ? [...wanted] : keys.filter((k) => !wanted.some((w) => same(w, k)))]));
+}
+const keysAreDefault = (chosen, action, defaults, same = (a, b) => a === b) =>
+  chosen[action].length === defaults[action].keys.length && chosen[action].every((k, n) => same(k, defaults[action].keys[n]));
 // Sizes you chose by dragging an edge, one for the list and one for an item. Unset means the
 // default; a height is how tall the box may grow, and it still hugs shorter content.
 function cleanSizes(saved) {
@@ -193,9 +234,9 @@ function resized(start, edge, dx, dy, name, limits) {
 function cleanNotify(saved) {
   return Object.fromEntries(Object.keys(NOTIFY).map((kind) => [kind, saved?.[kind] !== false]));
 }
-// Bindings the window should hold, in the shape it registers.
+// Bindings the window should hold, one per key, in the shape it registers.
 function hotkeyList(chosen) {
-  return Object.entries(chosen).filter(([, key]) => key).map(([action, key]) => ({action, keyCode: key.keyCode, modifiers: key.modifiers}));
+  return Object.entries(chosen).flatMap(([action, keys]) => keys.map((key) => ({action, keyCode: key.keyCode, modifiers: key.modifiers})));
 }
 
 // What changed. These run on the snapshots, so they say what happened whoever did it.
@@ -441,22 +482,69 @@ function notifyHTML() {
   const rows = Object.entries(NOTIFY).map(([kind, name]) => `<div class="f-set"><button type="button" class="check" role="checkbox" data-notify="${kind}" aria-checked="${notify[kind]}"><span class="box">${icon('check')}</span><span>${esc(name)}</span></button></div>`).join('');
   return `<div class="f-section">Notify me about</div>${rows}`;
 }
-function shortcutsHTML() {
-  const rows = Object.entries(SHORTCUTS).map(([action, entry]) => {
-    const key = shortcuts[action], live = recording === action, failed = refused.includes(action);
-    const label = live ? 'Press keys…' : key?.label || 'Add';
-    return `<div class="f-key"><span>${esc(entry.name)}${failed ? '<small class="f-key-bad">Another app is using this</small>' : ''}</span><button type="button" class="f-cap ${live ? 'live' : ''} ${key ? '' : 'empty'}" data-record="${action}" aria-label="Change the shortcut for ${esc(entry.name)}">${esc(label)}</button></div>`;
+// A row of keys: the action, then its keys as chips. Clicking a chip records it again, its ×
+// (on hover or focus) or Delete removes it, the round + records another, and Reset brings back
+// the defaults. With no keys, a dashed Add. A key another action has asks before it moves.
+function keyRowHTML(kind, action, name, keys, defaults, same) {
+  const global = kind === 'global', attr = global ? 'data-record' : 'data-record-panel', live = global ? recording : recordingPanel;
+  const label = (key) => (global ? key.label : keyLabel(key));
+  const now = live?.action === action ? live : null;
+  const chips = keys.map((key, n) => {
+    const on = now?.index === n, bad = global && (refused.includes(hotkeyId(key)) || refused.includes(action));
+    return `<span class="f-chip ${bad ? 'bad' : ''}"><button type="button" class="f-cap ${on ? 'live' : ''}" ${attr}="${action}" data-index="${n}" aria-label="${esc(`${label(key)} for ${name}${bad ? ', in use by another app' : ''}: click to change, Delete to remove`)}"${bad ? ' title="In use by another app"' : ''}>${esc(on ? 'Press keys…' : label(key))}</button><button type="button" class="f-chip-x" tabindex="-1" data-drop-key="${kind}" data-action="${action}" data-index="${n}" aria-label="${esc(`Remove ${label(key)} from ${name}`)}">${icon('x', 'sm')}</button></span>`;
   }).join('');
-  return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. While recording, Delete clears a shortcut and Escape cancels.</p>`;
+  // A key macOS refused is outlined on its chip and named under the row, so the chips stay compact.
+  const refusedKeys = global ? keys.filter((key) => refused.includes(hotkeyId(key)) || refused.includes(action)) : [];
+  const taken = refusedKeys.length ? `<small class="f-key-bad">${esc(refusedKeys.map(label).join(', '))} ${refusedKeys.length === 1 ? 'is' : 'are'} in use by another app</small>` : '';
+  const adding = now && now.index === null;
+  const more = keys.length
+    ? `<button type="button" class="icon-btn f-plus ${adding ? 'live' : ''}" ${attr}="${action}" data-index="new" aria-label="${esc(`Add another key for ${name}`)}" title="Add another key">${adding ? '<span class="f-plus-live">Press keys…</span>' : icon('plus', 'sm')}</button>`
+    : `<button type="button" class="f-cap empty ${adding ? 'live' : ''}" ${attr}="${action}" data-index="new" aria-label="${esc(`Add a key for ${name}`)}">${adding ? 'Press keys…' : 'Add'}</button>`;
+  const reset = keysAreDefault(global ? shortcuts : panelKeys, action, defaults, same) ? '' : `<button type="button" class="f-reset" data-reset-key="${kind}" data-action="${action}">Reset</button>`;
+  const c = keyConflict?.kind === kind && keyConflict.action === action ? keyConflict : null;
+  const note = c ? `<div class="f-conflict" role="alert"><span>${esc(label(c.key))} is used by ${esc(defaults[c.from].name)}. Move it here?</span><button type="button" class="f-reset" data-move-key>Move</button><button type="button" class="f-reset" data-move-cancel>Cancel</button></div>` : '';
+  return `<div class="f-key"><span class="f-key-name">${esc(name)}${reset}</span><span class="f-chips">${chips}${more}</span>${taken}${note}</div>`;
+}
+function shortcutsHTML() {
+  const rows = Object.entries(SHORTCUTS).map(([action, entry]) => keyRowHTML('global', action, entry.name, shortcuts[action], SHORTCUTS, sameHotkey)).join('');
+  return `<div class="f-section">Keyboard shortcuts</div>${rows}<p class="f-hint">These work from any app. While recording, Delete clears a key and Escape cancels.</p>`;
 }
 function panelKeysHTML() {
-  const rows = Object.entries(PANEL_KEYS).map(([action, entry]) => {
-    const key = panelKeys[action], live = recordingPanel === action;
-    const label = live ? 'Press a key…' : key ? keyLabel(key) : 'Add';
-    return `<div class="f-key"><span>${esc(entry.name)}</span><button type="button" class="f-cap ${live ? 'live' : ''} ${key ? '' : 'empty'}" data-record-panel="${action}" aria-label="Change the key for ${esc(entry.name)}">${esc(label)}</button></div>`;
-  }).join('');
-  const changed = Object.entries(PANEL_KEYS).some(([action, entry]) => panelKeys[action] !== entry.key);
-  return `<div class="f-section">Keys inside the panel</div>${rows}<p class="f-hint">While the panel is open. Enter also opens and Escape also goes back. While recording, Delete clears a key and Escape cancels.${changed ? ' <button type="button" class="f-reset" data-reset-panel-keys>Reset to the arrows</button>' : ''}</p>`;
+  const rows = Object.entries(PANEL_KEYS).map(([action, entry]) => keyRowHTML('panel', action, entry.name, panelKeys[action], PANEL_KEYS)).join('');
+  return `<div class="f-section">Keys inside the panel</div>${rows}<p class="f-hint">While the panel is open. While recording, Delete clears a key and Escape cancels.</p>`;
+}
+// Recording finished with a key: onto its action, unless another action has it, which asks first.
+function recordedKey(kind, at, key) {
+  const global = kind === 'global', chosen = global ? shortcuts : panelKeys, same = global ? sameHotkey : undefined;
+  const owner = keyOwner(chosen, key, same);
+  if (owner && owner.action !== at.action) {
+    keyConflict = {kind, action: at.action, index: at.index, key, from: owner.action};
+    return;
+  }
+  keyConflict = null;
+  if (global) shortcuts = placeKey(shortcuts, at.action, at.index, key, sameHotkey);
+  else panelKeys = placeKey(panelKeys, at.action, at.index, key);
+  saveSettings();
+}
+function moveKey() {
+  const c = keyConflict;
+  if (!c) return;
+  keyConflict = null;
+  if (c.kind === 'global') shortcuts = placeKey(shortcuts, c.action, c.index, c.key, sameHotkey);
+  else panelKeys = placeKey(panelKeys, c.action, c.index, c.key);
+  saveSettings();
+  if (c.kind === 'global') applyShortcuts();
+  render();
+}
+function dropChip(kind, action, index) {
+  if (kind === 'global') {shortcuts = dropKey(shortcuts, action, index); applyShortcuts();}
+  else panelKeys = dropKey(panelKeys, action, index);
+  keyConflict = null;
+  saveSettings();
+  render();
+  // Focus stays in the row: on the chip that took its place, or the + or Add.
+  const row = [...document.querySelectorAll(`[${kind === 'global' ? 'data-record' : 'data-record-panel'}="${action}"]`)];
+  (row[Math.min(index, row.length - 1)] || row.at(-1))?.focus();
 }
 function floatListHTML(items, live = liveHealthy) {
   const f = needsFilter(), stuck = stuckItems().length;
@@ -694,14 +782,14 @@ function recordPanelKey(e) {
   e.preventDefault();
   e.stopImmediatePropagation();
   if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
-  const action = recordingPanel;
+  const at = recordingPanel;
   recordingPanel = null;
   if (e.key === 'Escape') return render();
-  const combo = ['Backspace', 'Delete'].includes(e.key) ? null : keyCombo(e);
-  // One key does one thing: taking it from another action leaves that one unset.
-  for (const other of Object.keys(panelKeys)) if (combo && other !== action && panelKeys[other] === combo) panelKeys[other] = null;
-  panelKeys = {...panelKeys, [action]: combo};
-  saveSettings();
+  if (['Backspace', 'Delete'].includes(e.key)) {
+    if (Number.isInteger(at.index)) {panelKeys = dropKey(panelKeys, at.action, at.index); saveSettings();}
+    return render();
+  }
+  recordedKey('panel', at, keyCombo(e));
   render();
 }
 // Moving between lists slides the way the header reads: Agents and an agent's page sit to the right.
@@ -1609,9 +1697,11 @@ function receive(message) {
     refused = message.failed || [];
     if (customizing) render();
   } else if (message.type === 'keyRecorded') {
+    const at = recording?.action === message.action ? recording : {action: message.action, index: null};
     recording = null;
-    if (message.key || message.cleared) shortcuts = {...shortcuts, [message.action]: message.key || null};
-    saveSettings();
+    if (message.cleared && Number.isInteger(at.index)) {shortcuts = dropKey(shortcuts, at.action, at.index); saveSettings();}
+    else if (message.key) recordedKey('global', at, message.key);
+    // Recording stood every shortcut down; this puts them back, with whatever changed.
     applyShortcuts();
     render();
   } else if (message.type === 'notice') enqueue([message.event]);
@@ -1693,8 +1783,9 @@ function bootFloat() {
       saveSettings();
       render();
     } else if (record) {
-      recording = record.dataset.record;
-      native({type: 'recordKey', action: recording});
+      recording = {action: record.dataset.record, index: record.dataset.index === 'new' || record.dataset.index === undefined ? null : Number(record.dataset.index)};
+      keyConflict = null;
+      native({type: 'recordKey', action: recording.action});
       render();
     }
     else if (e.target.closest('[data-customized]')) setOpen(false);
@@ -1709,8 +1800,23 @@ function bootFloat() {
       saveSettings();
       render();
     }
-    else if (e.target.closest('[data-record-panel]')) {recordingPanel = e.target.closest('[data-record-panel]').dataset.recordPanel; render();}
-    else if (e.target.closest('[data-reset-panel-keys]')) {panelKeys = cleanPanelKeys(); saveSettings(); render();}
+    else if (e.target.closest('[data-record-panel]')) {
+      const el = e.target.closest('[data-record-panel]');
+      recordingPanel = {action: el.dataset.recordPanel, index: el.dataset.index === 'new' ? null : Number(el.dataset.index)};
+      keyConflict = null;
+      render();
+    } else if (e.target.closest('[data-drop-key]')) {
+      const el = e.target.closest('[data-drop-key]');
+      dropChip(el.dataset.dropKey, el.dataset.action, Number(el.dataset.index));
+    } else if (e.target.closest('[data-reset-key]')) {
+      const el = e.target.closest('[data-reset-key]');
+      if (el.dataset.resetKey === 'global') {shortcuts = resetKeys(shortcuts, el.dataset.action, SHORTCUTS, sameHotkey); applyShortcuts();}
+      else panelKeys = resetKeys(panelKeys, el.dataset.action, PANEL_KEYS);
+      keyConflict = null;
+      saveSettings();
+      render();
+    } else if (e.target.closest('[data-move-key]')) moveKey();
+    else if (e.target.closest('[data-move-cancel]')) {keyConflict = null; render();}
     else if (e.target.closest('[data-agents-all]')) {agentsAll = true; render();}
     else if (e.target.closest('[data-agent-dashboard]')) openDashboard(href({page: 'agent', agent: e.target.closest('[data-agent-dashboard]').dataset.agentDashboard, lane: 'you', item: null}));
     else if (row) openItem(row.dataset.item);
@@ -1720,8 +1826,19 @@ function bootFloat() {
     }
   }, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
+    // Delete with a key chip focused removes that key.
+    if (customizing && !recording && !recordingPanel && ['Backspace', 'Delete'].includes(e.key)) {
+      const chip = e.target.closest?.('.f-cap[data-index]:not([data-index="new"])');
+      if (chip) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        dropChip(chip.dataset.record ? 'global' : 'panel', chip.dataset.record || chip.dataset.recordPanel, Number(chip.dataset.index));
+        return;
+      }
+    }
+    if (e.key !== 'Escape' || recordingPanel) return;
     if (drag) cancelDrag();
+    else if (customizing && keyConflict) {keyConflict = null; render();}
     else if (customizing) {customizing = false; render();}
     else if (floatOpen && !route.item && listView === 'agents' && heldEscape()) {/* the note or the sheet took it */}
     else if (floatOpen && !route.item && listView === 'needs' && needsEscape(e)) {/* the search or a menu took it */}

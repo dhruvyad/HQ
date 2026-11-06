@@ -533,17 +533,15 @@ const action = (key, mode) => run(`panelAction(${JSON.stringify(key)}, ${JSON.st
 assert.equal(action('ArrowUp', 'list'), 'previous');
 assert.equal(action('ArrowDown', 'list'), 'next');
 assert.equal(action('ArrowRight', 'list'), 'open');
-assert.equal(action('Enter', 'list'), 'open');
-assert.equal(action('Enter', 'item'), null); // in an item, Enter belongs to whatever has focus
+assert.equal(action('Enter', 'list'), 'open'); // a default now, beside →
 assert.equal(action('ArrowLeft', 'item'), 'back');
-assert.equal(action('Escape', 'item'), 'back');
-assert.equal(action('Escape', 'list'), null); // the list's Escape collapses the panel, as before
+assert.equal(action('Escape', 'item'), 'back'); // a default now, beside ←
 assert.equal(action('ArrowDown', 'item'), 'next');
-assert.deepEqual(JSON.parse(run("JSON.stringify(cleanPanelKeys({back: 'h', open: null, next: 42}))")), {previous: 'ArrowUp', next: 'ArrowDown', open: null, back: 'h'});
+assert.deepEqual(JSON.parse(run("JSON.stringify(cleanPanelKeys({back: 'h', open: null, next: 42}))")), {previous: ['ArrowUp'], next: ['ArrowDown'], open: ['Enter'], back: ['h', 'Escape']});
 run("panelKeys = cleanPanelKeys({back: 'h'})");
 assert.equal(action('h', 'item'), 'back');
 assert.equal(action('ArrowLeft', 'item'), null); // rebound, so the old key does nothing
-assert.equal(action('Escape', 'item'), 'back'); // Escape always goes back
+assert.equal(action('Escape', 'item'), 'back'); // it always went back, so it still does
 run('panelKeys = cleanPanelKeys()');
 // While typing, the arrows and Enter belong to the text, and Escape first leaves the box.
 run(`floatOpen = true; customizing = false; route.item = 'a1'; stepped = []; went = [];
@@ -829,22 +827,22 @@ assert.equal(run('METRICS.needs.read([{}, {}]).tag'), '3 need you');
 run('flying = 0');
 
 // Shortcuts: the same key opens and closes, and what you set survives.
-const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved ?? null)}))`));
-assert.equal(shortcut().toggle.label, '⌃⌥H');
-assert.equal(shortcut().customize, null); // nothing bound unless you ask
+const shortcut = (saved) => JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify(saved)}))`));
+assert.equal(shortcut().toggle[0].label, '⌃⌥H');
+assert.deepEqual(shortcut().customize, []); // nothing bound unless you ask
 const mine = {keyCode: 49, modifiers: 2048, label: '⌥Space'};
-assert.deepEqual(shortcut({toggle: mine}).toggle, mine);
-assert.equal(shortcut({toggle: null}).toggle, null); // cleared stays cleared
-assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle.label, '⌃⌥H'); // a broken value falls back
+assert.deepEqual(shortcut({toggle: mine}).toggle, [mine]); // one key from before is a list of one
+assert.deepEqual(shortcut({toggle: null}).toggle, []); // cleared stays cleared
+assert.equal(shortcut({toggle: {keyCode: 'H'}}).toggle[0].label, '⌃⌥H'); // a broken value falls back
 assert.ok(!('gone' in shortcut({gone: mine})));
-assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: ${JSON.stringify(mine)}, next: null}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
-assert.equal(new Set(Object.values(shortcut()).filter(Boolean).map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [${JSON.stringify(mine)}], next: []}))`)), [{action: 'toggle', keyCode: 49, modifiers: 2048}]);
+assert.equal(new Set(Object.values(shortcut()).flat().map((k) => `${k.keyCode}:${k.modifiers}`)).size, 4); // no two defaults collide
 assert.deepEqual(JSON.parse(run('JSON.stringify(cleanNotify({agents: false}))')), {stuck: true, items: true, agents: false, usage: true});
 html = run('shortcutsHTML()');
-assert.ok(html.includes('Open or minimize the panel') && html.includes('⌃⌥H') && html.includes('data-record="toggle"') && html.includes('>Add<'));
-run("recording = 'toggle'; refused = ['next']");
+assert.ok(html.includes('Open or minimize the panel') && html.includes('⌃⌥H') && html.includes('data-record="toggle" data-index="0"') && html.includes('>Add</button>'));
+run("recording = {action: 'toggle', index: 0}; refused = ['38:6144']");
 html = run('shortcutsHTML()');
-assert.ok(html.includes('Press keys…') && html.includes('Another app is using this'));
+assert.ok(html.includes('Press keys…') && html.includes('In use by another app'));
 run("recording = null; refused = []");
 html = run('notifyHTML()');
 assert.ok(html.includes('data-notify="agents"') && html.includes('aria-checked="true"'));
@@ -1255,5 +1253,52 @@ context.srcItem = {...sourced('noclick5 · <Airtable>'), project: 'harbor', proj
 html = run('detailHTML(srcItem)');
 assert.ok(/<div class="crumbs"><span class="c-path">.*Harbor<\/button><\/span><span class="c-src"><span class="sep">·<\/span>noclick5 · &lt;Airtable&gt;<\/span><\/div>/.test(html));
 assert.ok(!run("detailHTML({...srcItem, source: ''})").includes('c-src'));
+
+// Several keys per action. One saved key from before becomes a one-key list; null was "none";
+// junk and duplicates go, and no key is ever on two actions.
+const KH = {keyCode: 4, modifiers: 6144, label: '⌃⌥H'}, KJ = {keyCode: 38, modifiers: 6144, label: '⌃⌥J'}, KX = {keyCode: 7, modifiers: 6144, label: '⌃⌥X'};
+Object.assign(context, {KH, KJ, KX});
+let keysClean = JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify({toggle: KH, next: null, previous: [KX, KX, {keyCode: 'x'}, KJ], dashboard: 'junk'})}))`));
+assert.deepEqual(keysClean.toggle, [KH]);
+assert.deepEqual(keysClean.next, []); // cleared before stays cleared
+assert.deepEqual(keysClean.previous, [KX, KJ]); // duplicates and junk dropped
+assert.deepEqual(keysClean.dashboard, [{keyCode: 2, modifiers: 6144, label: '⌃⌥D'}]); // a broken value falls back to the default
+assert.deepEqual(keysClean.customize, []);
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanShortcuts())')).next, [KJ]); // nothing saved: the defaults
+keysClean = JSON.parse(run(`JSON.stringify(cleanShortcuts(${JSON.stringify({toggle: [KH], next: [KH, KJ]})}))`));
+assert.deepEqual([keysClean.toggle, keysClean.next], [[KH], [KJ]]); // one key, one action
+// Inside the panel: the defaults are what already worked; one key from before keeps Enter or Escape too.
+assert.deepEqual(JSON.parse(run('JSON.stringify(cleanPanelKeys())')), {previous: ['ArrowUp'], next: ['ArrowDown'], open: ['ArrowRight', 'Enter'], back: ['ArrowLeft', 'Escape']});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanPanelKeys({previous: 'k', next: 'j', open: 'l', back: null}))`)), {previous: ['k'], next: ['j'], open: ['l', 'Enter'], back: ['Escape']});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(cleanPanelKeys({open: ['Enter', 'Enter', '', 7], back: ['Enter', 'h']}))`)).back, ['h']);
+// What the window registers: every key of every action.
+assert.deepEqual(JSON.parse(run(`JSON.stringify(hotkeyList({toggle: [KH, KX], next: [KJ], customize: []}))`)),
+  [{action: 'toggle', keyCode: 4, modifiers: 6144}, {action: 'toggle', keyCode: 7, modifiers: 6144}, {action: 'next', keyCode: 38, modifiers: 6144}]);
+// Panel keys find their action in any of its keys.
+run(`savedPanelKeys = panelKeys; panelKeys = cleanPanelKeys({open: ['ArrowRight', 'Enter', 'l']})`);
+assert.deepEqual(['l', 'Enter', 'ArrowRight', 'Escape', 'q'].map((k) => run(`panelAction('${k}', 'list')`)), ['open', 'open', 'open', 'back', null]);
+run('panelKeys = savedPanelKeys');
+// Adding, re-recording and removing chips; a key taken by another action moves, never doubles.
+let keysNow = JSON.parse(run(`JSON.stringify(placeKey({toggle: [KH], next: [KJ]}, 'toggle', null, ${JSON.stringify(KX)}, sameHotkey))`));
+assert.deepEqual(keysNow, {toggle: [KH, KX], next: [KJ]});
+keysNow = JSON.parse(run(`JSON.stringify(placeKey({toggle: [KH, KX], next: [KJ]}, 'toggle', 0, ${JSON.stringify(KJ)}, sameHotkey))`));
+assert.deepEqual(keysNow, {toggle: [KJ, KX], next: []}); // re-recorded in place, and taken from Next
+assert.deepEqual(JSON.parse(run(`JSON.stringify(dropKey({toggle: [KH, KX]}, 'toggle', 0))`)), {toggle: [KX]});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(keyOwner({toggle: [KH], next: [KJ]}, ${JSON.stringify({...KJ, label: 'other'})}, sameHotkey))`)), {action: 'next', at: 0});
+assert.deepEqual(JSON.parse(run(`JSON.stringify(resetKeys({toggle: [KJ], next: []}, 'next', SHORTCUTS, sameHotkey))`)), {toggle: [], next: [KJ]});
+// Recording a key another action has asks first; Move takes it, Cancel leaves both as they were.
+run(`savedShortcuts = shortcuts; shortcuts = cleanShortcuts({toggle: [KH], next: [KJ]}); window = {webkit: {messageHandlers: {hq: {postMessage: () => {}}}}};
+  recordedKey('global', {action: 'toggle', index: null}, KJ)`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(keyConflict)')), {kind: 'global', action: 'toggle', index: null, key: KJ, from: 'next'});
+html = run('settingsHTML(attention())');
+assert.ok(html.includes('⌃⌥J is used by Next item. Move it here?') && html.includes('data-move-key') && html.includes('data-move-cancel'));
+run(`keptRender = render; render = () => {}; moveKey(); render = keptRender`);
+assert.deepEqual(JSON.parse(run('JSON.stringify([shortcuts.toggle, shortcuts.next, keyConflict])')), [[KH, KJ], [], null]);
+// A key macOS refused shows on its own chip, the others still fine.
+run(`refused = ['38:6144']`);
+html = run('settingsHTML(attention())');
+assert.ok(/<span class="f-chip bad"><button type="button" class="f-cap " data-record="toggle" data-index="1"[^>]*title="In use by another app">⌃⌥J<\/button>/.test(html));
+assert.ok(html.includes('<small class="f-key-bad">⌃⌥J is in use by another app</small>') && !/f-chip bad"><button[^>]*data-index="0"/.test(html));
+run(`refused = []; shortcuts = savedShortcuts; keyConflict = null; recording = null; delete globalThis.window`);
 
 console.log('UI lanes, grouping, conversation isolation, presence, stale-update, escaping, draft, floating panel and lab checks passed');

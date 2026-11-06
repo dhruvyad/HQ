@@ -779,6 +779,8 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
         hotKeyActions = [:]
     }
 
+    /// Every key of every action gets its own registration, so one that macOS refuses (another
+    /// app holds it) is reported on its own, as "keyCode:modifiers", and the rest still work.
     private func registerHotKeys(_ entries: [[String: Any]]) {
         unregisterHotKeys()
         var failed: [String] = []
@@ -794,7 +796,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
                 hotKeyRefs.append(ref)
                 hotKeyActions[id.id] = action
             } else {
-                failed.append(action)
+                failed.append("\(keyCode):\(modifiers)")
             }
         }
         send(["type": "hotkeysApplied", "failed": failed])
