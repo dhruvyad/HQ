@@ -216,6 +216,14 @@ class QuietTests(unittest.TestCase):
             self.assertEqual(name(), "main coordinator")
             self.assertEqual(registered.call_count, 1)  # once, not every second
 
+    def test_running_a_shell_command_is_working(self):
+        # Claude Code shows "shell" as working in its own list; it is not a lost signal.
+        self.write(os.getpid(), "cmd", "shell")
+        presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)
+        with patch("hq.presence.subprocess.run", return_value=Mock(stdout="[]")):
+            presence.sample()
+        self.assertEqual(self.states(), {"claude-code:cmd": "active"})
+
     def test_an_unchanged_state_is_written_only_to_renew_it(self):
         self.write(os.getpid(), "steady", "busy")
         presence = ClaudePresence(self.store, folder=self.folder, clock=lambda: self.now)

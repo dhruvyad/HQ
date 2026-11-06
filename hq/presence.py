@@ -135,9 +135,10 @@ class ClaudePresence:
                                             "claude-code", row["sessionId"], row.get("cwd"))
             if yours and known["name"] != yours:
                 self.store.register(sid, yours, "claude-code", row["sessionId"], row.get("cwd"))
-            # Dispatched background sessions report "state" where interactive ones say "status".
+            # Dispatched background sessions report "state" where interactive ones say "status". "shell" is a
+            # session running a shell command, which Claude Code itself counts as working.
             status = row.get("status") or row.get("state")
-            state = {"busy": "active", "running": "active", "idle": "idle", "blocked": "waiting"}.get(status, "unknown")
+            state = {"busy": "active", "running": "active", "shell": "active", "idle": "idle", "blocked": "waiting"}.get(status, "unknown")
             self.observe(sid, state)
             present.add(sid)
         for sid in set(self.written) - present:
