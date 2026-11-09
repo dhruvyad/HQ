@@ -16,10 +16,11 @@ A switch always goes through. Locks keep two writers from corrupting a login, bu
 waits a moment for them, as /login does not wait on other sessions. A write that fails is
 put back, so nothing is left half switched.
 
-Secrets never reach SQLite, logs, exceptions, argv, HQ items or what the API returns. HQ
-never refreshes a token: each tool renews its own login once it is active again. Usage for
-an account that is not signed in is read with its saved access token only while that token
-is still valid, and otherwise shown as of when it was last read.
+Secrets never reach SQLite, logs, exceptions, argv, HQ items or what the API returns. The
+signed-in login is each tool's own to renew. A saved Claude login that isn't signed in is HQ's
+alone, so when its access token has run out and its usage is due, HQ renews it the way Claude
+Code renews its own, asking for exactly the scopes it already holds, and keeps the new one.
+Codex logins are never renewed: a saved one is read only while its token is still valid.
 """
 from contextlib import contextmanager
 import base64
@@ -61,6 +62,11 @@ CLAUDE_BOUND = ("claudeAiOauth", "organizationUuid", "trustedDeviceToken", "trus
 CLAUDE_CACHES = ("modelAccessCache", "orgModelDefaultCache", "cachedUsageUtilization", "additionalModelOptionsCache",
                  "clientDataCache", "clientDataCacheSlots", "autoCompactWindowsCache")
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# Where Claude Code itself renews a login, and the client it renews as unless the login names its own.
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+RENEW_TIMEOUT = 15
+RENEW_WAIT = 40            # a switch or removal waits this long for a renewal under way, longer than its request
 LOCK_WAIT = 2              # a moment, then switch anyway: /login does not wait on other sessions
 RENEWING = 600             # a token this close to expiry may be renewed under us
 CODEX_RENEW_AGE = 7.5 * 86400
@@ -367,6 +373,26 @@ def flocked(path, wait=LOCK_WAIT, sleep=time.sleep, clock=time.monotonic):
         os.close(fd)
 
 
+def wait_hint(error):
+    """What a refused request says about asking again: a 429's Retry-After, or -1 to back off;
+    anything else, None, the usual rhythm."""
+    if error.code != 429:
+        return None
+    try:
+        return max(0, int(error.headers.get("Retry-After", "")))
+    except (TypeError, ValueError, AttributeError):
+        return -1
+
+
+def oauth_error(error):
+    """The OAuth error code in a refused answer ("invalid_grant"), read from a small body."""
+    try:
+        value = json.loads(error.read(4096) or b"null")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value.get("error") if isinstance(value, dict) and isinstance(value.get("error"), str) else None
+
+
 def write_atomic(path, text, mode=0o600):
     """Temp file, flushed, renamed over, and the folder flushed, so a crash leaves old or new.
     A symlinked file (a dotfiles setup) is written where it points, and stays a link."""
@@ -440,6 +466,14 @@ class Accounts:
         self.seen_active = {}
         self.next_at, self.backoff, self.next_any = {}, {}, -math.inf
         self.sign_ins = Path(store.path).parent / "sign-ins.json"
+        self.renewal_lock = Path(store.path).parent / "accounts.lock"
+
+    @contextmanager
+    def holding(self, wait):
+        """HQ's lock on its saved logins, across all of HQ's processes. A renewal holds it while it
+        trades a login for a new one, so a switch or removal never takes one about to be spent."""
+        with flocked(self.renewal_lock, wait=wait, sleep=self.sleep, clock=self.clock) as held:
+            yield held
 
     # -- What is signed in now, read from each tool's own files ------------------------
 
@@ -662,7 +696,9 @@ class Accounts:
     def use(self, tool, key):
         if tool not in TOOLS:
             raise AccountError("Choose claude or codex")
-        with self.switching:
+        with self.switching, self.holding(RENEW_WAIT) as held:
+            if not held:
+                raise AccountError("HQ is renewing a saved login right now; try again in a moment")
             target = self.row(tool, key)
             result = self.use_claude(target) if tool == "claude" else self.use_codex(target)
         with self.lock:
@@ -823,7 +859,9 @@ class Accounts:
     def remove(self, tool, key):
         if tool not in TOOLS:
             raise AccountError("Choose claude or codex")
-        with self.switching:
+        with self.switching, self.holding(RENEW_WAIT) as held:
+            if not held:
+                raise AccountError("HQ is renewing a saved login right now; try again in a moment")
             row = self.row(tool, key)
             who = self.current(tool)
             if who and key_for(tool, who["identity"]) == key:
@@ -1014,8 +1052,76 @@ class Accounts:
 
     # -- Usage of accounts that aren't signed in ---------------------------------------
 
+    def renew_claude(self, key):
+        """(saved, retry_after) for a saved Claude login whose access token has run out, renewed
+        as Claude Code renews its own. Only HQ holds a saved login while another account is signed
+        in; a switch or removal waits for this, and it looks again at everything once it holds the lock."""
+        with self.holding(0) as held:
+            if not held:
+                return None, -1  # a switch or removal is under way: look again later
+            try:
+                row = self.row("claude", key)
+            except AccountError:
+                return None, None  # removed meanwhile
+            who = self.current("claude")
+            if row["stale"] or (who and key_for("claude", who["identity"]) == key):
+                return None, None  # it needs a fresh sign-in, or Claude Code holds it now and renews it itself
+            saved = json.loads(self.vault.get("claude", key) or "null")
+            login = saved.get("login") if isinstance(saved, dict) else None
+            oauth = login.get("claudeAiOauth") if isinstance(login, dict) else None
+            owner = claude_who(saved.get("profile"), login) if isinstance(oauth, dict) else None
+            if not owner or key_for("claude", owner["identity"]) != key:
+                return None, None  # nowhere to keep a new login, so the old one is never spent
+            expires, lapses = claude_times(login)
+            if expires and expires > now() + 60:
+                return saved, None  # renewed meanwhile
+            token, client = oauth.get("refreshToken"), oauth.get("clientId")
+            if not isinstance(token, str) or not token or (lapses and lapses <= now()):
+                return None, None
+            body = {"grant_type": "refresh_token", "refresh_token": token,
+                    "client_id": client if isinstance(client, str) and client else CLAUDE_CLIENT_ID}
+            scopes = oauth.get("scopes")
+            if isinstance(scopes, list) and scopes and all(isinstance(s, str) for s in scopes):
+                body["scope"] = " ".join(scopes)  # exactly what it holds, never more
+            request = urllib.request.Request(CLAUDE_TOKEN_URL, data=json.dumps(body).encode(), method="POST", headers={
+                "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "hq"})
+            try:
+                with self.open_url(request, timeout=RENEW_TIMEOUT) as response:
+                    answer = json.load(response)
+            except urllib.error.HTTPError as error:
+                try:
+                    return None, "refused" if oauth_error(error) == "invalid_grant" else wait_hint(error)
+                finally:
+                    error.close()
+            except (urllib.error.URLError, OSError, ValueError):
+                return None, -1
+            number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+            access = answer.get("access_token") if isinstance(answer, dict) else None
+            if not isinstance(access, str) or not access or not number(answer.get("expires_in")):
+                return None, -1
+            at = now()
+            oauth = dict(oauth, accessToken=access, expiresAt=int((at + answer["expires_in"]) * 1000))
+            if isinstance(answer.get("refresh_token"), str) and answer["refresh_token"]:
+                oauth["refreshToken"] = answer["refresh_token"]
+            if isinstance(answer.get("scope"), str) and answer["scope"].split():
+                oauth["scopes"] = answer["scope"].split()
+            if lapses and number(answer.get("refresh_token_expires_in")):
+                # As Claude Code keeps it: a renewal never moves the sign-in's own end later.
+                oauth["refreshTokenExpiresAt"] = min(oauth["refreshTokenExpiresAt"],
+                                                     int((at + answer["refresh_token_expires_in"]) * 1000))
+            saved = {**saved, "login": dict(login, claudeAiOauth=oauth)}
+            try:
+                self.save_claude(saved["login"], saved["profile"])
+            except AccountError:
+                # Renewing spent the old login, so without the new one this account needs a fresh sign-in.
+                self.mark("claude", key, stale=1)
+                self.log("Could not keep a renewed Claude login; that account needs a fresh sign-in")
+                return None, None
+            return saved, None
+
     def read_saved(self, tool, row):
-        """(reading, retry_after). No request at all once the saved token has expired."""
+        """(reading, retry_after). A saved Claude login whose access token has run out is renewed
+        first; a saved Codex one is not asked about at all once its token has expired."""
         text = self.vault.get(tool, row["key"])
         if not text:
             return None, None
@@ -1023,6 +1129,11 @@ class Accounts:
         self.relabel(tool, row["key"], claude_who(saved.get("profile"), saved.get("login")) if tool == "claude"
                      else codex_who(saved))
         if tool == "claude":
+            expires, _ = claude_times(saved.get("login", {}))
+            if not expires or expires <= now() + 60:
+                saved, hint = self.renew_claude(row["key"])
+                if not saved:
+                    return None, hint
             oauth = saved.get("login", {}).get("claudeAiOauth") or {}
             token, (expires, _) = oauth.get("accessToken"), claude_times(saved.get("login", {}))
             headers = {"anthropic-beta": "oauth-2025-04-20"}
@@ -1041,13 +1152,7 @@ class Accounts:
                 return parse(json.load(response)), None
         except urllib.error.HTTPError as error:
             error.close()
-            if error.code == 401:
-                return None, "refused"
-            try:
-                hint = max(0, int(error.headers.get("Retry-After", ""))) if error.code == 429 else None
-            except (TypeError, ValueError, AttributeError):
-                hint = None
-            return None, hint if hint is not None else (-1 if error.code == 429 else None)
+            return None, "refused" if error.code == 401 else wait_hint(error)
         except (urllib.error.URLError, OSError, ValueError):
             return None, -1
 
