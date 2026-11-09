@@ -557,12 +557,124 @@ class UsageTests(Home):
         self.assertEqual([w["left"] for w in listed[bob_key]["usage"]["windows"]], [70, 40])
         self.assertEqual(self.accounts.next_at[("claude", bob_key)], self.now + 1800)  # the idle rhythm
 
-    def test_an_expired_saved_login_is_never_sent_anywhere(self):
+    def renewed(self, **answer):
+        return {"access_token": secret(f"sk-ant-oat01-bob-NEW{len(SECRETS)}"), "refresh_token": secret(f"sk-ant-ort01-bob-NEW{len(SECRETS)}"),
+                "expires_in": 28800, "refresh_token_expires_in": 90 * 86400, "scope": "user:inference", **answer}
+
+    def saved_oauth(self, key):
+        return json.loads(self.accounts.vault.get("claude", key))["login"]["claudeAiOauth"]
+
+    def test_an_expired_saved_claude_login_is_renewed_as_claude_code_would_then_read(self):
+        bob_key, bob = self.save_bob(expires_in=-10)
+        self.responses[acc.CLAUDE_TOKEN_URL] = answer = self.renewed()
+        self.responses[acc.CLAUDE_USAGE_URL] = {"seven_day": {"utilization": 40, "resets_at": None}}
+        self.assertEqual(self.accounts.poll(), ("claude", bob_key))
+        renew, read = self.requests
+        self.assertEqual((renew.full_url, renew.get_method(), renew.get_header("Authorization")), (acc.CLAUDE_TOKEN_URL, "POST", None))
+        self.assertEqual(json.loads(renew.data), {"grant_type": "refresh_token", "refresh_token": bob["refreshToken"],
+                                                  "client_id": acc.CLAUDE_CLIENT_ID, "scope": "user:inference"})
+        self.assertEqual(read.get_header("Authorization"), f"Bearer {answer['access_token']}")
+        oauth = self.saved_oauth(bob_key)
+        self.assertEqual((oauth["accessToken"], oauth["refreshToken"], oauth["subscriptionType"]),
+                         (answer["access_token"], answer["refresh_token"], "max"))
+        self.assertAlmostEqual(oauth["expiresAt"] / 1000, time.time() + 28800, delta=5)
+        self.assertEqual(oauth["refreshTokenExpiresAt"], bob["refreshTokenExpiresAt"])  # never later than the sign-in's own end
+        self.assertEqual(json.loads(self.accounts.vault.get("claude", bob_key))["login"]["organizationUuid"], "org-bob")
+        listed = {a["key"]: a for a in self.accounts.list()["claude"]["accounts"]}
+        self.assertEqual((listed[bob_key]["state"], listed[bob_key]["usage"]["windows"][0]["left"]), ("ok", 60))
+        stored, argv = self.store.path.read_bytes(), json.dumps(self.sec.calls)
+        for token in (answer["access_token"], answer["refresh_token"], bob["refreshToken"]):  # kept over stdin only
+            self.assertNotIn(token.encode(), stored)
+            self.assertNotIn(token, argv)
+        # A token still valid is used as it is, without renewing again.
+        self.now += 3600
+        self.accounts.poll()
+        self.assertEqual([r.full_url for r in self.requests[2:]], [acc.CLAUDE_USAGE_URL])
+
+    def test_a_renewal_keeps_the_logins_own_client_and_refresh_token_when_none_comes_back(self):
+        bob = claude_login("bob", -10)
+        bob.update(clientId="own-client", scopes=["user:profile", "user:inference"])
+        bob_key = self.accounts.save_claude({"claudeAiOauth": bob}, profile("bob"))
+        self.responses[acc.CLAUDE_TOKEN_URL] = answer = {"access_token": secret("sk-ant-oat01-bob-ONLY"), "expires_in": 3600}
+        self.accounts.poll()
+        sent = json.loads(self.requests[0].data)
+        self.assertEqual((sent["client_id"], sent["scope"]), ("own-client", "user:profile user:inference"))
+        oauth = self.saved_oauth(bob_key)
+        self.assertEqual((oauth["accessToken"], oauth["refreshToken"], oauth["scopes"]),
+                         (answer["access_token"], bob["refreshToken"], ["user:profile", "user:inference"]))
+
+    def test_a_turned_down_renewal_needs_a_fresh_sign_in_and_is_never_tried_again(self):
+        bob_key, bob = self.save_bob(expires_in=-10)
+        body = io.BytesIO(json.dumps({"error": "invalid_grant", "error_description": "Refresh token not found"}).encode())
+        self.responses[acc.CLAUDE_TOKEN_URL] = urllib.error.HTTPError(acc.CLAUDE_TOKEN_URL, 400, "Bad Request", {}, body)
+        self.accounts.poll()
+        self.assertEqual(self.accounts.row("claude", bob_key)["stale"], 1)
+        self.assertEqual(self.saved_oauth(bob_key)["refreshToken"], bob["refreshToken"])
+        self.now += 7200
+        self.accounts.poll()
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual({a["key"]: a for a in self.accounts.list()["claude"]["accounts"]}[bob_key]["state"], "needs sign-in")
+
+    def test_a_renewal_that_fails_on_the_way_keeps_the_login_and_backs_off(self):
+        bob_key, bob = self.save_bob(expires_in=-10)
+        self.responses[acc.CLAUDE_TOKEN_URL] = urllib.error.URLError("offline")
+        self.accounts.poll()
+        self.assertEqual(self.accounts.next_at[("claude", bob_key)], self.now + 600)
+        self.responses[acc.CLAUDE_TOKEN_URL] = urllib.error.HTTPError(acc.CLAUDE_TOKEN_URL, 503, "Busy", {}, io.BytesIO(b"oops"))
+        self.now = self.accounts.next_at[("claude", bob_key)]
+        self.accounts.poll()
+        self.assertEqual(self.accounts.row("claude", bob_key)["stale"], 0)
+        self.assertEqual(self.saved_oauth(bob_key), bob)
+        self.assertEqual([r.full_url for r in self.requests], [acc.CLAUDE_TOKEN_URL] * 2)
+
+    def test_a_renewal_that_cannot_be_kept_says_the_account_needs_a_fresh_sign_in(self):
         bob_key, _ = self.save_bob(expires_in=-10)
+        self.responses[acc.CLAUDE_TOKEN_URL] = self.renewed()
+        self.sec.fail.add(acc.Vault.service("claude", bob_key, "2.0"))
+        self.accounts.poll()
+        self.assertEqual(self.accounts.row("claude", bob_key)["stale"], 1)
+        self.assertEqual(self.logs, ["Could not keep a renewed Claude login; that account needs a fresh sign-in"])
+
+    def test_the_signed_in_login_a_lapsed_sign_in_and_codex_logins_are_never_renewed(self):
+        alice_key = self.accounts.save_current("claude")
+        with self.store.db() as db:  # even if its saved copy looks expired, Claude Code renews its own
+            db.execute("UPDATE accounts SET expires=1 WHERE key=?", (alice_key,))
+        self.assertEqual(self.accounts.renew_claude(alice_key), (None, None))
+        carol = claude_login("carol", -10)
+        carol["refreshTokenExpiresAt"] = (time.time() - 60) * 1000
+        carol_key = self.accounts.save_claude({"claudeAiOauth": carol}, profile("carol"))
+        self.assertEqual(self.accounts.renew_claude(carol_key), (None, None))
+        self.save_side(expires_in=-10)
+        for _ in range(3):
+            self.accounts.poll()
+            self.now += 3600
+        self.assertEqual(self.requests, [])
+
+    def test_a_renewal_waits_for_a_switch_and_a_switch_for_a_renewal(self):
+        bob_key, _ = self.save_bob(expires_in=-10)
+        fd = os.open(self.accounts.renewal_lock, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)  # another HQ process holds it
         self.accounts.poll()
         self.assertEqual(self.requests, [])
-        listed = {a["key"]: a for a in self.accounts.list()["claude"]["accounts"]}
-        self.assertEqual(listed[bob_key]["state"], "expired")
+        self.assertEqual(self.accounts.next_at[("claude", bob_key)], self.now + 600)
+        with self.assertRaisesRegex(AccountError, "renewing a saved login"):
+            self.accounts.use("claude", bob_key)
+        with self.assertRaisesRegex(AccountError, "renewing a saved login"):
+            self.accounts.remove("claude", bob_key)
+        self.assertEqual(self.config_now()["oauthAccount"]["emailAddress"], "alice@example.com")
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.responses[acc.CLAUDE_TOKEN_URL] = self.renewed()
+        self.now = self.accounts.next_at[("claude", bob_key)]
+        self.accounts.poll()
+        self.assertEqual(self.requests[0].full_url, acc.CLAUDE_TOKEN_URL)
+
+    def test_an_account_removed_before_its_renewal_starts_is_left_removed(self):
+        bob_key, _ = self.save_bob(expires_in=-10)
+        self.accounts.remove("claude", bob_key)
+        self.assertEqual(self.accounts.renew_claude(bob_key), (None, None))
+        self.assertEqual((self.requests, self.accounts.rows("claude")), ([], []))
+        self.assertFalse([s for (_, s) in self.sec.items if bob_key in s])
 
     def test_codex_usage_for_a_saved_login_reads_both_windows(self):
         side_key, side = self.save_side()

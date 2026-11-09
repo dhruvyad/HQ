@@ -74,10 +74,17 @@ switch back. If that login was being renewed at that moment, the account is mark
 in again in case switching back fails. A write that fails is put back, so nothing is left
 half switched.
 
-HQ never renews a login. For an account that isn't signed in, it reads usage with that
-account's saved access token only while the token is still valid, about every 30 to 60
-minutes and never two accounts in a row. After that it shows the last numbers it read, with
-their time, except that a limit whose reset time has passed shows as full again. Logins go only to Anthropic or OpenAI, and never into logs, the database or
+For an account that isn't signed in, HQ reads usage with that account's saved login about
+every 30 to 60 minutes while the pill or dashboard is open, never two accounts in a row. The
+signed-in account's login is its own tool's to renew, never HQ's. A saved Claude login is
+held by HQ alone, so once its access token runs out HQ renews it the way Claude Code renews
+its own, asking for nothing beyond what it already holds, and keeps the new one in its own
+Keychain items. The sign-in itself still ends when Claude ends it, about a month after you
+signed in, and the account then says it needs a sign-in. A switch waits for a renewal under
+way, so it never takes a login about to be replaced. Codex logins are never renewed: a saved
+one is read only while its token is still valid. When HQ can't read an account, it shows the
+last numbers it read, with their time, except that a limit whose reset time has passed shows
+as full again. Logins go only to Anthropic or OpenAI, and never into logs, the database or
 anything HQ shows. They reach the Keychain on stdin, with one exception: when MCP and plugin
 logins make Claude Code's own Keychain entry too large for that, HQ writes the entry the way
 Claude Code itself then does, as an argument, briefly visible to programs running as you.
