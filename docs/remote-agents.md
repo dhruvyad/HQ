@@ -49,6 +49,23 @@ On the server (Python 3.11 or later, nothing else), as a user of its own:
 hq relay serve             # agents at http://127.0.0.1:4311/mcp, your Mac at /sync
 ```
 
+On Linux, run it as a service of its own with its data private to it, for example:
+
+```ini
+[Service]
+User=hq-relay
+Environment=HQ_HOME=/var/lib/hq-relay
+WorkingDirectory=/opt/hq
+ExecStart=/usr/bin/python3 -m hq relay serve --port 4311
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/hq-relay
+```
+
+Run `hq relay allow` (below) as that same user, with the same `HQ_HOME`.
+
 Put HTTPS in front of it as above. Then on your Mac:
 
 ```sh
@@ -109,7 +126,7 @@ Register the conversation first, with a stable id of your own, such as
 shows as a remote agent. Everything else follows [For agents](for-agents.md) and its reporting guide.
 
 A call that waits for your answer (`hq_request_input`, `hq_wait`) streams it back as
-Server-Sent Events. While it waits it sends a keepalive line every 15 seconds, plus
+Server-Sent Events. It sends a first line at once, then a keepalive line every 15 seconds, plus
 `notifications/progress` when the call carries a progress token, so the agent's host sees it
 is alive. A wait lasts at most ten minutes (`timeout` up to 600); when it ends without an
 answer, wait again or check `hq_inbox` later. An answer given while no call waits is kept in

@@ -277,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            # A first line at once: a proxy in front (Cloudflare does) holds the headers back until
+            # the body starts, and the agent's host should see the call is alive from the start.
+            self.wfile.write(b": waiting for an answer in HQ\n\n")
+            self.wfile.flush()
             threading.Thread(target=work, daemon=True).start()
             beat = 0
             while not done.wait(KEEPALIVE):

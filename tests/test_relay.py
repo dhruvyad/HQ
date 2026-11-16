@@ -5,12 +5,14 @@ import http.client
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 from hq import relay, remote
 from hq.store import Store
@@ -148,6 +150,18 @@ class RoundTripTests(Relayed):
         while self.mac.item(asked["id"])["delivery"] != "received" and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(self.mac.item(asked["id"])["delivery"], "received")
+
+
+    def test_stopping_the_worker_ends_its_long_poll_at_once(self):
+        worker = relay.RelaySync(self.mac)
+        thread = threading.Thread(target=worker.run, daemon=True)
+        thread.start()
+        time.sleep(1)  # its pull now waits on the relay for up to 25 seconds
+        started = time.monotonic()
+        worker.stop.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertLess(time.monotonic() - started, 2)
 
 
 class ActionTests(Relayed):
@@ -325,6 +339,32 @@ class BoundaryTests(Relayed):
         self.assertEqual(self.sync.meta("relay_cursor"), "0")
         self.synced()
         self.assertEqual(self.sync.meta("relay_instance"), "another")
+
+
+class ReachTests(unittest.TestCase):
+    def test_an_address_that_never_answers_costs_a_moment_not_a_timeout(self):
+        # Like a network whose IPv6 is broken: the first address swallows the connection.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        port = listener.getsockname()[1]
+        dead = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))  # TEST-NET-1: never routed
+        live = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+        with unittest.mock.patch("socket.getaddrinfo", return_value=[dead, dead, live]):
+            started = time.monotonic()
+            sock = relay.happy_connect("relay.invalid", port, timeout=10)
+        self.addCleanup(sock.close)
+        self.assertEqual(sock.getpeername()[0], "127.0.0.1")
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_nothing_answering_fails_within_the_timeout(self):
+        dead = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 9))
+        with unittest.mock.patch("socket.getaddrinfo", return_value=[dead]):
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                relay.happy_connect("relay.invalid", 9, timeout=1)
+        self.assertLess(time.monotonic() - started, 3)
 
 
 class CLITests(unittest.TestCase):
