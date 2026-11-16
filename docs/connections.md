@@ -28,6 +28,7 @@ adapter here. Register those conversations through tools when available.
 | Claude Desktop chat | Local MCP after restart | Replies return through waiting tools or inbox polling; no general push injector |
 | ChatGPT with a local agent executor | CLI from that executor | Depends on the executor's conversation controls |
 | Ordinary ChatGPT desktop / web chats | HQ tools through an explicitly configured private MCP tunnel | A tool tunnel alone does not wake chats |
+| Agents running elsewhere (NoClick agents, servers) | HQ tools over HTTPS with their own token; see [Remote agents](remote-agents.md) | An answer streams back on the call waiting for it |
 
 **This version does not attach to every already-running AI conversation.** It
 provides working reporting, waiting tools, durable offline replies, metadata

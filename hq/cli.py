@@ -294,6 +294,13 @@ def parser():
     people.add_argument("action", nargs="?", default="list", choices=["list", "add", "use", "remove"])
     people.add_argument("tool", nargs="?", choices=["claude", "codex"])
     people.add_argument("who", nargs="?", help="use/remove: the account's email or key")
+    remote = commands.add_parser("remote", help="Let agents running elsewhere use HQ: give each its own token, list or revoke "
+                                                "them, or serve HQ's tools to them for HTTPS in front")
+    remote.add_argument("action", nargs="?", default="list", choices=["list", "add", "revoke", "serve"])
+    remote.add_argument("name", nargs="?", help="add/revoke: the agent's name, such as noclick1")
+    remote.add_argument("--project", default="", help="add: the project its items belong to, such as noclick")
+    remote.add_argument("--url", default="", help="add: the HTTPS address in front of HQ, for the config it prints")
+    remote.add_argument("--port", type=int, default=4311, help="serve: the loopback port to listen on")
     panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
     panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
                        help="install starts it at login; lab tries designs on throwaway data; run is for launchd")
@@ -313,6 +320,26 @@ def usage_command(action):
     claude = (subscription_usage.ClaudeLogin().read() if login else None) or subscription_usage.fresh(subscription_usage.read_claude())
     return {"claude": claude, "codex": subscription_usage.read_codex(),
             "claude_login": "on" if login else "off", "claude_status_line": statusline_state()}
+
+
+def remote_command(args):
+    store = Store()
+    if args.action == "serve":
+        from .remote import serve as serve_remote
+        return serve_remote(store, port=args.port)
+    if args.action == "list":
+        return {"agents": store.tokens()}
+    if not args.name:
+        raise ValueError(f"Say which agent: hq remote {args.action} NAME")
+    if args.action == "revoke":
+        return store.revoke_token(args.name)
+    made = store.add_token(args.name, args.project)
+    url = (args.url or "https://YOUR-HQ-HOST").rstrip("/") + "/mcp"
+    return {**made, "shown": "This token is shown once. Keep it as a secret on the agent's side; revoke it with "
+                             f"`hq remote revoke {made['name']}` if it is lost.",
+            "secret_value": f"Bearer {made['token']}",
+            "mcp_server": {"url": url, "headers": {"Authorization": {"secret": "HQ_TOKEN"}}},
+            "plain_mcp_server": {"type": "http", "url": url, "headers": {"Authorization": "Bearer ${HQ_TOKEN}"}}}
 
 
 def accounts_command(args):
@@ -407,6 +434,9 @@ def main():
             return output(usage_command(args.action))
         if args.command == "accounts":
             return output(accounts_command(args))
+        if args.command == "remote":
+            result = remote_command(args)
+            return output(result) if result is not None else None
         if args.command == "doctor":
             from . import doctor
             return sys.exit(doctor.run(args.json))
