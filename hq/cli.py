@@ -332,6 +332,10 @@ def usage_command(action):
 
 
 def is_relay(store):
+    """A store that serves as a relay. A Mac that syncs with one never is, whatever its meta holds."""
+    from .relay import load_config
+    if load_config(store):
+        return False
     with store.db() as db:
         return db.execute("SELECT 1 FROM meta WHERE key='relay_instance'").fetchone() is not None
 

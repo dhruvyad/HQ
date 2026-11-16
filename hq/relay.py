@@ -400,7 +400,7 @@ def connect(store, url):
     temporary.replace(path)
     if config.get("url") and config["url"] != url:
         with store.db() as db:
-            db.execute("DELETE FROM meta WHERE key IN ('relay_cursor','relay_instance')")
+            db.execute("DELETE FROM meta WHERE key IN ('relay_cursor','relay_upstream')")
     name = socket.gethostname().split(".")[0] or "mac"
     return {"url": url, "hash": token_hash(key), "allow": f"hq relay allow {token_hash(key)} --name {name}"}
 
@@ -463,6 +463,16 @@ class RelaySync:
             row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row["value"] if row else None
 
+    def upstream(self):
+        """Which relay this Mac last read. Macs once kept it under relay_instance, the key that marks
+        a store as a relay itself, so a Mac that had synced looked like one; move it on first use."""
+        found = self.meta("relay_upstream")
+        if found is None and self.meta("relay_instance") is not None:
+            with self.store.db() as db:
+                db.execute("UPDATE meta SET key='relay_upstream' WHERE key='relay_instance'")
+            found = self.meta("relay_upstream")
+        return found
+
     # -- Push ---------------------------------------------------------------------------------------
 
     def tokens(self):
@@ -513,12 +523,12 @@ class RelaySync:
         cursor = int(self.meta("relay_cursor") or 0)
         answer = self.request(config, "GET", f"/sync/pull?since={cursor}&wait={wait}", timeout=wait + 20)
         instance = answer.get("instance")
-        if instance != self.meta("relay_instance"):
+        if instance != self.upstream():
             if cursor:  # a new relay, or one started afresh: read it all again
                 self.note("relay_cursor", 0)
-                self.note("relay_instance", instance)
+                self.note("relay_upstream", instance)
                 return True
-            self.note("relay_instance", instance)
+            self.note("relay_upstream", instance)
         if not self.mirror(answer):
             self.stop.wait(1)  # an action of yours is on its way; read these again once it has landed
             return False
