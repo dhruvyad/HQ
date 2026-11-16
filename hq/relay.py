@@ -12,17 +12,17 @@ The relay holds no secret: it keeps a hash of your Mac's sync key and of each ag
 your Mac decides which agents exist. Nothing of this Mac's own agents ever leaves it.
 """
 import hashlib
+import http.client
 import json
 import os
+import queue
 import secrets
 import socket
+import ssl
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
-from pathlib import Path
 
 from .store import token_hash
 
@@ -36,6 +36,106 @@ PULL_WAIT = 25          # a pull waits this long for news before it returns empt
 PUSH_BATCH = 8          # actions per push; each carries at most one 20,000-character answer
 SYNC_BODY = 1 << 20
 CONFIG = "relay.json"
+STAGGER = 0.25          # how long one address gets before the next is tried alongside it
+CONNECT = 10            # the longest any one address may take to connect
+USER_AGENT = "hq-relay-sync"  # Cloudflare's browser check turns away Python's default name
+
+
+# -- Reaching the relay ------------------------------------------------------------------------
+
+def happy_connect(host, port, timeout=CONNECT, stagger=STAGGER):
+    """Connect the way browsers do: each address in turn, IPv6 and IPv4 interleaved, the next
+    starting a moment after the last without waiting for it to fail, and the first to answer
+    wins. On a network whose IPv6 is broken that costs a quarter second, not a timeout for every
+    IPv6 address before IPv4 is tried at all."""
+    found = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    sixes, fours = [a for a in found if a[0] == socket.AF_INET6], [a for a in found if a[0] != socket.AF_INET6]
+    order = [a for pair in zip(sixes, fours) for a in pair] + sixes[len(fours):] + fours[len(sixes):]
+    results, won, attempts = queue.Queue(), threading.Event(), []
+
+    def attempt(address):
+        family, kind, protocol, _, where = address
+        sock = socket.socket(family, kind, protocol)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(where)
+        except OSError as error:
+            sock.close()
+            results.put((None, error))
+            return
+        results.put((sock, None))
+
+    failures, error, deadline = 0, None, time.monotonic() + timeout
+    try:
+        while failures < len(order):
+            if len(attempts) < len(order):
+                attempts.append(threading.Thread(target=attempt, args=(order[len(attempts)],), daemon=True))
+                attempts[-1].start()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"No address of {host} answered within {timeout}s")
+            try:
+                sock, error = results.get(timeout=min(stagger, left) if len(attempts) < len(order) else left)
+            except queue.Empty:
+                continue
+            if sock:
+                won.set()
+                return sock
+            failures += 1
+        raise error or OSError(f"{host} has no address")
+    finally:
+        def tidy():  # whatever connects after the winner is closed, not left open
+            for thread in attempts:
+                thread.join(timeout + 1)
+            while not results.empty():
+                late, _ = results.get_nowait()
+                if late:
+                    late.close()
+        threading.Thread(target=tidy, daemon=True).start()
+
+
+class Plain(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = happy_connect(self.host, self.port, min(self.timeout or CONNECT, CONNECT))
+        self.sock.settimeout(self.timeout)
+
+
+class Secure(http.client.HTTPSConnection):
+    def connect(self):
+        sock = happy_connect(self.host, self.port, min(self.timeout or CONNECT, CONNECT))
+        sock.settimeout(self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def fetch(url, method="GET", body=None, headers=None, timeout=30, links=None):
+    """One request to the relay: its status and parsed JSON answer. `links` holds it while it is
+    open, so whoever stops the sync can cut a long poll short."""
+    parsed = urllib.parse.urlsplit(url)
+    link = (Secure(parsed.hostname, parsed.port or 443, timeout=timeout, context=ssl.create_default_context())
+            if parsed.scheme == "https" else Plain(parsed.hostname, parsed.port or 80, timeout=timeout))
+    data = None if body is None else json.dumps(body).encode()
+    if links is not None:
+        links.add(link)
+    try:
+        link.request(method, (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else ""), body=data, headers={
+            "User-Agent": USER_AGENT, **({"Content-Type": "application/json"} if data is not None else {}), **(headers or {})})
+        response = link.getresponse()
+        answer = response.read()
+    finally:
+        if links is not None:
+            links.discard(link)
+        link.close()
+    try:
+        return response.status, json.loads(answer) if answer else None
+    except ValueError:
+        return response.status, None
+
+
+def reachable(url):
+    try:
+        return fetch(check_url(url) + "/health", timeout=15) == (200, {"ok": True})
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
 
 
 def sync_key():
@@ -300,7 +400,7 @@ def connect(store, url):
     temporary.replace(path)
     if config.get("url") and config["url"] != url:
         with store.db() as db:
-            db.execute("DELETE FROM meta WHERE key IN ('relay_cursor','relay_instance')")
+            db.execute("DELETE FROM meta WHERE key IN ('relay_cursor','relay_upstream')")
     name = socket.gethostname().split(".")[0] or "mac"
     return {"url": url, "hash": token_hash(key), "allow": f"hq relay allow {token_hash(key)} --name {name}"}
 
@@ -329,9 +429,9 @@ def status(store):
 class RelaySync:
     """Your Mac's side: push what you did to the relay's items, pull what its agents did."""
 
-    def __init__(self, store, opener=None, log=None):
+    def __init__(self, store, log=None):
         self.store, self.stop = store, threading.Event()
-        self.open = opener or urllib.request.urlopen
+        self.links = set()  # requests open right now, cut short when HQ stops
         self.log = log or (lambda line: None)
         self.signature, self.pushed, self.last_error = None, 0, None
         self.attempts = {}
@@ -339,20 +439,17 @@ class RelaySync:
     # -- Talking to the relay ----------------------------------------------------------------------
 
     def request(self, config, method, path, body=None, timeout=30):
-        data = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(config["url"] + path, data=data, method=method, headers={
-            "Authorization": f"Bearer {config['key']}", "User-Agent": "hq-relay-sync",
-            **({"Content-Type": "application/json"} if data is not None else {})})
         try:
-            with self.open(request, timeout=timeout) as response:
-                return json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            if error.code == 401:
-                raise ConnectionError("The relay doesn't know this Mac yet: run the `hq relay allow` line that "
-                                      "`hq relay connect` printed, on the relay") from None
-            raise ConnectionError(f"The relay answered {error.code}") from None
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            raise ConnectionError(f"Can't reach the relay: {getattr(error, 'reason', error)}") from None
+            status, answer = fetch(config["url"] + path, method, body,
+                                   {"Authorization": f"Bearer {config['key']}"}, timeout, self.links)
+        except (OSError, http.client.HTTPException) as error:
+            raise ConnectionError(f"Can't reach the relay: {error}") from None
+        if status == 401:
+            raise ConnectionError("The relay doesn't know this Mac yet: run the `hq relay allow` line that "
+                                  "`hq relay connect` printed, on the relay")
+        if status != 200 or not isinstance(answer, dict):
+            raise ConnectionError(f"The relay answered {status}")
+        return answer
 
     def note(self, key, value):
         with self.store.db() as db:
@@ -365,6 +462,16 @@ class RelaySync:
         with self.store.db() as db:
             row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row["value"] if row else None
+
+    def upstream(self):
+        """Which relay this Mac last read. Macs once kept it under relay_instance, the key that marks
+        a store as a relay itself, so a Mac that had synced looked like one; move it on first use."""
+        found = self.meta("relay_upstream")
+        if found is None and self.meta("relay_instance") is not None:
+            with self.store.db() as db:
+                db.execute("UPDATE meta SET key='relay_upstream' WHERE key='relay_instance'")
+            found = self.meta("relay_upstream")
+        return found
 
     # -- Push ---------------------------------------------------------------------------------------
 
@@ -416,12 +523,12 @@ class RelaySync:
         cursor = int(self.meta("relay_cursor") or 0)
         answer = self.request(config, "GET", f"/sync/pull?since={cursor}&wait={wait}", timeout=wait + 20)
         instance = answer.get("instance")
-        if instance != self.meta("relay_instance"):
+        if instance != self.upstream():
             if cursor:  # a new relay, or one started afresh: read it all again
                 self.note("relay_cursor", 0)
-                self.note("relay_instance", instance)
+                self.note("relay_upstream", instance)
                 return True
-            self.note("relay_instance", instance)
+            self.note("relay_upstream", instance)
         if not self.mirror(answer):
             self.stop.wait(1)  # an action of yours is on its way; read these again once it has landed
             return False
@@ -512,6 +619,8 @@ class RelaySync:
     # -- The worker --------------------------------------------------------------------------------
 
     def failed(self, error, delay):
+        if self.stop.is_set():
+            return delay  # cut short because HQ is stopping, not a fault
         if str(error) != self.last_error:
             self.last_error = str(error)
             self.note("relay_error", str(error))
@@ -532,8 +641,20 @@ class RelaySync:
             except Exception as error:  # the relay or this Mac's network; tried again shortly
                 delay = self.failed(error, delay)
 
+    def hang_up(self):
+        """When HQ stops, end the long poll now rather than when the relay answers it, so HQ exits
+        at once and can start again straight away."""
+        self.stop.wait()
+        for link in list(self.links):
+            try:
+                if link.sock:
+                    link.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
     def run(self):
         threading.Thread(target=self.pushing, daemon=True).start()
+        threading.Thread(target=self.hang_up, daemon=True).start()
         delay = 2
         while not self.stop.is_set():
             try:

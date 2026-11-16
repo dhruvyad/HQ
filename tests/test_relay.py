@@ -5,12 +5,14 @@ import http.client
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 from hq import relay, remote
 from hq.store import Store
@@ -148,6 +150,18 @@ class RoundTripTests(Relayed):
         while self.mac.item(asked["id"])["delivery"] != "received" and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(self.mac.item(asked["id"])["delivery"], "received")
+
+
+    def test_stopping_the_worker_ends_its_long_poll_at_once(self):
+        worker = relay.RelaySync(self.mac)
+        thread = threading.Thread(target=worker.run, daemon=True)
+        thread.start()
+        time.sleep(1)  # its pull now waits on the relay for up to 25 seconds
+        started = time.monotonic()
+        worker.stop.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertLess(time.monotonic() - started, 2)
 
 
 class ActionTests(Relayed):
@@ -324,7 +338,53 @@ class BoundaryTests(Relayed):
         self.assertTrue(self.sync.pull_once(wait=0))
         self.assertEqual(self.sync.meta("relay_cursor"), "0")
         self.synced()
-        self.assertEqual(self.sync.meta("relay_instance"), "another")
+        self.assertEqual(self.sync.meta("relay_upstream"), "another")
+
+    def test_a_mac_that_has_synced_is_never_taken_for_a_relay(self):
+        from hq import cli
+        self.agent_asks()
+        self.synced()
+        self.assertEqual(self.sync.meta("relay_upstream"), self.hub.instance)
+        self.assertIsNone(self.sync.meta("relay_instance"))
+        self.assertFalse(cli.is_relay(self.mac))
+        self.assertTrue(cli.is_relay(self.relay_store))
+
+    def test_a_mac_that_synced_under_the_old_key_moves_it_and_keeps_its_place(self):
+        self.agent_asks()
+        self.synced()
+        cursor = self.sync.meta("relay_cursor")
+        with self.mac.db() as db:  # where Macs kept the relay's id before
+            db.execute("UPDATE meta SET key='relay_instance' WHERE key='relay_upstream'")
+        self.assertFalse(self.sync.pull_once(wait=0))
+        self.assertEqual(self.sync.meta("relay_cursor"), cursor)  # moved, not read again from the start
+        self.assertEqual(self.sync.meta("relay_upstream"), self.hub.instance)
+        self.assertIsNone(self.sync.meta("relay_instance"))
+
+
+class ReachTests(unittest.TestCase):
+    def test_an_address_that_never_answers_costs_a_moment_not_a_timeout(self):
+        # Like a network whose IPv6 is broken: the first address swallows the connection.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        port = listener.getsockname()[1]
+        dead = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))  # TEST-NET-1: never routed
+        live = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+        with unittest.mock.patch("socket.getaddrinfo", return_value=[dead, dead, live]):
+            started = time.monotonic()
+            sock = relay.happy_connect("relay.invalid", port, timeout=10)
+        self.addCleanup(sock.close)
+        self.assertEqual(sock.getpeername()[0], "127.0.0.1")
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_nothing_answering_fails_within_the_timeout(self):
+        dead = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 9))
+        with unittest.mock.patch("socket.getaddrinfo", return_value=[dead]):
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                relay.happy_connect("relay.invalid", 9, timeout=1)
+        self.assertLess(time.monotonic() - started, 3)
 
 
 class CLITests(unittest.TestCase):
@@ -351,6 +411,20 @@ class CLITests(unittest.TestCase):
             added = json.loads(self.run_hq(home, "remote", "add", "alpha").stdout)
             self.assertEqual(added["mcp_server"]["url"], "https://relay.invalid/mcp")
             self.assertNotEqual(self.run_hq(home, "relay", "connect", "http://relay.invalid").returncode, 0)
+
+    def test_a_mac_that_has_synced_still_adds_and_revokes_agents_and_can_disconnect(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(self.run_hq(home, "relay", "connect", "https://relay.invalid").returncode, 0)
+            with Store(Path(home) / "hq.sqlite3").db() as db:  # what an earlier sync left on Macs
+                db.execute("INSERT INTO meta VALUES ('relay_instance','an-earlier-relay')")
+            added = self.run_hq(home, "remote", "add", "alpha", "--project", "noclick")
+            self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+            self.assertEqual(json.loads(added.stdout)["mcp_server"]["url"], "https://relay.invalid/mcp")
+            revoked = self.run_hq(home, "remote", "revoke", "alpha")
+            self.assertEqual(revoked.returncode, 0, revoked.stdout + revoked.stderr)
+            dropped = self.run_hq(home, "relay", "disconnect")
+            self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
+            self.assertFalse(json.loads(self.run_hq(home, "relay", "status").stdout)["connected"])
 
     def test_a_relay_takes_its_agents_from_your_mac(self):
         with tempfile.TemporaryDirectory() as home:

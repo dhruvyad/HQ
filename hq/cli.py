@@ -332,6 +332,10 @@ def usage_command(action):
 
 
 def is_relay(store):
+    """A store that serves as a relay. A Mac that syncs with one never is, whatever its meta holds."""
+    from .relay import load_config
+    if load_config(store):
+        return False
     with store.db() as db:
         return db.execute("SELECT 1 FROM meta WHERE key='relay_instance'").fetchone() is not None
 
@@ -360,14 +364,7 @@ def relay_command(args):
     if not args.target:
         raise ValueError("Say where: hq relay connect https://your-relay.example.com")
     made = relay.connect(store, args.target)
-    try:
-        # Named like the sync itself: Cloudflare's browser check turns away Python's default name.
-        check = urllib.request.Request(made["url"] + "/health", headers={"User-Agent": "hq-relay-sync"})
-        with urllib.request.urlopen(check, timeout=10) as response:
-            reachable = json.loads(response.read()).get("ok") is True
-    except (OSError, ValueError):
-        reachable = False
-    return {"url": made["url"], "reachable": reachable,
+    return {"url": made["url"], "reachable": relay.reachable(made["url"]),
             "next": "On the relay, run this once. It holds only this hash, never the key itself:",
             "run_on_relay": made["allow"],
             "then": "HQ syncs while it runs (hq start): your answers go out and agents' reports come in. "

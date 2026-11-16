@@ -203,6 +203,7 @@ class WaitTests(Endpoint):
             self.store.reply(asked[0]["id"], "Yes")
             data = response.read()
             conn.close()
+        self.assertTrue(data.startswith(b": waiting for an answer in HQ\n\n"), data[:60])
         self.assertIn(b": still waiting for an answer in HQ", data)
         messages = self.events(data)
         self.assertTrue(any(m.get("method") == "notifications/progress" and m["params"]["progressToken"] == "p1" for m in messages))
