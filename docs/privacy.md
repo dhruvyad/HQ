@@ -7,7 +7,10 @@ rebinding hostnames, and API requests without the page's random token. It uses
 no external scripts, fonts or analytics. The browser keeps only view settings for
 this origin: folded groups, sort order, and which items you have opened. The endpoint for agents running
 elsewhere is off until you run `hq remote serve`. It too listens only on `127.0.0.1`, serves agent
-tools and never the dashboard, and gives each token only the conversations it registered. See
+tools and never the dashboard, and gives each token only the conversations it registered. A
+[relay](remote-agents.md#keep-them-working-while-your-mac-sleeps), if you set one up, holds remote
+agents' conversations and your answers to them, and nothing of this Mac's own agents; your Mac
+connects out to it, and it keeps only hashes of your Mac's key and of agents' tokens. See
 [Remote agents](remote-agents.md). Like other local
 tools, trusted processes running as your user can access the inbox; this is
 not a multi-user authorization boundary. Session names and responses are

@@ -27,7 +27,7 @@ OFFLINE_FOR = 3600           # a session gone from a live inventory stays offlin
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 KEEP_FILES = 30 * 86400      # files on an item are deleted this long after it is done
-SCHEMA = 11                  # PRAGMA user_version once every migration below has run
+SCHEMA = 12                  # PRAGMA user_version once every migration below has run
 
 
 def data_dir():
@@ -65,6 +65,10 @@ def followup(item, session, now):
     return {"stage": "acknowledged" if heard else "delivering", "stuck": stuck,
             "adoptable": item["project"] != OTHER and (gone or bool(item.get("handoff"))),
             "replied": item.get("replied"), "heard": item.get("heard")}
+
+
+ELSEWHERE = "That conversation runs elsewhere and reaches HQ through your relay; only its own agent acts for it"
+NO_FILES = "Files can't reach an agent running elsewhere yet; paste what it needs as text"
 
 
 def token_hash(token):
@@ -128,6 +132,13 @@ class Store:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, hash TEXT NOT NULL UNIQUE,
                     project TEXT NOT NULL DEFAULT '', created REAL NOT NULL, last_used REAL, revoked REAL
                 );
+                -- What you did on this Mac to a relay's conversations, in order, until the relay has it.
+                CREATE TABLE IF NOT EXISTS relay_outbox (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, item_id TEXT NOT NULL,
+                    op TEXT NOT NULL, args TEXT NOT NULL, created REAL NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending', sent REAL, error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
             db.execute("BEGIN IMMEDIATE")
@@ -166,6 +177,9 @@ class Store:
             # The token a remote agent registered a conversation with: only that token may use it.
             if "remote_token" not in {r["name"] for r in db.execute("PRAGMA table_info(sessions)")}:
                 db.execute("ALTER TABLE sessions ADD COLUMN remote_token TEXT")
+            # A copy of a conversation that lives on your relay: the relay is its truth, this Mac a mirror.
+            if "mirror" not in {r["name"] for r in db.execute("PRAGMA table_info(sessions)")}:
+                db.execute("ALTER TABLE sessions ADD COLUMN mirror INTEGER NOT NULL DEFAULT 0")
             # An inbox that ran an early build of accounts has the table without these.
             kept = {r["name"] for r in db.execute("PRAGMA table_info(accounts)")}
             for name, declared in (("last_used", "REAL"), ("expires", "REAL"), ("refresh_expires", "REAL"),
@@ -199,7 +213,9 @@ class Store:
         now = time.time()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            held = db.execute("SELECT remote_token FROM sessions WHERE id=?", (id,)).fetchone()
+            held = db.execute("SELECT remote_token,mirror FROM sessions WHERE id=?", (id,)).fetchone()
+            if held and held["mirror"]:
+                raise ValueError(ELSEWHERE)
             # A remote agent's conversation is its token's alone, and it can't take one from this Mac.
             if held and held["remote_token"] != remote_token:
                 raise ValueError("That conversation belongs to another agent")
@@ -270,6 +286,29 @@ class Store:
     def token_sessions(self, token_id):
         with self.db() as db:
             return {r["id"] for r in db.execute("SELECT id FROM sessions WHERE remote_token=?", (token_id,))}
+
+    # -- Conversations that live on your relay -----------------------------------------
+
+    @staticmethod
+    def mirrored(db, item_id=None, session_id=None):
+        """Whether this item, or this conversation, is a copy of one that lives on your relay."""
+        if item_id is not None:
+            row = db.execute("SELECT s.mirror FROM items i JOIN sessions s ON s.id=i.session_id WHERE i.id=?", (item_id,)).fetchone()
+        else:
+            row = db.execute("SELECT mirror FROM sessions WHERE id=?", (session_id,)).fetchone()
+        return bool(row and row[0])
+
+    @staticmethod
+    def relay(db, item_id, op, **args):
+        """Queue what you did to a relay's item, in the same transaction that did it here, so it
+        reaches the relay exactly once and in order, even if this Mac sleeps or HQ stops first."""
+        db.execute("INSERT INTO relay_outbox (id,item_id,op,args,created) VALUES (?,?,?,?,?)",
+                   (str(uuid.uuid4()), item_id, op, json.dumps(args), time.time()))
+
+    def local(self, db, item_id=None, session_id=None):
+        """An agent's own action, refused here for a conversation that lives on the relay."""
+        if self.mirrored(db, item_id, session_id):
+            raise ValueError(ELSEWHERE)
 
     def bind_codex(self, id, external_id, endpoint=None):
         self.session(id)
@@ -455,6 +494,7 @@ class Store:
             self.require_readable(owner, options, presentation)
         id, now = str(uuid.uuid4()), time.time()
         with self.db() as db:
+            self.local(db, session_id=session_id)
             db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until,presentation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until, json.dumps(presentation)))
         return self.item(id)
@@ -662,6 +702,8 @@ class Store:
                 raise ValueError("Item not found")
             if session_id is not None and row["session_id"] != session_id:
                 raise ValueError("Item belongs to a different session")
+            if session_id is not None:
+                self.local(db, session_id=session_id)
             if row["status"] != "open":
                 raise ValueError("Only open items can be updated; saved replies are preserved")
             merged = {**dict(row), **patch}
@@ -673,6 +715,8 @@ class Store:
             presentation = self.presentation(**{**json.loads(row["presentation"]), **{k: v for k, v in patch.items() if k not in {"owner", "waiting_on", "defer_until", "title", "detail"}}})
             db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,presentation=?,updated=? WHERE id=?",
                        (title, detail, owner, waiting_on, defer_until, json.dumps(presentation), time.time(), item_id))
+            if self.mirrored(db, item_id):
+                self.relay(db, item_id, "update", patch=patch)
         return self.item(item_id)
 
     @staticmethod
@@ -739,19 +783,23 @@ class Store:
             raise ValueError(f"{name} must be text, at most 20000 characters")
         return "\n\n".join(part for part in ((text or "").strip(), files.describe(found)) if part), found
 
-    def reply(self, id, text, attachments=None):
-        (text, found), now = self.compose(text, attachments, "answer"), time.time()
+    def reply(self, id, text, attachments=None, reply_id=None):
+        (text, found), now, reply_id = self.compose(text, attachments, "answer"), time.time(), reply_id or str(uuid.uuid4())
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT status,kind FROM items WHERE id=?", (id,)).fetchone()
             if not row or row["status"] != "open":
                 raise ValueError("Only open items can receive a response")
             db.execute("INSERT INTO replies (id,item_id,text,created,attachments) VALUES (?,?,?,?,?)",
-                       (str(uuid.uuid4()), id, text, now, json.dumps(found)))
+                       (reply_id, id, text, now, json.dumps(found)))
             db.execute("UPDATE items SET status='answered',updated=? WHERE id=?", (now, id))
+            if self.mirrored(db, id):
+                if found:
+                    raise ValueError(NO_FILES)
+                self.relay(db, id, "reply", reply_id=reply_id, text=text)
         return self.item(id)
 
-    def skip(self, id, reason=""):
+    def skip(self, id, reason="", reply_id=None):
         """The human decides not to do this: close it now and tell the agent to drop it."""
         if not isinstance(reason, str) or len(reason) > 2000:
             raise ValueError("reason must be text, at most 2000 characters")
@@ -765,14 +813,17 @@ class Store:
             if not row or row["status"] != "open":
                 raise ValueError("Only open items can be skipped")
             presentation = {**json.loads(row["presentation"]), "skipped": True, "settle": "skip", "pinned": False}
+            reply_id = reply_id or str(uuid.uuid4())
             # The reply reaches the agent through its usual inbox, hook or live route.
-            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (str(uuid.uuid4()), id, text, now))
+            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (reply_id, id, text, now))
+            if self.mirrored(db, id):
+                self.relay(db, id, "skip", reply_id=reply_id, reason=reason)
             db.execute("""UPDATE comments SET state='cancelled' WHERE item_id=? AND author='human' AND state!='cancelled'
                 AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (id,))
             db.execute("UPDATE items SET status='answered',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
         return self.item(id)
 
-    def mark_done(self, id, note=""):
+    def mark_done(self, id, note="", reply_id=None):
         """You finished it yourself: tell the agent, and close once it has heard."""
         if not isinstance(note, str) or len(note) > 2000:
             raise ValueError("note must be text, at most 2000 characters")
@@ -786,7 +837,10 @@ class Store:
             if not row or row["status"] != "open":
                 raise ValueError("Only open items can be marked done")
             presentation = {**json.loads(row["presentation"]), "settle": "done", "pinned": False}
-            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (str(uuid.uuid4()), id, text, now))
+            reply_id = reply_id or str(uuid.uuid4())
+            db.execute("INSERT INTO replies (id,item_id,text,created) VALUES (?,?,?,?)", (reply_id, id, text, now))
+            if self.mirrored(db, id):
+                self.relay(db, id, "done", reply_id=reply_id, note=note)
             db.execute("UPDATE items SET status='answered',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), now, id))
         return self.item(id)
 
@@ -805,6 +859,8 @@ class Store:
             if note.strip():
                 presentation["agent_note"] = note.strip()
             db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
+            if self.mirrored(db, id):
+                self.relay(db, id, "close", note=note)
         return self.item(id)
 
     def hand_off(self, id):
@@ -814,6 +870,8 @@ class Store:
             row = db.execute("SELECT status,presentation FROM items WHERE id=?", (id,)).fetchone()
             if not row or row["status"] != "answered":
                 raise ValueError("Only decided items can be handed to another agent")
+            if self.mirrored(db, id):
+                raise ValueError("An agent running elsewhere keeps its own decisions; close it yourself instead")
             presentation = {**json.loads(row["presentation"]), "handoff": True}
             db.execute("UPDATE items SET presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
         return self.item(id)
@@ -832,6 +890,7 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM items WHERE id=?", (id,)).fetchone():
                 raise ValueError("Item not found")
+            self.local(db, id)
             pending = db.execute("SELECT 1 FROM replies WHERE item_id=? AND state IN ('pending','sending','sent','failed')", (id,)).fetchone()
             if pending:
                 raise ValueError("The response must be received before this item can be completed")
@@ -858,8 +917,8 @@ class Store:
             item["asking"] = any(c["author"] == "human" and not c["answered"] and c["state"] != "cancelled" for c in item["comments"])
             item["bucket"] = self.bucket(item)
 
-    def ask_agent(self, item_id, text, attachments=None):
-        (text, found), now, comment_id = self.compose(text, attachments, "question"), time.time(), str(uuid.uuid4())
+    def ask_agent(self, item_id, text, attachments=None, comment_id=None):
+        (text, found), now, comment_id = self.compose(text, attachments, "question"), time.time(), comment_id or str(uuid.uuid4())
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             item = db.execute("SELECT status FROM items WHERE id=?", (item_id,)).fetchone()
@@ -868,6 +927,10 @@ class Store:
             db.execute("INSERT INTO comments (id,item_id,author,text,created,attachments) VALUES (?,?,'human',?,?,?)",
                        (comment_id, item_id, text, now, json.dumps(found)))
             db.execute("UPDATE items SET updated=? WHERE id=?", (now, item_id))
+            if self.mirrored(db, item_id):
+                if found:
+                    raise ValueError(NO_FILES)
+                self.relay(db, item_id, "ask", comment_id=comment_id, text=text)
         return self.comment(comment_id)
 
     def comment(self, comment_id):
@@ -901,6 +964,7 @@ class Store:
             question = db.execute("SELECT c.*,i.session_id FROM comments c JOIN items i ON i.id=c.item_id WHERE c.id=?", (comment_id,)).fetchone()
             if not question or question["session_id"] != session_id or question["author"] != "human":
                 raise ValueError("No human question in this session")
+            self.local(db, session_id=session_id)
             if question["state"] == "cancelled":
                 raise ValueError("This question was cancelled")
             if db.execute("SELECT 1 FROM comments WHERE parent_id=?", (comment_id,)).fetchone():
@@ -912,6 +976,7 @@ class Store:
 
     def acknowledge_comment(self, comment_id, session_id):
         with self.db() as db:
+            self.local(db, session_id=session_id)
             cursor = db.execute("""UPDATE comments SET state='received',error=NULL,delivered=?,claim_until=0
                 WHERE id=? AND author='human' AND state!='cancelled'
                 AND item_id IN (SELECT id FROM items WHERE session_id=?)""", (time.time(), comment_id, session_id))
@@ -925,6 +990,9 @@ class Store:
                 WHERE id=? AND author='human' AND NOT EXISTS (SELECT 1 FROM comments a WHERE a.parent_id=comments.id)""", (comment_id,))
             if not cursor.rowcount:
                 raise ValueError("Only unanswered human questions can be cancelled")
+            row = db.execute("SELECT item_id FROM comments WHERE id=?", (comment_id,)).fetchone()
+            if self.mirrored(db, row["item_id"]):
+                self.relay(db, row["item_id"], "cancel", comment_id=comment_id)
         return self.comment(comment_id)
 
     def take_questions(self, item_id, session_id):
@@ -983,7 +1051,7 @@ class Store:
             return []
         items = self.snapshot(status="answered")["items"]
         found = [i for i in items if i["session_id"] != session_id and i["project"] == project
-                 and i.get("followup") and i["followup"]["adoptable"]]
+                 and i.get("followup") and i["followup"]["adoptable"] and i.get("provider") != "remote"]
         return sorted(found, key=lambda i: i["followup"]["replied"] or 0)
 
     def adopt(self, item_id, session_id):
@@ -1047,6 +1115,7 @@ class Store:
 
     def acknowledge(self, item_id, session_id):
         with self.db() as db:
+            self.local(db, session_id=session_id)
             cursor = db.execute("""UPDATE replies SET state='received',delivered=COALESCE(delivered,?),error=NULL
                 WHERE item_id=? AND state!='withdrawn' AND item_id IN (SELECT id FROM items WHERE session_id=?)""",
                                 (time.time(), item_id, session_id))
@@ -1058,6 +1127,8 @@ class Store:
     def wait(self, item_id, session_id, timeout=3600, cancel=None):
         if self.item(item_id)["session_id"] != session_id:
             raise ValueError("This item belongs to a different session")
+        with self.db() as db:
+            self.local(db, session_id=session_id)
         if not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
             raise ValueError("timeout must be between 1 and 86400 seconds")
         deadline, owner = time.monotonic() + timeout, str(uuid.uuid4())
