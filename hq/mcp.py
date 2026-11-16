@@ -79,73 +79,106 @@ def with_notes(item):
     return {**item, "readability": notes} if notes else item
 
 
-def run(provider="other", channel=False, session_id=None):
-    store = Store()
-    write_lock, closed, initialized = threading.Lock(), threading.Event(), threading.Event()
-    cancellations = {}
-    bound_id = session_id or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID") or "connection:" + str(uuid.uuid4())
-    # A remote model (ChatGPT, through the tunnel) is outside this Mac's trust: it sees and acts on
-    # only the conversations it registered itself, never another agent's items or the user's answers.
-    remote, owned = provider == "chatgpt" and not channel, set()
+# Ids this Mac's own agents register under; a remote agent names its conversations otherwise.
+LOCAL_IDS = ("codex:", "claude-code:", "claude-desktop:", "chatgpt:", "connection:")
+REMOTE_WAIT = 600   # a remote agent's wait ends within ten minutes, well inside what its host allows a quiet call
 
-    def send(value):
-        with write_lock:
-            if not closed.is_set():
-                sys.stdout.write(json.dumps({"jsonrpc": "2.0", **value}) + "\n")
-                sys.stdout.flush()
 
-    def execute(name, arguments, cancel):
-        args = dict(arguments)
+class Tools:
+    """HQ's tools for one connection. A local agent is trusted with the whole inbox. A remote one,
+    ChatGPT through its tunnel or an agent elsewhere holding a token, only ever sees and acts on
+    the conversations it registered itself: never another agent's items, or your answers to them."""
+
+    def __init__(self, store, provider="other", remote=False, token=None, bound=None):
+        self.store, self.provider, self.token, self.bound = store, provider, token, bound
+        self.remote = remote or token is not None
+        self.owned = set()  # the tunnel's conversations, for this connection only
+
+    def mine(self):
+        return self.store.token_sessions(self.token["id"]) if self.token else self.owned
+
+    def owns(self, sid):
+        return not self.remote or (isinstance(sid, str) and sid in self.mine())
+
+    def projects(self):
+        items = self.store.snapshot()["items"]
+        if not self.token:
+            return workstreams.index(items)
+        # A token sees the workstreams of its own project and of what it reported, nothing else of your HQ.
+        mine = self.mine()
+        items = [i for i in items if i["session_id"] in mine or (self.token["project"] and i["project"] == self.token["project"])]
+        allowed = {i["project"] for i in items} | ({self.token["project"]} if self.token["project"] else set())
+        return {id: p for id, p in workstreams.index(items).items() if id in allowed}
+
+    def register(self, args):
+        sid = args.get("session_id")
+        try:
+            existing = self.store.session(sid)
+        except ValueError:
+            existing = None
+        if self.remote and existing and not self.owns(sid):
+            raise ValueError("That conversation belongs to another agent")
+        if self.token and not existing and isinstance(sid, str) and sid.startswith(LOCAL_IDS):
+            raise ValueError("Those ids belong to this Mac's agents; name yours like noclick-agent:<agent id>")
+        # Only what the tool declares, and an existing conversation keeps how it is reached
+        # and resumed: its provider, id and folder are set by its own runtime, not by a caller.
+        fields = {"id": sid, "name": args.get("name")}
+        if existing:
+            fields["provider"] = existing["provider"]
+        else:
+            fields.update(provider="remote" if self.token else (args.get("provider") or self.provider),
+                          external_id=args.get("external_id"), cwd=args.get("cwd"))
+        result = self.store.register(**fields, remote_token=self.token["id"] if self.token else None)
+        self.store.heartbeat(result["id"])
+        self.owned.add(result["id"])
+        return result
+
+    def call(self, name, arguments, cancel):
+        store, args = self.store, dict(arguments)
         id = args.get("session_id")
-        if channel:
-            if id and id != bound_id:
+        if self.bound:
+            if id and id != self.bound:
                 raise ValueError("This HQ channel belongs to a different conversation")
             if name == "hq_list":
-                args["session_id"] = bound_id
+                args["session_id"] = self.bound
         if name == "hq_reporting_guide":
-            return {"instructions": AGENT_INSTRUCTIONS, "projects": workstreams.index(store.snapshot()["items"])}
+            return {"instructions": AGENT_INSTRUCTIONS, "projects": self.projects()}
         if name == "hq_register_session":
-            sid = args.get("session_id")
-            try:
-                existing = store.session(sid)
-            except ValueError:
-                existing = None
-            if remote and existing and sid not in owned:
-                raise ValueError("That conversation belongs to another agent")
-            # Only what the tool declares, and an existing conversation keeps how it is reached
-            # and resumed: its provider, id and folder are set by its own runtime, not by a caller.
-            fields = {"id": sid, "name": args.get("name")}
-            if existing:
-                fields["provider"] = existing["provider"]
-            else:
-                fields.update(provider=args.get("provider") or provider, external_id=args.get("external_id"), cwd=args.get("cwd"))
-            result = store.register(**fields)
-            store.heartbeat(result["id"])
-            owned.add(result["id"])
-            return result
-        if remote and name != "hq_reporting_guide":
-            id = args.setdefault("session_id", next(iter(owned), None)) if name == "hq_list" else id
-            if id not in owned:
+            return self.register(args)
+        if self.remote:
+            if name == "hq_adopt" and self.token:
+                raise ValueError("A remote agent takes over no other conversation's decisions")
+            if name == "hq_list" and id is None:
+                if not self.mine():
+                    raise ValueError("Register this conversation with hq_register_session first, and use its session_id")
+            elif not self.owns(id):
                 raise ValueError("Register this conversation with hq_register_session first, and use its session_id")
         if name == "hq_list":
             snapshot = store.snapshot(**args)
-            if remote:
-                snapshot["sessions"] = [s for s in snapshot["sessions"] if s["id"] in owned]
+            if self.remote:
+                mine = self.mine()
+                snapshot["sessions"] = [s for s in snapshot["sessions"] if s["id"] in mine]
+                snapshot["items"] = [i for i in snapshot["items"] if i["session_id"] in mine]
             return snapshot
         if id:
             store.heartbeat(id)
-        if name in {"hq_report", "hq_request_input"}:
+        if self.token and self.token["project"] and name in {"hq_report", "hq_request_input"}:
+            args.setdefault("project", self.token["project"])  # a token's items belong to the project it was made for
+        if name in {"hq_request_input", "hq_wait"}:
+            limit = REMOTE_WAIT if self.token else 86400
             timeout = args.pop("timeout", 120)
-            if name == "hq_request_input":
-                if not isinstance(timeout, (int, float)) or not 0 < timeout <= 86400:
-                    raise ValueError("timeout must be between 1 and 86400 seconds")
-                args["kind"] = "question"
+            if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= limit:
+                raise ValueError(f"timeout must be between 1 and {limit} seconds")
+            if name == "hq_wait":
+                return store.wait(args["item_id"], id, timeout, cancel)
+            args["kind"] = "question"
             item = store.add(**args, readable=True)
-            return store.wait(item["id"], id, timeout, cancel) if name == "hq_request_input" else with_notes(item)
+            return store.wait(item["id"], id, timeout, cancel)
+        if name == "hq_report":
+            args.pop("timeout", None)
+            return with_notes(store.add(**args, readable=True))
         if name == "hq_update":
             return with_notes(store.update(**args))
-        if name == "hq_wait":
-            return store.wait(args["item_id"], id, args.get("timeout", 120), cancel)
         if name == "hq_inbox":
             return store.inbox(id)
         if name == "hq_comments":
@@ -165,6 +198,28 @@ def run(provider="other", channel=False, session_id=None):
                 raise ValueError("Item belongs to a different session")
             return store.resolve(args["item_id"], args.get("note", ""))
         raise ValueError("Unknown HQ tool")
+
+    def listed(self):
+        """The tool list this connection may use."""
+        return [{"name": n, "description": d, "inputSchema": s} for n, d, s in TOOLS if not (self.token and n == "hq_adopt")]
+
+
+def run(provider="other", channel=False, session_id=None):
+    store = Store()
+    write_lock, closed, initialized = threading.Lock(), threading.Event(), threading.Event()
+    cancellations = {}
+    bound_id = session_id or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID") or "connection:" + str(uuid.uuid4())
+    # A remote model (ChatGPT, through the tunnel) is outside this Mac's trust.
+    tools = Tools(store, provider, remote=provider == "chatgpt" and not channel, bound=bound_id if channel else None)
+
+    def send(value):
+        with write_lock:
+            if not closed.is_set():
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", **value}) + "\n")
+                sys.stdout.flush()
+
+    def execute(name, arguments, cancel):
+        return tools.call(name, arguments, cancel)
 
     def call(message):
         request_id = message["id"]
@@ -235,7 +290,7 @@ def run(provider="other", channel=False, session_id=None):
                     elif method == "ping":
                         send({"id": id, "result": {}})
                     elif method == "tools/list":
-                        send({"id": id, "result": {"tools": [{"name": n, "description": d, "inputSchema": s} for n, d, s in TOOLS]}})
+                        send({"id": id, "result": {"tools": tools.listed()}})
                     elif method == "tools/call" and id is not None:
                         cancellations[id] = threading.Event()
                         pool.submit(call, message)

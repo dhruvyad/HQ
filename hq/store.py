@@ -1,7 +1,10 @@
 """One local database shared by the CLI, dashboard, and MCP processes."""
+import hashlib
 import json
 from datetime import date
 import os
+import re
+import secrets
 import sqlite3
 import time
 import uuid
@@ -10,9 +13,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import attachments as files
-from .workstreams import OTHER, place, project_of
+from .workstreams import OTHER, place, project_of, slug
 
-PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "other"}
+PROVIDERS = {"codex", "claude-code", "claude-desktop", "chatgpt", "remote", "other"}
 ROUTES = {"inbox", "codex"}
 # A decision closes in two steps, like a handshake. Your reply, answer or skip or done, is
 # only the first: it stays tracked until the agent confirms it heard, and for an answer,
@@ -24,7 +27,7 @@ OFFLINE_FOR = 3600           # a session gone from a live inventory stays offlin
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 KEEP_FILES = 30 * 86400      # files on an item are deleted this long after it is done
-SCHEMA = 10                  # PRAGMA user_version once every migration below has run
+SCHEMA = 11                  # PRAGMA user_version once every migration below has run
 
 
 def data_dir():
@@ -62,6 +65,11 @@ def followup(item, session, now):
     return {"stage": "acknowledged" if heard else "delivering", "stuck": stuck,
             "adoptable": item["project"] != OTHER and (gone or bool(item.get("handoff"))),
             "replied": item.get("replied"), "heard": item.get("heard")}
+
+
+def token_hash(token):
+    # A remote agent's token is 256 random bits, so a plain hash keeps it as safe as a slow one would.
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 class Store:
@@ -115,6 +123,11 @@ class Store:
                     expires REAL, refresh_expires REAL, stale INTEGER NOT NULL DEFAULT 0,
                     usage TEXT, usage_as_of REAL, PRIMARY KEY(tool, key)
                 );
+                -- Agents running elsewhere, each with its own token. Only the token's hash is kept.
+                CREATE TABLE IF NOT EXISTS remote_tokens (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, hash TEXT NOT NULL UNIQUE,
+                    project TEXT NOT NULL DEFAULT '', created REAL NOT NULL, last_used REAL, revoked REAL
+                );
             """)
             # Serialize migrations across dashboard, CLI, and MCP processes.
             db.execute("BEGIN IMMEDIATE")
@@ -150,6 +163,9 @@ class Store:
             # When you put an agent away; it comes back by itself once it runs or reports again.
             if "archived" not in {r["name"] for r in db.execute("PRAGMA table_info(sessions)")}:
                 db.execute("ALTER TABLE sessions ADD COLUMN archived REAL NOT NULL DEFAULT 0")
+            # The token a remote agent registered a conversation with: only that token may use it.
+            if "remote_token" not in {r["name"] for r in db.execute("PRAGMA table_info(sessions)")}:
+                db.execute("ALTER TABLE sessions ADD COLUMN remote_token TEXT")
             # An inbox that ran an early build of accounts has the table without these.
             kept = {r["name"] for r in db.execute("PRAGMA table_info(accounts)")}
             for name, declared in (("last_used", "REAL"), ("expires", "REAL"), ("refresh_expires", "REAL"),
@@ -172,22 +188,88 @@ class Store:
             db.close()
 
     def register(self, id, name, provider="other", external_id=None, cwd=None,
-                 route="inbox", endpoint=None):
+                 route="inbox", endpoint=None, remote_token=None):
         id, name = required(id, "session id", 200), required(name, "name", 500)
         if provider not in PROVIDERS or route not in ROUTES:
             raise ValueError("Unknown provider or response route")
         if route == "codex" and (provider != "codex" or not external_id):
             raise ValueError("Codex routing requires a Codex thread id")
+        if (provider == "remote") != bool(remote_token):
+            raise ValueError("Only a remote agent's token registers a remote conversation")
         now = time.time()
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            held = db.execute("SELECT remote_token FROM sessions WHERE id=?", (id,)).fetchone()
+            # A remote agent's conversation is its token's alone, and it can't take one from this Mac.
+            if held and held["remote_token"] != remote_token:
+                raise ValueError("That conversation belongs to another agent")
             db.execute("""INSERT INTO sessions
-                (id,name,provider,external_id,cwd,route,endpoint,created,seen)
-                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                (id,name,provider,external_id,cwd,route,endpoint,created,seen,remote_token)
+                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, provider=excluded.provider,
                 external_id=COALESCE(excluded.external_id,sessions.external_id),
                 cwd=COALESCE(excluded.cwd,sessions.cwd), seen=excluded.seen""",
-                       (id, name, provider, external_id, cwd, route, endpoint, now, now))
+                       (id, name, provider, external_id, cwd, route, endpoint, now, now, remote_token))
         return self.session(id)
+
+    # -- Remote agents' tokens ---------------------------------------------------------
+
+    def add_token(self, name, project=""):
+        """A new token for an agent running elsewhere. The token is returned once and only its
+        hash is kept, so a lost token is revoked and replaced, never shown again."""
+        name = required(name, "name", 80).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]*", name):
+            raise ValueError("Name it with letters, numbers, spaces, dots, dashes or underscores")
+        project = project or ""
+        if not isinstance(project, str) or len(project) > 80:
+            raise ValueError("project must be a short name")
+        token = "hqr_" + secrets.token_urlsafe(32)
+        row = {"id": uuid.uuid4().hex[:12], "name": name, "project": slug(project) if project else "", "created": time.time()}
+        try:
+            with self.db() as db:
+                db.execute("INSERT INTO remote_tokens (id,name,hash,project,created) VALUES (?,?,?,?,?)",
+                           (row["id"], name, token_hash(token), row["project"], row["created"]))
+        except sqlite3.IntegrityError:
+            raise ValueError(f"A remote agent named {name} already exists; revoke it or pick another name") from None
+        return {**row, "token": token}
+
+    def tokens(self):
+        with self.db() as db:
+            rows = db.execute("""SELECT t.id,t.name,t.project,t.created,t.last_used,t.revoked,
+                (SELECT COUNT(*) FROM sessions s WHERE s.remote_token=t.id) AS sessions
+                FROM remote_tokens t ORDER BY t.created""").fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_token(self, name):
+        """Stops the token at once: every request with it is refused from now on."""
+        with self.db() as db:
+            cursor = db.execute("UPDATE remote_tokens SET revoked=? WHERE (name=? OR id=?) AND revoked IS NULL",
+                                (time.time(), name, name))
+            if not cursor.rowcount:
+                raise ValueError(f"No remote agent named {name} has a working token")
+        return [t for t in self.tokens() if name in (t["name"], t["id"])][0]
+
+    def token_for(self, token):
+        """The working token this secret is, or None."""
+        if not isinstance(token, str) or not token.startswith("hqr_") or len(token) > 200:
+            return None
+        with self.db() as db:
+            row = db.execute("SELECT id,name,project,created,last_used FROM remote_tokens WHERE hash=? AND revoked IS NULL",
+                             (token_hash(token),)).fetchone()
+        return dict(row) if row else None
+
+    def token_for_id(self, token_id):
+        with self.db() as db:
+            row = db.execute("SELECT id,name,project FROM remote_tokens WHERE id=? AND revoked IS NULL", (token_id,)).fetchone()
+        return dict(row) if row else None
+
+    def token_used(self, token_id):
+        with self.db() as db:
+            db.execute("UPDATE remote_tokens SET last_used=? WHERE id=?", (time.time(), token_id))
+
+    def token_sessions(self, token_id):
+        with self.db() as db:
+            return {r["id"] for r in db.execute("SELECT id FROM sessions WHERE remote_token=?", (token_id,))}
 
     def bind_codex(self, id, external_id, endpoint=None):
         self.session(id)
