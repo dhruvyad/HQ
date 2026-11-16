@@ -361,7 +361,9 @@ def relay_command(args):
         raise ValueError("Say where: hq relay connect https://your-relay.example.com")
     made = relay.connect(store, args.target)
     try:
-        with urllib.request.urlopen(made["url"] + "/health", timeout=10) as response:
+        # Named like the sync itself: Cloudflare's browser check turns away Python's default name.
+        check = urllib.request.Request(made["url"] + "/health", headers={"User-Agent": "hq-relay-sync"})
+        with urllib.request.urlopen(check, timeout=10) as response:
             reachable = json.loads(response.read()).get("ok") is True
     except (OSError, ValueError):
         reachable = False

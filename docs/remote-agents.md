@@ -72,6 +72,10 @@ already closed. `hq doctor` checks it too.
 
 Files can't be attached for an agent on a relay yet: paste what it needs as text.
 
+Behind Cloudflare, its Browser Integrity Check refuses a request whose `User-Agent` is Python's
+default (`Python-urllib/…`, error 1010). MCP clients and HQ's own sync name themselves, so this
+only matters for a hand-written script: give it a `User-Agent` of its own.
+
 ## 3. Add it to the agent
 
 The header's value is `Bearer` followed by the token. Keep it as a secret, never written into
