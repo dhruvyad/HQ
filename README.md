@@ -86,7 +86,7 @@ have their own routes, each with its limits; see [Connections](docs/connections.
 - [The dashboard](docs/dashboard.md): lists, activity, where your data lives
 - [For agents](docs/for-agents.md): the CLI, readable reports, clarification threads, MCP tools
 - [Connections](docs/connections.md): Codex, Claude Code, Claude Desktop and ChatGPT in depth
-- [Remote agents](docs/remote-agents.md): agents running elsewhere, each with its own token
+- [Remote agents](docs/remote-agents.md): agents running elsewhere, each with its own token, and a relay that keeps them working while your Mac sleeps
 - [Privacy and local boundaries](docs/privacy.md)
 - [Development](docs/development.md): run from a clone, tests, regenerate these pictures
 - [Design guidelines](DESIGN.md)

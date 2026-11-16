@@ -5,6 +5,7 @@ and nothing from the Keychain, and of the agents' config files it reports only w
 HQ's entries are there and which program they run. Each check says ok, warn or fail in
 plain words, and how to fix it when it is not ok.
 """
+from contextlib import closing
 import ctypes
 from datetime import datetime
 import fcntl
@@ -121,6 +122,31 @@ def hq_checks(build):
         yield check(section, "Data folder", OK, f"{short(home)}, private to you")
     yield inbox_check(home / "hq.sqlite3")
     yield server_check(home, build)
+    if (home / "relay.json").exists():
+        yield relay_check(home)
+
+
+def relay_check(home):
+    """Whether remote agents' conversations sync with the relay. Never shows the sync key."""
+    try:
+        url = json.loads((home / "relay.json").read_text())["url"]
+        with closing(open_inbox(home / "hq.sqlite3")) as db:
+            db.row_factory = sqlite3.Row
+            meta = {r["key"]: r["value"] for r in db.execute("SELECT key,value FROM meta WHERE key LIKE 'relay_%'")}
+            waiting = db.execute("SELECT COUNT(*) FROM relay_outbox WHERE state='pending'").fetchone()[0]
+            refused = db.execute("SELECT COUNT(*) FROM relay_outbox WHERE state='refused'").fetchone()[0]
+    except (OSError, ValueError, KeyError, sqlite3.Error) as error:
+        return check("HQ", "Relay", WARN, f"Can't read the relay setup: {error}", "hq relay connect https://YOUR-RELAY")
+    pulled = float(meta.get("relay_pulled") or 0)
+    ago = time.time() - pulled if pulled else None
+    summary = f"Syncs with {url}" + (f", last {int(ago)}s ago" if ago is not None else ", not yet")
+    if refused:
+        summary += f"; it refused {plural(refused, 'action')} of yours (hq relay status lists them)"
+    if meta.get("relay_error") and (ago is None or ago > 120):
+        return check("HQ", "Relay", WARN, f"{summary}: {meta['relay_error']}", "hq relay status, and check the relay with ssh")
+    if waiting and (ago is None or ago > 120):
+        return check("HQ", "Relay", WARN, f"{summary}; {plural(waiting, 'action')} of yours waiting to go out", "hq start")
+    return check("HQ", "Relay", WARN if refused else OK, summary)
 
 
 def inbox_check(path):

@@ -8,6 +8,8 @@ else. Each token sees and acts on only the conversations it registered itself.
 It keeps no state between requests, so it can restart under a connected agent. A call that waits
 for your answer streams it back as Server-Sent Events, with a keepalive line every few seconds so
 the agent's host sees it is alive, and ends within ten minutes.
+
+On a relay (relay.py) it also serves /sync to your Mac, behind the Mac's own key.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
@@ -15,6 +17,7 @@ import json
 import sys
 import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 
 from .mcp import AGENT_INSTRUCTIONS, Tools
 from . import __version__ as VERSION
@@ -40,11 +43,12 @@ class Endpoint(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, store, host="127.0.0.1", port=4311, clock=time.monotonic, log=None):
+    def __init__(self, store, host="127.0.0.1", port=4311, clock=time.monotonic, log=None, relay=None):
         if not loopback(host):
             raise ValueError("HQ's remote endpoint listens on this machine only; put HTTPS in front of it")
         super().__init__((host, port), Handler)
-        self.store, self.clock = store, clock
+        self.store, self.clock, self.relay = store, clock, relay
+        self.closing = threading.Event()
         self.log = log or (lambda line: print(line, file=sys.stderr, flush=True))
         self.lock = threading.Lock()
         self.buckets, self.busy, self.cancels, self.touched = {}, {}, {}, {}
@@ -125,11 +129,48 @@ class Handler(BaseHTTPRequestHandler):
         self.server.touch(token["id"])
         return token
 
+    # -- Your Mac, on a relay ---------------------------------------------------------------
+
+    def syncing(self):
+        """Whether this is your Mac's sync, allowed in; False once a refusal has been sent."""
+        if self.headers.get("Origin"):
+            self.refuse(403, "Browsers can't use HQ's relay")
+            return False
+        scheme, _, secret = (self.headers.get("Authorization") or "").partition(" ")
+        if scheme.lower() != "bearer" or not self.server.relay.allowed(secret.strip()):
+            self.refuse(401, "Send this relay's sync key: run `hq relay connect` on your Mac, then `hq relay allow` here",
+                        [("WWW-Authenticate", 'Bearer realm="hq-relay"')])
+            return False
+        return True
+
+    def sync(self, method):
+        if not self.syncing():
+            return
+        path, query = urlsplit(self.path).path, parse_qs(urlsplit(self.path).query)
+        try:
+            if method == "GET" and path == "/sync/pull":
+                number = lambda key: float((query.get(key) or ["0"])[0])
+                return self.send(200, self.server.relay.pull(int(number("since")), number("wait"), stop=self.server.closing))
+            if method == "POST" and path == "/sync/push":
+                length = int(self.headers.get("Content-Length", ""))
+                if not 0 < length <= BODY_LIMIT:
+                    return self.refuse(413, "Push at most 1 MB at a time")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict) or not isinstance(body.get("ops", []), list):
+                    return self.send(400, {"error": "Send {ops, tokens}"})
+                return self.send(200, self.server.relay.push(body.get("ops", []), body.get("tokens")))
+        except ValueError as error:
+            self.close_connection = True
+            return self.send(400, {"error": str(error)})
+        self.refuse(404, "Not a relay path")
+
     # -- Methods ----------------------------------------------------------------------
 
     def do_GET(self):
         if self.path == "/health":
             return self.send(200, {"ok": True})
+        if self.server.relay and self.path.startswith("/sync/"):
+            return self.sync("GET")
         if self.admitted():
             # No stream of its own: an answer comes back on the call that waits for it.
             self.refuse(405, "HQ answers on each call's own stream", [("Allow", "POST")])
@@ -139,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
             self.refuse(405, "HQ keeps no session to end", [("Allow", "POST")])
 
     def do_POST(self):
+        if self.server.relay and self.path.startswith("/sync/"):
+            return self.sync("POST")
         token = self.admitted()
         if not token:
             return
@@ -263,13 +306,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.cancels.pop(key, None)
 
 
-def serve(store, host="127.0.0.1", port=4311):
-    endpoint = Endpoint(store, host, port)
-    print(f"HQ for remote agents at http://{host}:{endpoint.server_address[1]}{PATH}. Put HTTPS in front of it; "
-          "hand each agent its own token from `hq remote add`.", flush=True)
+def serve(store, host="127.0.0.1", port=4311, relay=None):
+    endpoint = Endpoint(store, host, port, relay=relay)
+    where = f"http://{host}:{endpoint.server_address[1]}"
+    if relay:
+        print(f"HQ relay at {where}: agents at {PATH}, your Mac at /sync. Put HTTPS in front of it; add agents on "
+              "your Mac with `hq remote add`.", flush=True)
+    else:
+        print(f"HQ for remote agents at {where}{PATH}. Put HTTPS in front of it; "
+              "hand each agent its own token from `hq remote add`.", flush=True)
+    if threading.current_thread() is threading.main_thread():
+        import signal
+        signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=endpoint.shutdown, daemon=True).start())
     try:
         endpoint.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        endpoint.closing.set()
         endpoint.server_close()

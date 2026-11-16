@@ -35,6 +35,43 @@ suits it well: it connects out, so the machine opens no port, and you route a ho
 to `http://127.0.0.1:4311`. It serves the inbox of the machine it runs on. `GET /health` answers without a token, for the
 tunnel's health check.
 
+### Keep them working while your Mac sleeps
+
+Served from your Mac, the endpoint is gone whenever the Mac sleeps or is offline. A relay is the
+same endpoint on an always-on server of yours: agents report to it and wait on it at any hour,
+and your Mac syncs with it whenever it is awake. You still answer in HQ on your Mac. Your Mac
+only ever connects out, and the relay holds only remote agents' conversations, never your Mac's
+own.
+
+On the server (Python 3.11 or later, nothing else), as a user of its own:
+
+```sh
+hq relay serve             # agents at http://127.0.0.1:4311/mcp, your Mac at /sync
+```
+
+Put HTTPS in front of it as above. Then on your Mac:
+
+```sh
+hq relay connect https://hq-relay.example.com
+```
+
+It makes a sync key that stays on your Mac and prints one line to run on the relay, which holds
+only the key's hash:
+
+```sh
+hq relay allow 3f9a…c21 --name dhruvs-mac
+```
+
+From then on HQ on your Mac pushes what you do to a relay's item (an answer, a skip, a question,
+a pin, a snooze) and pulls what its agents report, both within a second or two while it runs.
+What you do while the Mac can't reach the relay is kept in order and sent once it can. Agents
+are still added and revoked on your Mac with `hq remote add` and `hq remote revoke`, which then
+print the relay's address; the relay takes them from your Mac. `hq relay status` says when it
+last synced and lists anything the relay refused, such as an answer to an item its agent had
+already closed. `hq doctor` checks it too.
+
+Files can't be attached for an agent on a relay yet: paste what it needs as text.
+
 ## 3. Add it to the agent
 
 The header's value is `Bearer` followed by the token. Keep it as a secret, never written into

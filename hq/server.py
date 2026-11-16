@@ -17,6 +17,7 @@ from .accounts import Accounts, AccountsWorker
 from .adapters import Dispatcher
 from .store import Store, data_dir
 from .presence import ClaudePresence
+from .relay import RelaySync
 from .stream import StateFeed
 from .usage import SampleUsage, Usage, UsageWorker
 from .version import build
@@ -308,7 +309,9 @@ def serve(port=4310):
             # A switch, by HQ or by /login, makes the last account's numbers wrong for the new one.
             server.accounts.on_switch = usage.forget
             workers = [(Dispatcher(server.store), 5), (ClaudePresence(server.store), 3), (usage, 3),
-                       (AccountsWorker(server.accounts, server.usage), 3), (FileSweeper(server.store), 3)]
+                       (AccountsWorker(server.accounts, server.usage), 3), (FileSweeper(server.store), 3),
+                       # Idle until `hq relay connect`: then remote agents' conversations sync both ways.
+                       (RelaySync(server.store, log=lambda line: print(line, flush=True)), 3)]
         threads = [threading.Thread(target=worker.run, daemon=True) for worker, _ in workers]
         for thread in threads:
             thread.start()

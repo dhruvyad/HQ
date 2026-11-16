@@ -301,6 +301,15 @@ def parser():
     remote.add_argument("--project", default="", help="add: the project its items belong to, such as noclick")
     remote.add_argument("--url", default="", help="add: the HTTPS address in front of HQ, for the config it prints")
     remote.add_argument("--port", type=int, default=4311, help="serve: the loopback port to listen on")
+    relay = commands.add_parser("relay", help="Keep remote agents' conversations on an always-on server, so they work while "
+                                              "this Mac sleeps: connect this Mac to one, or run one there")
+    relay.add_argument("action", nargs="?", default="status",
+                       choices=["status", "connect", "disconnect", "serve", "allow", "keys", "forget"],
+                       help="On your Mac: status, connect, disconnect. On the relay: serve, allow, keys, forget")
+    relay.add_argument("target", nargs="?", help="connect: the relay's HTTPS address; allow: the hash your Mac printed; "
+                                                 "forget: the Mac's name")
+    relay.add_argument("--name", default="mac", help="allow: what to call the Mac")
+    relay.add_argument("--port", type=int, default=4311, help="serve: the loopback port to listen on")
     panel = commands.add_parser("float", help="Show the always-on-top HQ window (macOS)")
     panel.add_argument("action", nargs="?", default="start", choices=["start", "stop", "status", "install", "uninstall", "lab", "run"],
                        help="install starts it at login; lab tries designs on throwaway data; run is for launchd")
@@ -322,8 +331,51 @@ def usage_command(action):
             "claude_login": "on" if login else "off", "claude_status_line": statusline_state()}
 
 
+def is_relay(store):
+    with store.db() as db:
+        return db.execute("SELECT 1 FROM meta WHERE key='relay_instance'").fetchone() is not None
+
+
+def relay_command(args):
+    from . import relay
+    store = Store()
+    if args.action in {"serve", "allow", "keys", "forget"}:
+        if relay.load_config(store):
+            raise ValueError("This Mac syncs with a relay; run that on the relay itself")
+        hub = relay.Relay(store)
+        if args.action == "serve":
+            from .remote import serve as serve_remote
+            return serve_remote(store, port=args.port, relay=hub)
+        if args.action == "keys":
+            return {"macs": hub.keys()}
+        if not args.target:
+            raise ValueError("Say which: hq relay allow HASH --name NAME, or hq relay forget NAME")
+        return hub.allow(args.target, args.name) if args.action == "allow" else hub.forget(args.target)
+    if args.action in {"connect", "disconnect"} and is_relay(store):
+        raise ValueError("This is a relay; connect your Mac to it instead")
+    if args.action == "status":
+        return relay.status(store)
+    if args.action == "disconnect":
+        return relay.disconnect(store)
+    if not args.target:
+        raise ValueError("Say where: hq relay connect https://your-relay.example.com")
+    made = relay.connect(store, args.target)
+    try:
+        with urllib.request.urlopen(made["url"] + "/health", timeout=10) as response:
+            reachable = json.loads(response.read()).get("ok") is True
+    except (OSError, ValueError):
+        reachable = False
+    return {"url": made["url"], "reachable": reachable,
+            "next": "On the relay, run this once. It holds only this hash, never the key itself:",
+            "run_on_relay": made["allow"],
+            "then": "HQ syncs while it runs (hq start): your answers go out and agents' reports come in. "
+                    "Add agents here with hq remote add; the relay takes them from this Mac."}
+
+
 def remote_command(args):
     store = Store()
+    if args.action in {"add", "revoke"} and is_relay(store):
+        raise ValueError("This is a relay: add and revoke agents on your Mac, and the relay takes them from it")
     if args.action == "serve":
         from .remote import serve as serve_remote
         return serve_remote(store, port=args.port)
@@ -334,7 +386,9 @@ def remote_command(args):
     if args.action == "revoke":
         return store.revoke_token(args.name)
     made = store.add_token(args.name, args.project)
-    url = (args.url or "https://YOUR-HQ-HOST").rstrip("/") + "/mcp"
+    from .relay import load_config
+    relayed = load_config(store)
+    url = (args.url or (relayed and relayed["url"]) or "https://YOUR-HQ-HOST").rstrip("/") + "/mcp"
     return {**made, "shown": "This token is shown once. Keep it as a secret on the agent's side; revoke it with "
                              f"`hq remote revoke {made['name']}` if it is lost.",
             "secret_value": f"Bearer {made['token']}",
@@ -436,6 +490,9 @@ def main():
             return output(accounts_command(args))
         if args.command == "remote":
             result = remote_command(args)
+            return output(result) if result is not None else None
+        if args.command == "relay":
+            result = relay_command(args)
             return output(result) if result is not None else None
         if args.command == "doctor":
             from . import doctor
