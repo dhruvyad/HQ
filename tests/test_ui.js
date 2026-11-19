@@ -1093,6 +1093,37 @@ assert.ok(run('sentHTML(onlyFiles)').includes('<strong>Sent a file</strong>'));
 const thread = run(`askHTML({status: 'open', comments: [{id: 'q9', author: 'human', state: 'received', text: 'See this' + ${JSON.stringify(listing)}, attachments: [{id: 'ab', name: 'shot.png', type: 'image/png', size: 2048}]}]}, {})`);
 assert.ok(thread.includes('<p>See this</p>') && thread.includes('data-attachment="ab"') && !thread.includes('/data/attachments'));
 
+// What the agent shows on an item: under the title on every tab, pictures as thumbnails, a PDF as a chip, in its order.
+context.withMedia = item({id: 'm1', title: 'Check the new layout', steps: ['Look at it'], media: [
+  {id: 'aa', name: 'layout <v2>.png', type: 'image/png', size: 2048}, {id: 'bb', name: 'spec.pdf', type: 'application/pdf', size: 3 * 1024 * 1024}]});
+for (const tab of ['steps', 'context', 'ask']) {
+  run(`setDraft('m1', {tab: '${tab}'})`);
+  html = run('detailHTML(withMedia)');
+  const head = html.slice(html.indexOf('class="d-head"'), html.indexOf('class="d-tabs"'));
+  assert.ok(head.indexOf('id="detail-title"') < head.indexOf('class="d-media"'), tab);
+  assert.ok(head.includes('data-open-file="aa" data-type="image/png" aria-label="Open layout &lt;v2&gt;.png"><img data-attachment="aa" alt="layout &lt;v2&gt;.png">'), tab);
+  assert.ok(head.includes('data-open-file="bb" data-type="application/pdf"><span class="c-name">spec.pdf</span><span class="c-size">3.0 MB</span>'), tab);
+  assert.ok(head.indexOf('data-open-file="aa"') < head.indexOf('data-open-file="bb"'), tab);
+}
+run("setDraft('m1', {tab: undefined})");
+assert.ok(!run("detailHTML({...withMedia, media: []})").includes('d-media')); // nothing to show, no row
+assert.ok(!run("detailHTML(model.items.find((i) => i.id === 'af'))").includes('d-media'));
+// A picture opened full size closes on Escape or a click and tells the panel, whose window takes
+// clicks over the whole display only while it is open.
+run('lightboxSeen = []; onLightbox = (open) => lightboxSeen.push(open)');
+assert.equal(run('closeLightbox()'), false); // nothing open: Escape goes on to close the item
+elements['#lightbox'] = {remove() {delete elements['#lightbox'];}};
+assert.equal(run('closeLightbox()'), true);
+assert.equal(elements['#lightbox'], undefined);
+assert.deepEqual(JSON.parse(run('JSON.stringify(lightboxSeen)')), [false]);
+run('onLightbox = () => {}');
+const wholeDisplay = {x: 0, y: 0, width: 1440, height: 900}, pillHere = {x: 10, y: 35, width: 38, height: 102}, boxHere = {x: 56, y: 35, width: 480, height: 600};
+const clicks = (mode, picture) => JSON.parse(run(`JSON.stringify(clickable(${JSON.stringify(wholeDisplay)}, ${JSON.stringify(pillHere)}, ${mode === 'pill' ? 'null' : JSON.stringify(boxHere)}, '${mode}', ${picture}))`));
+assert.deepEqual(clicks('item', true), {hits: [wholeDisplay], key: true});
+assert.deepEqual(clicks('pill', true), {hits: [wholeDisplay], key: true}); // Escape still reaches it once the box is closed
+assert.deepEqual(clicks('pill', false), {hits: [pillHere], key: false});
+assert.deepEqual(clicks('item', false).hits[1], {x: 50, y: 29, width: 492, height: 612}); // the box and its grips, as before
+
 // Each tab of the panel keeps where you were, across closing it and across a restart.
 run(`realRender = render; render = () => {}; realDrop = dropNotices; dropNotices = () => {};
   tabState = cleanTabs(null); floatOpen = false; customizing = false; route = parseRoute('#/'); listView = 'needs'; agentOpen = null; cursor = null`);

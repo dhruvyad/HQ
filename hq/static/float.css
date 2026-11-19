@@ -329,6 +329,9 @@ html.float .d-head {padding: 0 18px 2px;}
 html.float .d-state {font-size: 12.5px;}
 html.float .d-title {margin-top: 3px; font-size: 18px; line-height: 1.32; letter-spacing: -0.012em;}
 html.float .d-tabs {padding: 10px 14px 0;}
+html.float .d-media .sent-files {margin-top: 10px;}
+html.float .d-media .sent-file {height: 72px;}
+html.float .d-media .sent-file:not(.doc) {width: 108px;}
 html.float .d-body {padding: 18px 18px 18px;}
 html.float .d-dock {padding: 12px 14px 12px;}
 html.float .plan {gap: 18px;}

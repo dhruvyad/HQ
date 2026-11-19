@@ -1497,8 +1497,13 @@ function layout() {
   if (spot.on) placeSpot();
   placeMarks();
   placeGrips(g.box && mode !== 'settings' && !box.classList.contains('closing') ? localRect(g.box, g.room) : null, mode);
-  const hits = [pill, g.box && inflateRect(localRect(g.box, g.room), GRIP)].filter(Boolean);
-  placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key: mode !== 'pill', shadow: false});
+  const {hits, key} = clickable(g.room, pill, g.box && localRect(g.box, g.room), mode, Boolean($('#lightbox')));
+  placeWindow({...g.room, hit: hits[hits.length - 1], hits}, {key, shadow: false});
+}
+// What takes clicks: the pill and the box with its grips, or the whole display while a picture is
+// open full size over it, which also takes the keys so Escape can close it.
+function clickable(room, pill, box, mode, picture) {
+  return {hits: picture ? [room] : [pill, box && inflateRect(box, GRIP)].filter(Boolean), key: mode !== 'pill' || picture};
 }
 // Resize grips: one per free edge and corner, drawn over the box's border.
 const gripEdges = (name) => {
@@ -2078,6 +2083,7 @@ function openDashboard(hash) {window.open(`/${hash}`, '_blank', 'noreferrer');}
 
 function bootFloat() {
   paint = paintFloat;
+  onLightbox = layout;
   moveOn = (next, replied) => {
     const target = afterAct(feel.after, next, replied);
     if (target === undefined) return;
@@ -2191,6 +2197,7 @@ function bootFloat() {
     }
     if (e.key !== 'Escape' || recordingPanel) return;
     if (drag) cancelDrag();
+    else if (closeLightbox()) {/* the picture took it */}
     else if (customizing && keyConflict) {keyConflict = null; render();}
     else if (customizing) {customizing = false; render();}
     else if (floatOpen && !route.item && listView === 'agents' && heldEscape()) {/* the note or the sheet took it */}

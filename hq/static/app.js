@@ -1218,6 +1218,7 @@ function detailHTML(i) {
     <div class="d-head">
       <div class="d-state">${i.due && i.lane !== 'done' && daysUntil(i.due) < 0 ? `<span class="overdue">${esc(stateLine(i))}</span>` : esc(stateLine(i))}</div>
       <h2 class="d-title" id="detail-title">${esc(i.title)}</h2>
+      ${mediaHTML(i)}
     </div>
     <div class="d-tabs" role="tablist" aria-label="About this item">${tabs}</div>
     <div class="d-body scroll" id="d-panel" role="tabpanel" aria-labelledby="d-tab-${tab}"><div class="d-panel-in">${panelHTML(i, draft, tab)}</div></div>
@@ -1385,6 +1386,8 @@ function sentFilesHTML(files) {
     ? `<button type="button" class="sent-file" data-open-file="${esc(f.id)}" data-type="${esc(f.type)}" aria-label="Open ${esc(f.name)}"><img data-attachment="${esc(f.id)}" alt="${esc(f.name)}"></button>`
     : `<button type="button" class="sent-file doc" data-open-file="${esc(f.id)}" data-type="${esc(f.type)}"><span class="c-name">${esc(f.name)}</span><span class="c-size">${esc(fileSize(f.size))}</span></button>`).join('')}</div>`;
 }
+// What the agent shows you on the item, under its title on every tab: pictures open full size, a PDF opens.
+const mediaHTML = (i) => (i.media?.length ? `<div class="d-media" role="group" aria-label="From the agent">${sentFilesHTML(i.media)}</div>` : '');
 // Sent files are served only with the token, so fetch each once and show it from a blob.
 const fileURLs = new Map();
 function fileURL(id) {
@@ -1395,7 +1398,9 @@ function fileURL(id) {
 function hydrateFiles(root) {
   root.querySelectorAll('img[data-attachment]').forEach((img) => fileURL(img.dataset.attachment).then((url) => {img.src = url;}).catch(() => img.classList.add('gone')));
 }
-// Full size, over the dashboard; the panel hands it to the dashboard instead.
+// A picture opens full size over the page; anything else opens on its own. The panel's window lies
+// over the whole display, so it is told (onLightbox) to take clicks everywhere while a picture is open.
+let onLightbox = () => {};
 async function openFile(id, type) {
   const url = await fileURL(id).catch(() => null);
   if (!url) return toast('That file is gone: HQ keeps files 30 days after their item is done');
@@ -1405,10 +1410,18 @@ async function openFile(id, type) {
     box = document.createElement('div');
     box.id = 'lightbox';
     box.className = 'lightbox';
-    box.onclick = () => box.remove();
+    box.onclick = closeLightbox;
     document.body.append(box);
   }
   box.innerHTML = `<img src="${esc(url)}" alt="">`;
+  onLightbox(true);
+}
+function closeLightbox() {
+  const box = $('#lightbox');
+  if (!box) return false;
+  box.remove();
+  onLightbox(false);
+  return true;
 }
 // The composer a dropped file belongs to: the box under it, or the item's own answer box.
 function dropTarget(el) {
@@ -1925,7 +1938,8 @@ function bindDetail(detail) {
     const pick = e.target.closest('[data-attach-pick]'), remove = e.target.closest('[data-remove-file]'), sent = e.target.closest('[data-open-file]');
     if (pick) pick.closest('.compose').querySelector('[data-attach-input]').click();
     else if (remove) removeFile(id, remove.closest('.compose').dataset.attach, remove.dataset.removeFile);
-    else if (sent && document.body.dataset.surface === 'float') window.open(`/${href({...route, item: id})}`, '_blank', 'noreferrer');
+    // A PDF can't open from the panel, whose files live only in its own page: the dashboard opens the item instead.
+    else if (sent && document.body.dataset.surface === 'float' && !ATTACH.shown.has(sent.dataset.type)) window.open(`/${href({...route, item: id})}`, '_blank', 'noreferrer');
     else if (sent) openFile(sent.dataset.openFile, sent.dataset.type);
   };
   detail.ondragover = (e) => {
@@ -2000,7 +2014,7 @@ function boot() {
     if (heldKey(e)) return;
     if (e.key === 'Escape') {
       if ($('#dialog').open) return;
-      if ($('#lightbox')) return $('#lightbox').remove();
+      if (closeLightbox()) return;
       if (heldEscape()) return e.preventDefault();
       if (needsEscape(e)) return e.preventDefault();
       if (typing && e.target.id === 'search' && search) {search = ''; render(); return;}

@@ -169,6 +169,17 @@ class ScopeTests(Endpoint):
         self.assertEqual(set(self.ok(self.alpha, "hq_reporting_guide", {})["projects"]), {"noclick"})
         self.assertEqual(self.ok(self.beta, "hq_reporting_guide", {})["projects"], {})
 
+    def test_an_agent_elsewhere_cannot_have_hq_read_files_on_this_mac(self):
+        shot = self.store.path.parent / "private.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        self.register(self.alpha, "noclick-agent:a1")
+        item = self.ask(self.alpha, "noclick-agent:a1")
+        for name, args in (("hq_report", {"session_id": "noclick-agent:a1", "title": "Look", "media": [str(shot)]}),
+                           ("hq_update", {"session_id": "noclick-agent:a1", "item_id": item["id"], "media": [str(shot)]})):
+            self.assertIn("agents on this Mac", self.refused(self.alpha, name, args))
+        self.assertEqual(self.store.item(item["id"])["media"], [])
+        self.assertFalse((self.store.path.parent / "attachments").exists() and any((self.store.path.parent / "attachments").iterdir()))
+
     def test_an_answer_reaches_the_agent_that_asked_and_the_loop_closes(self):
         self.register(self.alpha, "noclick-agent:a1")
         item = self.ask(self.alpha, "noclick-agent:a1")

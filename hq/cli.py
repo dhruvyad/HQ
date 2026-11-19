@@ -28,6 +28,14 @@ def output(value):
     print(json.dumps(value, indent=2))
 
 
+def with_media_here(fields):
+    """The CLI runs where the agent works, so a relative media path means one from here."""
+    paths = fields.get("media")
+    if isinstance(paths, list):
+        fields["media"] = [str(Path(p).expanduser().absolute()) if isinstance(p, str) and p.strip() else p for p in paths]
+    return fields
+
+
 def running():
     try:
         state = json.loads((data_dir() / "server.json").read_text())
@@ -207,6 +215,8 @@ def parser():
     update.add_argument("--defer-until", help="YYYY-MM-DD; empty clears deferral")
     update.add_argument("--title")
     update.add_argument("--detail")
+    update.add_argument("--media", nargs="*", metavar="PATH",
+                        help="Images or PDFs to show on the item, replacing what it shows; --media alone clears it")
     listing = commands.add_parser("list", help="List items, with optional filters")
     listing.add_argument("--session")
     listing.add_argument("--tag")
@@ -496,7 +506,7 @@ def main():
         if args.command == "doctor":
             from . import doctor
             return sys.exit(doctor.run(args.json))
-        item_fields = ("owner", "waiting_on", "defer_until", "title", "detail")
+        item_fields = ("owner", "waiting_on", "defer_until", "title", "detail", "media")
         if args.command == "update" and args.item_id is None:
             if args.session or any(getattr(args, key) is not None for key in item_fields):
                 raise ValueError("Say which item: hq update ITEM_ID --session SESSION ...")
@@ -516,7 +526,7 @@ def main():
             if not isinstance(fields, dict) or "session_id" in fields:
                 raise ValueError("Report file must be an item object; pass the conversation with --session")
             try:
-                return output(with_notes(store.add(args.session, **fields, readable=True)))
+                return output(with_notes(store.add(args.session, **with_media_here(fields), readable=True)))
             except TypeError as error:
                 raise ValueError(f"Invalid report fields: {error}") from None
         if args.command == "stop":
@@ -535,7 +545,7 @@ def main():
             item = store.add(args.session, args.title, args.detail,
                              getattr(args, "kind", "question"), [t.strip() for t in args.tags.split(",") if t.strip()],
                              getattr(args, "option", []), getattr(args, "owner", None),
-                             getattr(args, "waiting_on", ""), getattr(args, "defer_until", ""), **fields, readable=True)
+                             getattr(args, "waiting_on", ""), getattr(args, "defer_until", ""), **with_media_here(fields), readable=True)
             if args.command == "ask" and not args.no_wait:
                 print(f"Waiting for a human answer in HQ. Item: {item['id']}", file=sys.stderr)
                 return output(store.wait(item["id"], args.session, args.timeout))
@@ -543,7 +553,7 @@ def main():
         if args.command == "await":
             return output(store.wait(args.item_id, args.session, args.timeout))
         if args.command == "update":
-            changes = {key: getattr(args, key) for key in item_fields if getattr(args, key) is not None}
+            changes = with_media_here({key: getattr(args, key) for key in item_fields if getattr(args, key) is not None})
             return output(store.update(args.item_id, args.session, **changes))
         if args.command == "list":
             return output(store.snapshot(args.session, args.tag, args.status, args.bucket)["items"])

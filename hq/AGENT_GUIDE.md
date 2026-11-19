@@ -38,6 +38,13 @@ before you finish.
   instead of reporting it.
 - **detail:** optional background, shown collapsed under More context, under
   600 characters. Never put the steps or the why here.
+- **media:** show, don't tell. When the human has to look at something, such
+  as a screenshot of new UX, a before/after or a chart, attach it instead of
+  describing it: a list of absolute paths to images (PNG, JPEG, GIF, WebP,
+  HEIC) or PDFs on this machine, in the order to view them. They appear as
+  thumbnails under the title. One or two is usual, 10 at most. On hq_update
+  the list replaces the item's; [] clears it. Agents running elsewhere can't
+  attach media.
 - **kind/owner:** kind=question for a decision, todo for an action, blocker
   for a blocked dependency. owner=human needs the user, agent is work with the
   agent, external waits on the named person/team/service in waiting_on.

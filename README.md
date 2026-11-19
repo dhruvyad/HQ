@@ -20,7 +20,8 @@ helping you.
 
 Claude Code and Codex stop to ask for a decision, a sign-in or a quick check. HQ collects every ask
 in one list on your Mac, the pill counts them, and you answer in a click or with `⌃⌥H` from any app.
-The agent picks up your reply, along with any screenshot or file you paste or drop in.
+The agent picks up your reply, along with any screenshot or file you paste or drop in, and can
+show you screenshots and charts of its own on the item.
 
 ## What it does
 

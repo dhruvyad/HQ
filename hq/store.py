@@ -27,7 +27,7 @@ OFFLINE_FOR = 3600           # a session gone from a live inventory stays offlin
 STALE_AFTER = 86400          # a day unheard, or heard but never closed
 REMIND_EVERY = 6 * 3600      # how often an agent is reminded of what it heard but never closed
 KEEP_FILES = 30 * 86400      # files on an item are deleted this long after it is done
-SCHEMA = 12                  # PRAGMA user_version once every migration below has run
+SCHEMA = 13                  # PRAGMA user_version once every migration below has run
 
 
 def data_dir():
@@ -152,6 +152,9 @@ class Store:
                 db.execute("ALTER TABLE items ADD COLUMN defer_until TEXT NOT NULL DEFAULT ''")
             if "presentation" not in columns:
                 db.execute("ALTER TABLE items ADD COLUMN presentation TEXT NOT NULL DEFAULT '{}'")
+            # What the agent shows you on the item, as attachment ids in its order.
+            if "media" not in columns:
+                db.execute("ALTER TABLE items ADD COLUMN media TEXT NOT NULL DEFAULT '[]'")
             # When a state began, and when an agent was last seen running: observations
             # repeat every second, so neither can be read from the latest one alone.
             observed = {r["name"] for r in db.execute("PRAGMA table_info(activity)")}
@@ -472,7 +475,7 @@ class Store:
     def add(self, session_id, title, detail="", kind="todo", tags=None, options=None,
             owner=None, waiting_on="", defer_until="", *, unlocks="", recommendation="",
             steps=None, link=None, paste=None, minutes=None, rank=9999, source="",
-            matters=None, needs_you=None, project="", workstream="", due="", readable=False):
+            matters=None, needs_you=None, project="", workstream="", due="", media=None, readable=False):
         self.session(session_id)
         title = required(title, "title", 500)
         if kind not in {"todo", "blocker", "question"}:
@@ -492,11 +495,13 @@ class Store:
         owner, waiting_on, defer_until = self.attention(("agent" if kind == "todo" else "human") if owner is None else owner, waiting_on, defer_until)
         if readable:
             self.require_readable(owner, options, presentation)
+        # Copied in before the item is written; files of an item that is then refused go with the daily sweep.
+        shown = files.media(self.path.parent, [] if media is None else media)
         id, now = str(uuid.uuid4()), time.time()
         with self.db() as db:
             self.local(db, session_id=session_id)
-            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until,presentation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until, json.dumps(presentation)))
+            db.execute("INSERT INTO items (id,session_id,title,detail,kind,tags,options,created,updated,owner,waiting_on,defer_until,presentation,media) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (id, session_id, title, detail, kind, json.dumps(tags), json.dumps(options), now, now, owner, waiting_on, defer_until, json.dumps(presentation), json.dumps(shown)))
         return self.item(id)
 
     @staticmethod
@@ -692,9 +697,11 @@ class Store:
 
     def update(self, item_id, session_id=None, **patch):
         allowed = {"owner", "waiting_on", "defer_until", "title", "detail", "unlocks", "recommendation", "steps", "link", "paste",
-                   "minutes", "rank", "source", "matters", "needs_you", "project", "workstream", "due", "pinned"}
+                   "minutes", "rank", "source", "matters", "needs_you", "project", "workstream", "due", "pinned", "media"}
         if not patch or set(patch) - allowed:
             raise ValueError("Update title, detail, owner, waiting_on, or defer_until")
+        # The new list replaces the old; files no item shows any more go with the daily sweep.
+        shown = files.media(self.path.parent, patch.pop("media")) if "media" in patch else None
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
@@ -707,14 +714,16 @@ class Store:
             if row["status"] != "open":
                 raise ValueError("Only open items can be updated; saved replies are preserved")
             merged = {**dict(row), **patch}
+            if shown is not None:
+                merged["media"] = json.dumps(shown)
             owner, waiting_on, defer_until = self.attention(merged["owner"], merged["waiting_on"], merged["defer_until"])
             title = required(merged["title"], "title", 500)
             detail = merged["detail"]
             if not isinstance(detail, str) or len(detail) > 20000:
                 raise ValueError("detail must be text, at most 20000 characters")
             presentation = self.presentation(**{**json.loads(row["presentation"]), **{k: v for k, v in patch.items() if k not in {"owner", "waiting_on", "defer_until", "title", "detail"}}})
-            db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,presentation=?,updated=? WHERE id=?",
-                       (title, detail, owner, waiting_on, defer_until, json.dumps(presentation), time.time(), item_id))
+            db.execute("UPDATE items SET title=?,detail=?,owner=?,waiting_on=?,defer_until=?,presentation=?,media=?,updated=? WHERE id=?",
+                       (title, detail, owner, waiting_on, defer_until, json.dumps(presentation), merged["media"], time.time(), item_id))
             if self.mirrored(db, item_id):
                 self.relay(db, item_id, "update", patch=patch)
         return self.item(item_id)
@@ -752,6 +761,7 @@ class Store:
             raise ValueError("Item not found")
         result = self.decode(row)
         self.attach_comments([result])
+        self.attach_media([result])
         return result
 
     def snapshot(self, session_id=None, tag=None, status=None, bucket=None):
@@ -762,6 +772,7 @@ class Store:
                 FROM items i JOIN sessions s ON s.id=i.session_id
                 LEFT JOIN replies r ON i.id=r.item_id ORDER BY i.created DESC""")]
         self.attach_comments(items)
+        self.attach_media(items)
         for s in sessions:
             if s["lease_until"] < time.time():
                 s["connection"] = "offline"
@@ -901,6 +912,11 @@ class Store:
                 presentation["agent_note"] = required(note, "completion note", 4000)
             db.execute("UPDATE items SET status='done',presentation=?,updated=? WHERE id=?", (json.dumps(presentation), time.time(), id))
         return self.item(id)
+
+    def attach_media(self, items):
+        """Each item's media as the files it shows: id, name, type and size, in the agent's order."""
+        for item in items:
+            item["media"] = files.shown(self.path.parent, json.loads(item.get("media") or "[]"))
 
     def attach_comments(self, items):
         threads = {}
@@ -1099,14 +1115,18 @@ class Store:
         return due
 
     def sweep_files(self, now=None):
-        """Delete each file once nothing needs it: a day after upload when no reply or question used
-        it, and KEEP_FILES after its item was done, long after the agent read it."""
+        """Delete each file once nothing needs it: a day after upload when no reply, question or item
+        used it, and KEEP_FILES after its item was done, long after the agent read it."""
         now = now or time.time()
         with self.db() as db:
             used = {a["id"] for table in ("replies", "comments")
                     for row in db.execute(f"""SELECT t.attachments FROM {table} t JOIN items i ON i.id=t.item_id
                         WHERE t.attachments!='[]' AND (i.status!='done' OR i.updated>?)""", (now - KEEP_FILES,))
                     for a in json.loads(row[0])}
+            # What an agent shows on an item is kept on the same terms.
+            used |= {id for row in db.execute("""SELECT media FROM items WHERE media!='[]' AND (status!='done' OR updated>?)""",
+                                               (now - KEEP_FILES,))
+                     for id in json.loads(row[0])}
         return files.sweep(self.path.parent, used, now=now)
 
     def has_waiter(self, item_id):
