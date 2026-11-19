@@ -35,6 +35,9 @@ READABLE = {
     "due": {"type": "string", "description": "YYYY-MM-DD, only when a real deadline exists (an appointment, an expiring link, a scheduled run). Never invent one."},
     "rank": {"type": "integer", "minimum": 0, "description": "Lower means sooner; urgent decisions 10–150, actions 200–370, waits 400+."},
     "source": {"type": "string", "description": "Agent/worktree · task."},
+    "media": {"type": "array", "items": {"type": "string", "description": "The file's absolute path on this machine."}, "maxItems": 10,
+              "description": "Show, not tell: up to 10 images (PNG, JPEG, GIF, WebP, HEIC) or PDFs, such as a screenshot of new UX or a chart, "
+                             "each its absolute path. HQ copies them in and shows them under the title. On update the list replaces the item's; [] clears it."},
 }
 CHOICES = {"type": "array", "items": {"anyOf": [TEXT, schema({"id": TEXT, "label": TEXT, "note": TEXT, "recommended": {"type": "boolean"}}, ["label"]) ]}}
 AGENT_INSTRUCTIONS = Path(__file__).with_name("AGENT_GUIDE.md").read_text()
@@ -162,6 +165,8 @@ class Tools:
             return snapshot
         if id:
             store.heartbeat(id)
+        if self.remote and args.get("media"):
+            raise ValueError("Media is for agents on this Mac: HQ reads each path from its own disk. Describe it in detail instead")
         if self.token and self.token["project"] and name in {"hq_report", "hq_request_input"}:
             args.setdefault("project", self.token["project"])  # a token's items belong to the project it was made for
         if name in {"hq_request_input", "hq_wait"}:

@@ -1,8 +1,10 @@
-"""Files you paste or drop into a reply, kept privately beside the inbox.
+"""Files you paste or drop into a reply, and pictures an agent shows you on an item, kept
+privately beside the inbox.
 
 The agent gets each file's full path in the reply text, so Claude Code or Codex can open
-the image or document itself, whatever route delivers the reply. Files live in the inbox's
-own folder (mode 0700) and never leave this machine through HQ.
+the image or document itself, whatever route delivers the reply. An agent's own media is
+read from the paths it names and copied in. Files live in the inbox's own folder (mode
+0700) and never leave this machine through HQ.
 """
 import json
 import os
@@ -93,6 +95,52 @@ def resolve(base, ids):
             seen.add(id)
             found.append(find(base, id))
     return found
+
+
+# What an agent may show you on an item: pictures and PDFs, named by their extension and judged by their bytes.
+SHOWN = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+         ".heic": "image/heic", ".pdf": "application/pdf"}
+
+
+def media(base, paths):
+    """An agent's files to show on an item, each checked and copied in, as their ids in the order given.
+    Nothing is kept unless every file is good; an empty list is none."""
+    if not isinstance(paths, list) or not all(isinstance(p, str) and p.strip() for p in paths):
+        raise ValueError("media must be a list of file paths")
+    paths = list(dict.fromkeys(p.strip() for p in paths))
+    if len(paths) > MOST:
+        raise ValueError(f"Attach at most {MOST} files")
+    found = []
+    for given in paths:
+        path = Path(given).expanduser()
+        if not path.is_absolute():
+            raise ValueError(f"{given}: give each file's absolute path")
+        if not path.is_file():
+            raise ValueError(f"{given} is not a file")
+        kind = SHOWN.get(path.suffix.lower())
+        if not kind:
+            raise ValueError(f"{path.name}: media must be an image (PNG, JPEG, GIF, WebP, HEIC) or a PDF")
+        if path.stat().st_size > LIMIT:
+            raise ValueError(f"{path.name}: files can be at most 25 MB")
+        data = path.read_bytes()
+        try:
+            check(data, kind)
+        except ValueError as error:
+            raise ValueError(f"{path.name}: {error}") from None
+        found.append((data, kind, path.name))
+    return [save(base, data, kind, name)["id"] for data, kind, name in found]
+
+
+def shown(base, ids):
+    """The files an item shows, in order, leaving out any already tidied away."""
+    kept = []
+    for id in ids:
+        try:
+            meta = find(base, id)
+        except ValueError:
+            continue
+        kept.append({key: meta[key] for key in ("id", "name", "type", "size")})
+    return kept
 
 
 def describe(found):

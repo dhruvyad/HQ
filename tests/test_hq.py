@@ -944,6 +944,28 @@ class MCPTests(unittest.TestCase):
         rejected = call(24, "hq_update", {"session_id": "b", "item_id": item["id"], "owner": "agent"})
         self.assertTrue(rejected["isError"])
 
+    def test_mcp_report_and_update_show_media_in_order(self):
+        png, pdf = Path(self.temp.name) / "chart.png", Path(self.temp.name) / "spec.pdf"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        pdf.write_bytes(b"%PDF-1.7\n" + b"0" * 16)
+        self.send("tools/list", 60)
+        tools = {t["name"]: t["inputSchema"]["properties"] for t in self.messages.get(timeout=3)["result"]["tools"]}
+        for name in ("hq_report", "hq_update", "hq_request_input"):
+            self.assertEqual(tools[name]["media"]["items"]["type"], "string")
+        reported = self.call(61, "hq_report", {"session_id": "a", "title": "Check the chart", "media": [str(pdf), str(png)]})
+        item = json.loads(reported["content"][0]["text"])
+        self.assertEqual([m["name"] for m in item["media"]], ["spec.pdf", "chart.png"])
+        updated = self.call(62, "hq_update", {"session_id": "a", "item_id": item["id"], "media": [str(png)]})
+        self.assertEqual([m["name"] for m in json.loads(updated["content"][0]["text"])["media"]], ["chart.png"])
+        cleared = self.call(63, "hq_update", {"session_id": "a", "item_id": item["id"], "media": []})
+        self.assertEqual(json.loads(cleared["content"][0]["text"])["media"], [])
+        refused = self.call(64, "hq_update", {"session_id": "a", "item_id": item["id"], "media": [str(Path(self.temp.name) / "gone.png")]})
+        self.assertTrue(refused["isError"])
+        self.assertIn("gone.png is not a file", refused["content"][0]["text"])
+        refused = self.call(65, "hq_report", {"session_id": "a", "title": "Read this", "media": [str(Path(self.temp.name) / "hq.sqlite3")]})
+        self.assertIn("media must be an image", refused["content"][0]["text"])
+        self.assertEqual(len(self.store.snapshot()["items"]), 1)
+
     def test_mcp_clarification_interrupts_wait_and_agent_replies_in_item(self):
         item = self.store.add("a", "Choose plan", kind="question")
         self.send("tools/call", 31, {"name": "hq_wait", "arguments": {"session_id": "a", "item_id": item["id"], "timeout": 5}})
@@ -996,6 +1018,15 @@ class RemoteMCPTests(MCPTests):
         self.assertEqual(listed["items"], [])
         self.assertNotIn("pasted secret", json.dumps(listed))
         self.assertEqual(self.store.item(item["id"])["delivery"], "pending")  # never marked heard by it
+
+    def test_a_remote_model_cannot_have_hq_read_files_on_this_mac(self):
+        shot = Path(self.temp.name) / "private.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        self.assertFalse(self.call(55, "hq_register_session", {"session_id": "chatgpt:2", "name": "ChatGPT"})["isError"])
+        refused = self.call(56, "hq_report", {"session_id": "chatgpt:2", "title": "Look", "media": [str(shot)]})
+        self.assertTrue(refused["isError"])
+        self.assertIn("agents on this Mac", refused["content"][0]["text"])
+        self.assertEqual(self.store.snapshot(session_id="chatgpt:2")["items"], [])
 
 
 # The local agents' tests use a conversation registered outside the connection, which a remote

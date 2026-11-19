@@ -214,6 +214,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Request must be a JSON object")
             parts = urlsplit(self.path).path.strip("/").split("/")
             store = self.server.store
+            if "media" in body and parts[:2] == ["api", "items"]:
+                raise ValueError("Media comes from the agent: it names its files with hq_report or hq_update")
             if parts == ["api", "items"]:
                 result = store.add(**body)
             elif len(parts) == 4 and parts[:2] == ["api", "items"]:

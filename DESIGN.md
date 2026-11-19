@@ -75,6 +75,9 @@ a sheet and the pane fills the screen.
   carry their link, copy text or checks, then Looks right / Something was off,
   a quiet "Not now?" row, Why it matters, Why you, not the agent, and a
   collapsed More context. Drafts, ticks and form fields survive live updates.
+- What an agent shows on an item sits under its title on every tab: one row of quiet
+  hairline tiles, pictures letterboxed in them and a PDF as a name and size, scrolling
+  sideways when long. A picture opens full size over a dark scrim; a click or Escape closes it.
 - Activity labels distinguish Active, Idle, Waiting, Offline and Unknown; green
   marks only an active agent, red only failures and overdue dates.
 - Use a white primary button only for the main action. No decorative icons on
@@ -96,7 +99,8 @@ always hugs its content, so nothing transparent sits over what you are working o
   rows that say what kind of thing each is, where it lives and its age. Pinned and due-soon
   items lead, then newest. A reply that failed to deliver appears here too.
 - **Item** 480px wide, hugging its content up to 760px: the dashboard's item pane, reused and
-  never re-implemented. Answering moves on to the next item, and the toast says the reply was
+  never re-implemented. A picture opens full size over the whole display, which takes clicks
+  only while it is open; a PDF opens the item in the dashboard. Answering moves on to the next item, and the toast says the reply was
   saved rather than received, since only an agent acknowledgement can claim that.
 - **Drag** follows OpenFlow's flow bar: a 5px threshold separates a click from a drag, then
   the window covers the display, the screen dims, dashed targets appear, the nearest fills in,

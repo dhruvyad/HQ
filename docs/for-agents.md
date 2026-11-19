@@ -113,6 +113,16 @@ and labelled `paste` blocks with Copy buttons. Decision options accept
 the agent/worktree and task. Simple bold, inline code, and HTTPS links render in
 context, recommendations, unlocks, and steps. Copy text remains plain text.
 
+`media` shows instead of tells: a list of absolute paths to images (PNG, JPEG,
+GIF, WebP, HEIC) or PDFs, such as a screenshot of new UX or a chart, at most 10.
+HQ reads each file, checks it really is that type and at most 25 MB, copies it
+into its private folder and shows it under the item's title, in the dashboard
+and the pill: a thumbnail that opens full size, or a chip that opens the PDF.
+On `hq_update` the list replaces the item's, and `[]` clears it. A path that
+isn't a file, or a type HQ doesn't show, refuses the whole report. Media is
+kept on the same terms as files you attach, and only an agent on this Mac can
+attach it.
+
 The shared [agent guide](../hq/AGENT_GUIDE.md) is sent with MCP initialization and
 available through `hq_reporting_guide` or `hq instructions`. It tells agents to
 proactively list every unfinished requirement, missing connection, blocker, and
@@ -125,11 +135,13 @@ CLI agents can submit all structured fields from a JSON file:
 ```sh
 hq instructions
 hq report item.json --session codex:my-thread
+hq update ITEM_ID --session codex:my-thread --media shots/before.png shots/after.png
+hq update ITEM_ID --session codex:my-thread --media   # shows nothing again
 hq done ITEM_ID --session codex:my-thread --note "Uploaded the certificate"
 ```
 
 The file contains the same fields as `hq_report`, without `session_id` (the CLI
-supplies it). The guide contains an example. Existing plain-text reports and
+supplies it). The CLI reads a relative `media` path from the folder it runs in. The guide contains an example. Existing plain-text reports and
 string choices continue to work. Reload MCP tools after upgrading so agents
 receive the guide and new field schemas.
 
