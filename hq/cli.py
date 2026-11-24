@@ -14,6 +14,7 @@ import webbrowser
 from pathlib import Path
 
 from .discovery import discover
+from . import links
 from .mcp import AGENT_INSTRUCTIONS, run as run_mcp, with_notes
 from .server import serve
 from . import workstreams
@@ -25,7 +26,8 @@ from . import usage as subscription_usage
 
 
 def output(value):
-    print(json.dumps(value, indent=2))
+    # Items carry hq_link: what an agent writes when it mentions one, so a click opens it.
+    print(json.dumps(links.with_links(value), indent=2))
 
 
 def with_media_here(fields):
@@ -88,6 +90,33 @@ def launch(port, open_browser=True):
     if open_browser:
         webbrowser.open(url)
     print(url)
+
+
+def open_item(store, text):
+    """What clicking the item's link does, without the browser tab: the pill opens on it, or the
+    dashboard does when the pill isn't running."""
+    ref = links.reference(text)
+    ids = store.find_items(ref)
+    if not ids:
+        raise ValueError(f"No item matches {ref}")
+    if len(ids) > 1:
+        raise ValueError(f"{ref} fits {len(ids)} items, so give more of its id: "
+                         + "; ".join(f"{id} {store.item(id)['title']}" for id in ids[:5]))
+    origin = f"http://127.0.0.1:{ensure_server(links.DEFAULT_PORT)['port']}"
+
+    class Stay(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    try:
+        with urllib.request.build_opener(Stay).open(f"{origin}/i/{ids[0]}", timeout=5):
+            return {"item_id": ids[0], "opened": "pill"}
+    except urllib.error.HTTPError as error:
+        code, location = error.code, error.headers.get("Location")
+        error.close()
+        if code != 303 or not location:
+            raise ValueError(f"HQ answered {code} for that item") from None
+    webbrowser.open(origin + location)
+    return {"item_id": ids[0], "opened": "dashboard"}
 
 
 def install(target):
@@ -217,6 +246,9 @@ def parser():
     update.add_argument("--detail")
     update.add_argument("--media", nargs="*", metavar="PATH",
                         help="Images or PDFs to show on the item, replacing what it shows; --media alone clears it")
+    opening = commands.add_parser("open", help="Open an item in the pill, or the dashboard when the pill isn't running; "
+                                               "give its id, the start of it, or its link")
+    opening.add_argument("item")
     listing = commands.add_parser("list", help="List items, with optional filters")
     listing.add_argument("--session")
     listing.add_argument("--tag")
@@ -557,6 +589,8 @@ def main():
             return output(store.update(args.item_id, args.session, **changes))
         if args.command == "list":
             return output(store.snapshot(args.session, args.tag, args.status, args.bucket)["items"])
+        if args.command == "open":
+            return output(open_item(store, args.item))
         if args.command == "reply":
             return output(store.reply(args.item_id, args.text))
         if args.command == "question":

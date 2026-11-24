@@ -16,6 +16,9 @@ Codex usage you have left.
 - **Click** it: the list of what needs you. Click elsewhere and the list closes.
 - **Click a row**: the box expands into the full item, the same pane as the dashboard
   (steps, options, checks, replies, snooze, skip). Your draft survives if you look away.
+- **Click an item link** in an agent's chat: the pill opens on that item, even if it was
+  hidden for an hour. In a terminal the link (`hq://`) skips the browser and you stay where you
+  are; elsewhere it passes through the browser, whose tab closes itself. `hq open <id>` does the same.
 - **Right-click** it, or use `…` in the list: choose which circles show and in what order,
   what it notifies you about, your keyboard shortcuts, open the dashboard, hide it for an
   hour, or quit.

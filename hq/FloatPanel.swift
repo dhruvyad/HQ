@@ -46,6 +46,12 @@ func modifierLabel(_ mask: UInt64) -> String {
     }.joined(separator: " + ")
 }
 
+/// macOS 15 and later never deliver a shortcut whose only modifiers are ⌥ or ⌥⇧, though registering
+/// one succeeds: it keeps them for typing characters such as ÷, out of keyloggers' reach.
+let optionAloneBlocked = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+    OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0))
+func optionAlone(_ carbon: Int) -> Bool { carbon & (cmdKey | controlKey) == 0 && carbon & optionKey != 0 }
+
 /// A borderless window refuses key status by default. The pill must stay that
 /// way so it never takes the keyboard, and an open panel must accept it so the
 /// reply box is typeable; `acceptsKey` is the page's call between the two.
@@ -422,6 +428,9 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             if let action = body["action"] as? String { recordKey(for: action) }
         case "openDashboard":
             openDashboard()
+        case "linked":
+            // An item link opened the panel: a pill hidden for an hour comes back to show it.
+            wake()
         case "menu":
             showMenu()
         default:
@@ -825,7 +834,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
     /// app holds it) is reported on its own, as "keyCode:modifiers", and the rest still work.
     private func registerHotKeys(_ entries: [[String: Any]]) {
         unregisterHotKeys()
-        var failed: [String] = []
+        var failed: [String] = [], blocked: [String] = []
         for (index, entry) in entries.enumerated() {
             guard let action = entry["action"] as? String,
                   let code = (entry["keyCode"] as? NSNumber)?.intValue,
@@ -838,6 +847,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
                 continue
             }
             guard (0...0xFFFF).contains(code), mods <= 0xFFFF else { failed.append("\(code):\(mods)"); continue }
+            if optionAloneBlocked && optionAlone(Int(mods)) { blocked.append("\(code):\(mods)"); continue }
             let id = EventHotKeyID(signature: OSType(0x4851464C), id: UInt32(index + 1)) // "HQFL"
             var ref: EventHotKeyRef?
             let status = RegisterEventHotKey(UInt32(code), UInt32(mods), id, GetApplicationEventTarget(), 0, &ref)
@@ -845,6 +855,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
                 hotKeyRefs.append(ref)
                 hotKeyActions[id.id] = action
             } else {
+                log("macOS refused the \(action) shortcut \(entry["label"] as? String ?? "\(code):\(mods)") (status \(status))")
                 failed.append("\(code):\(mods)")
             }
         }
@@ -853,7 +864,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             RunLoop.main.add(timer, forMode: .common)
             modifierTimer = timer
         }
-        send(["type": "hotkeysApplied", "failed": failed])
+        send(["type": "hotkeysApplied", "failed": failed, "blocked": blocked])
     }
 
     /// A modifier shortcut fires when its keys are let go: only those keys, pressed briefly,
@@ -901,7 +912,11 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             } else if [kVK_Delete, kVK_ForwardDelete].contains(Int(event.keyCode)) {
                 self.finishRecording(["type": "keyRecorded", "action": action, "cleared": true])
             } else if let key = self.describeKey(event) {
-                self.finishRecording(["type": "keyRecorded", "action": action, "key": key])
+                if optionAloneBlocked, let mods = key["modifiers"] as? Int, optionAlone(mods) {
+                    self.finishRecording(["type": "keyRecorded", "action": action, "blocked": key["label"] ?? ""])
+                } else {
+                    self.finishRecording(["type": "keyRecorded", "action": action, "key": key])
+                }
             }
             return nil
         }

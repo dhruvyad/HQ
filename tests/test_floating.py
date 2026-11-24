@@ -38,9 +38,12 @@ class FloatingCase(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.home = self.root / "home"
         self.home.mkdir()
+        # HQ Links is never built or registered with macOS from a test.
+        self.links = Mock(return_value={"status": "ready"})
         for patcher in (patch.dict(os.environ, {"HQ_HOME": str(self.root / "data")}),
                         patch.object(Path, "home", return_value=self.home),
-                        patch("sys.platform", self.platform)):
+                        patch("sys.platform", self.platform),
+                        patch("hq.opener.ensure", self.links)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.ensure = Mock(return_value={"port": 4310})
@@ -236,6 +239,8 @@ class LifecycleTests(FloatingCase):
         # Fake the platform after the imports: urllib imports a macOS-only module if it sees darwin.
         program = ("import sys\nfrom pathlib import Path\nfrom hq import floating\nsys.platform = 'darwin'\n"
                    "floating.require_route = lambda url: None\nfloating.build = lambda: Path(sys.argv[1])\n"
+                   # A child is out of reach of setUp's patches: it must never build or register HQ Links.
+                   "floating.ensure_links = lambda: {'status': 'ready'}\n"
                    "floating.run(4310, lambda port: {'port': port})\n")
         child = self.spawn([sys.executable, "-c", program, str(floating.build.return_value)], cwd=ROOT)
         # Wait on the pid file, not the lock: probing the lock could make the child think one is held.

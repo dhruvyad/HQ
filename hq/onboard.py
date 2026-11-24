@@ -197,6 +197,9 @@ def undo(stop_server, untrust=None):
         removed = floating.uninstall()["status"] == "removed"
         if closed or removed:
             say("✓ Pill closed, and it no longer starts at login")
+        from . import opener
+        if opener.remove()["status"] == "removed":
+            say("✓ HQ Links removed: hq:// item links no longer open")
     if stop_server()["status"] == "stopped":
         say("✓ Dashboard stopped")
     say()

@@ -1170,6 +1170,25 @@ const junk = JSON.parse(run(`JSON.stringify(cleanTabs({view: 'evil', tabs: {need
 assert.equal(junk.view, 'needs');
 assert.deepEqual(junk.tabs.needs, JSON.parse(run('JSON.stringify(blankTab())')));
 assert.equal(run("remember('hq-float-tabs')"), null); // no storage here at all, and nothing throws
+// An item link clicked in an agent's chat opens that item, from whatever the panel was doing, and
+// asks the window to come back if it was hidden.
+run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}};
+  setOpen(false); customizing = true; showList('agents', 'codex:r'); floatOpen = false`);
+run(`streamEvent('event: open\\ndata: {"id":"af"}')`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(posted)')), [{type: 'linked'}]);
+assert.equal(run('floatOpen'), true);
+assert.equal(run('customizing'), false);
+assert.equal(run('listView'), 'needs');
+assert.equal(run('agentOpen'), null);
+assert.equal(run('route.item'), 'af');
+// One the panel hasn't heard of yet waits for the snapshot that has it; one that never comes opens nothing.
+run(`realRefresh = refresh; refreshed = 0; refresh = () => {refreshed++; return Promise.resolve();}; setOpen(false); posted = []`);
+run(`onLinkOpen('not-an-item'); onLinkOpen(42); onLinkOpen('')`);
+assert.equal(run('refreshed'), 1); // only the one shaped like an id is looked for
+assert.equal(run('posted.length'), 0); // nothing opened, so the window stays as it was
+assert.equal(run('floatOpen'), false);
+run('refresh = realRefresh; delete globalThis.window');
+assert.equal(run('onLinkOpen === openLinked'), true);
 run('render = realRender; dropNotices = realDrop; floatOpen = false; route = parseRoute("#/"); listView = "needs"; agentOpen = null');
 
 // The pill's size: kept within 22 to 40, whole pixels, and anything odd is Medium.
@@ -1415,7 +1434,18 @@ run(`refused = ['38:6144']`);
 html = run('settingsHTML(attention())');
 assert.ok(/<span class="f-chip bad"><button type="button" class="f-cap " data-record="toggle" data-index="1"[^>]*title="In use by another app">⌃⌥J<\/button>/.test(html));
 assert.ok(html.includes('<small class="f-key-bad">⌃⌥J is in use by another app</small>') && !/f-chip bad"><button[^>]*data-index="0"/.test(html));
-run(`refused = []; shortcuts = savedShortcuts; keyConflict = null; recording = null; delete globalThis.window`);
+// ⌥ with a key registers on macOS 15 and later but never arrives, so it says so, not "in use".
+run(`refused = []; shortcuts = cleanShortcuts({toggle: [{keyCode: 44, modifiers: 2048, label: '⌥/'}, KH]}); blocked = ['44:2048']`);
+html = run('settingsHTML(attention())');
+assert.ok(/<span class="f-chip bad"><button[^>]*data-index="0"[^>]*title="macOS won’t deliver it">⌥\/<\/button>/.test(html));
+assert.ok(html.includes('<small class="f-key-bad">⌥/ won’t work: macOS keeps ⌥ with a key for typing. Add ⌃ or ⌘, or use right ⌥ by itself</small>'));
+assert.ok(!html.includes('in use by another app'));
+// Recording one is turned away with the same reason, and nothing is saved.
+run(`toasted = []; realToast = toast; toast = (m) => toasted.push(m); keptRender = render; render = () => {};
+  recording = {action: 'toggle', index: null}; receive({type: 'keyRecorded', action: 'toggle', blocked: '⌥/'}); render = keptRender; toast = realToast`);
+assert.deepEqual(Array.from(run('toasted')), ['⌥/ won’t work: macOS keeps ⌥ with a key for typing. Add ⌃ or ⌘, or use right ⌥ by itself.']);
+assert.equal(run('shortcuts.toggle.length'), 2);
+run(`refused = []; blocked = []; shortcuts = savedShortcuts; keyConflict = null; recording = null; delete globalThis.window`);
 
 // The age has its own column on the right, so ages line up; the meta line no longer carries it.
 context.agedItem = {...item({id: 'ag1', title: 'Aged', created: now - 7200, source: 'noclick5 · Airtable tests'}), lane: 'you'};
