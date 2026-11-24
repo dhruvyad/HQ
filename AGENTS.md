@@ -18,7 +18,8 @@ Write plain commit messages: never add Co-Authored-By or any other co-author tra
 
 When reporting work to HQ, follow `hq/AGENT_GUIDE.md`: action-first titles,
 brief context/unlocks, recommendations, ordered steps, direct links, and copy
-blocks. Human effort is separate from external waits. Report every independent
+blocks. Human effort is separate from external waits. Whenever you mention an item
+in chat, write it as `[title](hq_link)` so one click opens it. Report every independent
 action as its own item and close the loop after acting on a reply.
 
 Proactively populate HQ with every unfinished requirement, setup gap, and

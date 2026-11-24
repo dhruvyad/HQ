@@ -38,9 +38,12 @@ class FloatingCase(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.home = self.root / "home"
         self.home.mkdir()
+        # HQ Links is never built or registered with macOS from a test.
+        self.links = Mock(return_value={"status": "ready"})
         for patcher in (patch.dict(os.environ, {"HQ_HOME": str(self.root / "data")}),
                         patch.object(Path, "home", return_value=self.home),
-                        patch("sys.platform", self.platform)):
+                        patch("sys.platform", self.platform),
+                        patch("hq.opener.ensure", self.links)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.ensure = Mock(return_value={"port": 4310})

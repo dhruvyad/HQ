@@ -26,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swiftc -typecheck hq/FloatPanel.swift
+      - run: swiftc -typecheck hq/LinkOpener.swift
   install:
     # The one-line install a friend runs, piped to sh from a fresh home with no uv, in the
     # locale a Mac's Terminal uses, stopping before setup.

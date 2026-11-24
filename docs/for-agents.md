@@ -72,6 +72,29 @@ hq list --tag billing --status open
 Only the owning session can acknowledge a response. A task is done when the
 agent marks it done; answering a question does not pretend the work is complete.
 
+## Item links
+
+Every item an agent gets back from HQ, through the tools or the CLI, carries
+`hq_link`. Agents are told to write any item they mention in the chat as
+`[its title](hq_link)`, so one click opens that item in the pill.
+
+- **In a terminal** (Warp, iTerm, Ghostty, VS Code…) on a Mac, the link is
+  `hq://i/ce9430d3`. macOS hands it to HQ Links, a small background app built and
+  registered with the pill, which opens the item without a browser. Focus stays in
+  your terminal. Nothing else on a Mac uses `hq://`; `hq setup --undo` removes it.
+- **Anywhere else**, such as a desktop chat app that may refuse other kinds of link,
+  or Terminal.app, it is `http://127.0.0.1:4310/i/ce9430d3`. The browser carries it
+  to the pill and its tab closes itself; the browser stays in front. A page that loads the link on its own, without your click, gets the dashboard and
+  never opens the pill.
+
+Either way, with no pill running the dashboard opens on the item. Links work only
+on this Mac.
+
+```sh
+hq open ce9430d3                          # the same, from a terminal, with no browser tab
+hq open http://127.0.0.1:4310/i/ce9430d3  # a pasted link works too
+```
+
 ## Clarification threads
 
 Open any unfinished item and use **Ask agent** to ask about it. Each question

@@ -8,6 +8,12 @@ that it is waiting there: the user answers from HQ, often away from this
 window, and a question asked only in the chat can go unseen.
 Conversations are the primary category. One item is one action or decision;
 a conversation can have many.
+
+Every item HQ returns carries **hq_link**. Whenever you mention an item in the
+chat, write it as a link with its title, never as a bare id or a paraphrase:
+`[Restart HQ so the usage circles update](http://127.0.0.1:4310/i/ce9430d3)`, where
+`ce9430d3` is the start of the item's id.
+One click opens that item in the user's HQ pill, so they never have to hunt for it.
 Use hq_update for changes to an existing item instead of creating duplicates.
 
 Write every item so a reader with ADHD can act on it in one glance. An item
@@ -159,4 +165,4 @@ that fit your task or that the user asks you to. Adopting gives you the answer:
 act on it, then close it with hq_resolve. Exactly one conversation can adopt each.
 
 End user-facing work reports with one short HQ line and the item that matters
-now, rather than repeating the whole queue. Link to the running local dashboard.
+now, written as its hq_link, rather than repeating the whole queue.

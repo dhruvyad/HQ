@@ -764,6 +764,15 @@ class Store:
         self.attach_media([result])
         return result
 
+    def find_items(self, reference):
+        """The ids an item link or a typed id names: the item itself, or every item whose id
+        starts with it. substr, not LIKE, so nothing in it is a wildcard."""
+        with self.db() as db:
+            rows = db.execute("SELECT id FROM items WHERE id=? OR substr(id,1,?)=? ORDER BY id=? DESC, created DESC",
+                              (reference, len(reference), reference, reference)).fetchall()
+        ids = [r["id"] for r in rows]
+        return ids[:1] if ids and ids[0] == reference else ids
+
     def snapshot(self, session_id=None, tag=None, status=None, bucket=None):
         with self.db() as db:
             sessions = [dict(r) for r in db.execute("SELECT * FROM sessions ORDER BY seen DESC")]

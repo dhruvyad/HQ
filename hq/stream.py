@@ -33,6 +33,8 @@ class StateFeed:
         self.instance = str(uuid.uuid4())
         self.last_success = 0
         self.version, self.payload, self.last_signature = 0, "", None
+        # Item links clicked in an agent's chat, for the pill to open: (number, event), newest last.
+        self.opened, self.opens = 0, []
         self.publish()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -92,12 +94,26 @@ class StateFeed:
         soonest = db.execute("SELECT MIN(expires) FROM activity WHERE expires>?", (wall,)).fetchone()[0]
         return REFRESH if soonest is None else max(0.05, min(REFRESH, soonest - wall + 0.05))
 
-    def wait(self, previous, timeout=2):
+    def wait(self, previous, opened=None, timeout=2):
+        """The next snapshot, or sooner, with opened, the next item link to open."""
         if self.usage:
             self.usage.watched()
         with self.condition:
-            self.condition.wait_for(lambda: self.version != previous or self.stop.is_set(), timeout)
+            self.condition.wait_for(lambda: self.version != previous or self.stop.is_set()
+                                    or (opened is not None and self.opened != opened), timeout)
             return self.version, self.payload
+
+    def open_item(self, item_id):
+        """Ask every open pill to show this item."""
+        with self.condition:
+            self.opened += 1
+            self.opens = [*self.opens[-7:], (self.opened, {"id": item_id})]
+            self.condition.notify_all()
+
+    def opens_after(self, seen):
+        """The item links asked for since seen, and the number to wait from next."""
+        with self.condition:
+            return [item for number, item in self.opens if number > seen], self.opened
 
     def close(self):
         self.stop.set()

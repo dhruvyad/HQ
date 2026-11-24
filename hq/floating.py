@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import opener
 from .store import Store, data_dir
 
 SOURCE = Path(__file__).with_name("FloatPanel.swift")
@@ -93,6 +94,16 @@ def build(source=None):
         if entry.is_dir() and entry.name != digest:
             shutil.rmtree(entry, ignore_errors=True)
     return binary
+
+
+def ensure_links():
+    """HQ Links, for item links that skip the browser, comes with the pill. If it can't be
+    built, links still work through the browser, so the pill starts anyway."""
+    try:
+        return opener.ensure()
+    except (ValueError, OSError) as error:
+        print(f"hq: item links will go through the browser: {error}", file=sys.stderr, flush=True)
+        return {"status": "unavailable", "error": str(error)}
 
 
 def take_lock():
@@ -172,8 +183,9 @@ def start(port, ensure_server):
     if panel_running():
         pid = read_pid()
         wake(pid)
-        return {"status": "already running", "pid": pid, "url": url}
+        return {"status": "already running", "pid": pid, "url": url, "links": ensure_links()["status"]}
     binary = build()
+    links = ensure_links()["status"]
     lock = take_lock()
     if lock is None:  # Another start won the race while this one compiled.
         return {"status": "already running", "pid": read_pid(), "url": url}
@@ -192,7 +204,7 @@ def start(port, ensure_server):
             time.sleep(0.05)
     finally:
         lock.close()
-    return {"status": "started", "pid": child.pid, "url": url, "log": str(log)}
+    return {"status": "started", "pid": child.pid, "url": url, "log": str(log), "links": links}
 
 
 def run(port, ensure_server):
@@ -201,6 +213,7 @@ def run(port, ensure_server):
     url = panel_url(ensure_server(port))
     require_route(url)
     binary = build()
+    ensure_links()
     lock = take_lock()
     if lock is None:
         return {"status": "already running", "pid": read_pid(), "url": url}
@@ -255,6 +268,7 @@ def launchctl(*arguments):
 def install(port):
     require_macos()
     build()
+    ensure_links()
     path = plist_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     domain = f"gui/{os.getuid()}"

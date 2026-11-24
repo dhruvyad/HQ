@@ -428,6 +428,9 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMe
             if let action = body["action"] as? String { recordKey(for: action) }
         case "openDashboard":
             openDashboard()
+        case "linked":
+            // An item link opened the panel: a pill hidden for an hour comes back to show it.
+            wake()
         case "menu":
             showMenu()
         default:

@@ -1,4 +1,5 @@
 import fcntl
+import html
 import json
 import os
 import secrets
@@ -9,7 +10,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import __version__
 from . import attachments as files
@@ -18,6 +19,7 @@ from .adapters import Dispatcher
 from .store import Store, data_dir
 from .presence import ClaudePresence
 from .relay import RelaySync
+from .links import REFERENCE
 from .stream import StateFeed
 from .usage import SampleUsage, Usage, UsageWorker
 from .version import build
@@ -40,6 +42,8 @@ class Server(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.feed = StateFeed(self.store, self.usage, self.accounts)
+        # Pills listening right now: an item link opens there when there is one.
+        self.panels, self.panels_lock = 0, threading.Lock()
         # The build it started from, so hq doctor can tell a server left running on old code.
         self.commit = ""
 
@@ -96,6 +100,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.allowed(token=True):
                 self.events()
             return
+        if path.startswith("/i/"):
+            return self.open_link(path[3:])
         if path.startswith("/api/attachments/"):
             if self.allowed(token=True):
                 self.attachment(path.rsplit("/", 1)[1])
@@ -107,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                   "/style.css": ("style.css", "text/css"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
                   "/float": ("float.html", "text/html"), "/float.js": ("float.js", "text/javascript"),
-                  "/float.css": ("float.css", "text/css"),
+                  "/float.css": ("float.css", "text/css"), "/open.js": ("open.js", "text/javascript"),
                   "/inter-latin.woff2": ("inter-latin.woff2", "font/woff2"),
                   "/outfit-latin.woff2": ("outfit-latin.woff2", "font/woff2"),
                   "/instrument-serif-latin.woff2": ("instrument-serif-latin.woff2", "font/woff2")}
@@ -184,19 +190,75 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.connection.settimeout(5)
-        previous = -1
+        feed, previous = self.server.feed, -1
+        # The pill says it is the pill, so item links clicked in an agent's chat open there.
+        panel = parse_qs(urlsplit(self.path).query).get("surface") == ["float"]
+        opened = feed.opens_after(0)[1] if panel else None
+        if panel:
+            with self.server.panels_lock:
+                self.server.panels += 1
         try:
-            while not self.server.feed.stop.is_set():
-                version, payload = self.server.feed.wait(previous)
-                healthy = time.monotonic() - self.server.feed.last_success < 3
-                message = (f"event: state\ndata: {payload}\n\n" if healthy and version != previous
-                           else 'event: ping\ndata: {"healthy":' + str(healthy).lower() + '}\n\n')
+            while not feed.stop.is_set():
+                version, payload = feed.wait(previous, opened)
+                message = ""
+                if panel:
+                    items, opened = feed.opens_after(opened)
+                    message = "".join(f"event: open\ndata: {json.dumps(item)}\n\n" for item in items)
+                healthy = time.monotonic() - feed.last_success < 3
+                if healthy and version != previous:
+                    message += f"event: state\ndata: {payload}\n\n"
+                elif not message:
+                    message = 'event: ping\ndata: {"healthy":' + str(healthy).lower() + '}\n\n'
                 self.wfile.write(message.encode())
                 self.wfile.flush()
                 previous = version if healthy else -1
         except (OSError, TimeoutError):
             pass
+        finally:
+            if panel:
+                with self.server.panels_lock:
+                    self.server.panels -= 1
         self.close_connection = True
+
+    def clicked(self):
+        """Someone opened this link: from another app, the address bar, or their own click on a
+        page. Not a page loading it on its own, which must never pop the pill open."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site in {None, "none", "same-origin"}:
+            return True
+        return self.headers.get("Sec-Fetch-Mode") == "navigate" and self.headers.get("Sec-Fetch-User") == "?1"
+
+    def open_link(self, ref):
+        """An item link from an agent's chat: the item opens in the pill and this tab closes
+        itself, or, with no pill running, the dashboard opens on it."""
+        ref = unquote(ref).strip("/").lower()
+        ids = self.server.store.find_items(ref) if REFERENCE.fullmatch(ref) else []
+        if not ids:
+            return self.link_page(404, "HQ has no item " + ref[:40],
+                                  "It may have been deleted, or the link was cut short.", [("Open the dashboard", "/")])
+        if len(ids) > 1:
+            store = self.server.store
+            return self.link_page(300, "This link fits more than one item", "Pick the one you meant.",
+                                  [(store.item(id)["title"], "/i/" + id) for id in ids[:10]])
+        dashboard = "/#/?item=" + quote(ids[0], safe="")
+        if self.server.panels and self.clicked():
+            self.server.feed.open_item(ids[0])
+            return self.link_page(200, "Opened in HQ", "It's in the pill. You can close this tab.",
+                                  [("Open it in the dashboard instead", dashboard)], close=True)
+        self.send_response(303)
+        self.send_header("Location", dashboard)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def link_page(self, code, title, text, links, close=False):
+        anchors = "".join(f'<a href="{html.escape(href)}">{html.escape(label)}</a>' for label, href in links)
+        self.output(code, f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark"><title>{html.escape(title)} · HQ</title>
+<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"><script src="/open.js" defer></script></head>
+<body class="link-page"{' data-close' if close else ''}><main><p class="wordmark">HQ</p><h1>{html.escape(title)}</h1>
+<p>{html.escape(text)}</p><nav>{anchors}</nav></main></body></html>""", "text/html")
 
     def do_POST(self):
         if not self.allowed(token=True):

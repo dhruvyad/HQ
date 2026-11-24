@@ -8,6 +8,7 @@ import shlex
 import sqlite3
 import sys
 
+from .links import direct, link_base, markdown, port
 from .store import Store, required
 
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop", "SessionEnd"}
@@ -109,6 +110,9 @@ def handle(provider, payload, store, emit, title=codex_title):
     # Lifecycle evidence expires: it cannot prove a process stayed alive forever.
     store.observe_activity(sid, activity, "hooks", lease=30, priority=50)
     quoted = shlex.quote(sid)
+    at, native = port(), direct()
+    def linked(item_id, title):
+        return markdown(title, item_id, at, native)
     context = []
     if event in {"SessionStart", "UserPromptSubmit"}:
         context.append(
@@ -117,13 +121,15 @@ def handle(provider, payload, store, emit, title=codex_title):
             "report every unfinished action/blocker separately with workstream tags and the right owner. "
             "When you need the user to decide, approve or do something, ask it in HQ (hq_report: a question with "
             "options, or a todo) and say in the chat that it is waiting there; the user may not be watching this chat. "
+            f"Whenever you mention an HQ item in the chat, write it as a link, [its title]({link_base(at, native)} + the first "
+            "8 characters of its id; HQ returns it as hq_link): one click opens it in HQ. "
             "Keep existing items updated. Check and answer HQ clarification threads before finishing. "
             f"CLI: hq list --session {quoted}; hq comments --session {quoted} --pending; hq inbox --session {quoted}."
         )
     # Decisions this conversation heard but never closed: the agent is reminded, at most every few hours.
     if event in {"SessionStart", "UserPromptSubmit"}:
         for item in store.unclosed(sid):
-            context.append(f"HQ reminder (item {item['item_id']}): you heard the user's answer to " + json.dumps(item["title"], ensure_ascii=False)
+            context.append(f"HQ reminder (item {item['item_id']}): you heard the user's answer to " + linked(item["item_id"], item["title"])
                            + " but never closed it. Answer: " + json.dumps(item["answer"][:600], ensure_ascii=False)
                            + f"\nIf it is done, close it with hq done {shlex.quote(item['item_id'])} --session {quoted} --note 'what you did'. "
                            + "If not, do it now, or tell the user why you can't. Until you close it, HQ counts the decision as not acted on.")
@@ -131,18 +137,18 @@ def handle(provider, payload, store, emit, title=codex_title):
     if event == "SessionStart":
         offered = store.adoptable(sid)
         if offered:
-            lines = [f"- {i['title']} (item {i['id']}): " + json.dumps((i["answer"] or "")[:300], ensure_ascii=False) for i in offered[:5]]
+            lines = [f"- {linked(i['id'], i['title'])} (item {i['id']}): " + json.dumps((i["answer"] or "")[:300], ensure_ascii=False) for i in offered[:5]]
             more = f"\n…and {len(offered) - 5} more: hq adoptable --session {quoted}" if len(offered) > 5 else ""
             context.append(f"HQ: the user decided {len(offered)} thing{'s' if len(offered) != 1 else ''} in this project for agents that stopped before acting on them:\n"
                            + "\n".join(lines) + more
-                           + f"\nTell the user. Adopt the ones that fit your task, or that the user asks you to, with hq adopt <item> --session {quoted}; "
+                           + f"\nTell the user, with each item's link. Adopt the ones that fit your task, or that the user asks you to, with hq adopt <item> --session {quoted}; "
                            + "act on each one and close it with hq done. Leave the rest for another agent.")
     for reply in replies:
-        context.append(f"HQ human response (item {reply['item_id']}): " + json.dumps({"title": reply["title"], "answer": reply["text"][:1600]}, ensure_ascii=False)
+        context.append(f"HQ human response (item {reply['item_id']}, {linked(reply['item_id'], 'open in HQ')}): " + json.dumps({"title": reply["title"], "answer": reply["text"][:1600]}, ensure_ascii=False)
                        + f"\nRead the full response with hq inbox --session {quoted}, then acknowledge it with "
                        + f"hq ack {shlex.quote(reply['item_id'])} --session {quoted}. Act on the response and mark done only after the work is complete.")
     for question in questions:
-        context.append(f"HQ human clarification (comment {question['id']}, item {question['item_id']}): "
+        context.append(f"HQ human clarification (comment {question['id']}, item {question['item_id']}, {linked(question['item_id'], 'open in HQ')}): "
                        + json.dumps({"title": question["title"], "question": question["text"][:1600]}, ensure_ascii=False)
                        + f"\nRead the full question with hq comments --session {quoted} --pending. "
                        + f"Reply with hq_comment_reply or hq respond {shlex.quote(question['id'])} 'Your reply' --session {quoted}. This does not complete the item.")

@@ -1170,6 +1170,25 @@ const junk = JSON.parse(run(`JSON.stringify(cleanTabs({view: 'evil', tabs: {need
 assert.equal(junk.view, 'needs');
 assert.deepEqual(junk.tabs.needs, JSON.parse(run('JSON.stringify(blankTab())')));
 assert.equal(run("remember('hq-float-tabs')"), null); // no storage here at all, and nothing throws
+// An item link clicked in an agent's chat opens that item, from whatever the panel was doing, and
+// asks the window to come back if it was hidden.
+run(`posted = []; window = {webkit: {messageHandlers: {hq: {postMessage: (m) => posted.push(m)}}}};
+  setOpen(false); customizing = true; showList('agents', 'codex:r'); floatOpen = false`);
+run(`streamEvent('event: open\\ndata: {"id":"af"}')`);
+assert.deepEqual(JSON.parse(run('JSON.stringify(posted)')), [{type: 'linked'}]);
+assert.equal(run('floatOpen'), true);
+assert.equal(run('customizing'), false);
+assert.equal(run('listView'), 'needs');
+assert.equal(run('agentOpen'), null);
+assert.equal(run('route.item'), 'af');
+// One the panel hasn't heard of yet waits for the snapshot that has it; one that never comes opens nothing.
+run(`realRefresh = refresh; refreshed = 0; refresh = () => {refreshed++; return Promise.resolve();}; setOpen(false); posted = []`);
+run(`onLinkOpen('not-an-item'); onLinkOpen(42); onLinkOpen('')`);
+assert.equal(run('refreshed'), 1); // only the one shaped like an id is looked for
+assert.equal(run('posted.length'), 0); // nothing opened, so the window stays as it was
+assert.equal(run('floatOpen'), false);
+run('refresh = realRefresh; delete globalThis.window');
+assert.equal(run('onLinkOpen === openLinked'), true);
 run('render = realRender; dropNotices = realDrop; floatOpen = false; route = parseRoute("#/"); listView = "needs"; agentOpen = null');
 
 // The pill's size: kept within 22 to 40, whole pixels, and anything odd is Medium.

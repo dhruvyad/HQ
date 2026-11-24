@@ -941,6 +941,21 @@ saveNeeds = () => {saveTab();};
 saveAgentsShow = () => {saveTab();};
 openHeldItem = (id) => openItem(id);
 openHeldPage = (agent) => showList('agents', agent);
+// An item link clicked in an agent's chat: the panel opens on that item, wherever it was, and
+// the window comes back if it was hidden for an hour.
+function openLinked(id) {
+  if (typeof id !== 'string' || !id) return;
+  const known = () => model?.items.some((i) => i.id === id);
+  const show = () => {
+    if (!known()) return;
+    native({type: 'linked'});
+    openTab('needs', id);
+  };
+  // A link to an item reported a moment ago can arrive before the snapshot that has it.
+  if (known()) show();
+  else refresh(true).then(show);
+}
+onLinkOpen = openLinked;
 // Whether what a tab had open is still there to show.
 function stillOpen(view, id, agent) {
   const i = model?.items.find((x) => x.id === id);

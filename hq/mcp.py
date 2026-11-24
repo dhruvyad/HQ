@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import workstreams
+from .links import markdown, with_links
 from .store import Store
 
 
@@ -137,6 +138,10 @@ class Tools:
         return result
 
     def call(self, name, arguments, cancel):
+        # Every item in a result carries hq_link, for the agent to write when it mentions the item.
+        return with_links(self.dispatch(name, arguments, cancel))
+
+    def dispatch(self, name, arguments, cancel):
         store, args = self.store, dict(arguments)
         id = args.get("session_id")
         if self.bound:
@@ -246,14 +251,14 @@ def run(provider="other", channel=False, session_id=None):
             for reply in store.inbox(bound_id):
                 if reply["state"] == "pending" and not store.has_waiter(reply["item_id"]):
                     send({"method": "notifications/claude/channel", "params": {
-                        "content": f"Human response to {reply['title']}: {reply['text']}",
+                        "content": f"Human response to {markdown(reply['title'], reply['item_id'])}: {reply['text']}",
                         "meta": {"item_id": reply["item_id"], "session_id": bound_id}}})
                     # Emission isn't proof that Claude acted; require hq_acknowledge.
                     store.delivery_result(reply["id"], "sent")
             question = store.claim_comment(bound_id)
             if question:
                 send({"method": "notifications/claude/channel", "params": {
-                    "content": f"Human clarification on {question['title']}: {question['text']}\nReply in HQ using hq_comment_reply with comment_id {question['id']} and session_id {bound_id}.",
+                    "content": f"Human clarification on {markdown(question['title'], question['item_id'])}: {question['text']}\nReply in HQ using hq_comment_reply with comment_id {question['id']} and session_id {bound_id}.",
                     "meta": {"kind": "clarification", "comment_id": question["id"], "item_id": question["item_id"], "session_id": bound_id}}})
                 store.comment_delivery(question["id"], "sent")
             closed.wait(0.5)

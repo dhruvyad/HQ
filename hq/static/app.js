@@ -1595,7 +1595,10 @@ function streamEvent(frame) {
   const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
   if (type === 'state') applyState(JSON.parse(data));
   else if (type === 'ping') setLive(JSON.parse(data).healthy !== false);
+  else if (type === 'open') onLinkOpen?.(JSON.parse(data).id);
 }
+// An item link clicked in an agent's chat. Only the pill is sent these; it sets this.
+let onLinkOpen = null;
 async function renewToken() {
   const response = await fetch('/', {cache: 'no-store'});
   if (!response.ok) throw new Error('HQ unavailable');
@@ -1609,7 +1612,9 @@ async function watchState() {
     const controller = new AbortController();
     streamController = controller;
     try {
-      const response = await fetch('/api/events', {headers: {'X-HQ-Token': token}, signal: controller.signal, cache: 'no-store'});
+      // The pill says so, and HQ then sends it the item links clicked in agents' chats.
+      const events = document.body.dataset.surface === 'float' ? '/api/events?surface=float' : '/api/events';
+      const response = await fetch(events, {headers: {'X-HQ-Token': token}, signal: controller.signal, cache: 'no-store'});
       if (response.status === 403) {await renewToken(); throw new Error('Reconnect with new token');}
       if (!response.ok || !response.body) throw new Error('HQ stream unavailable');
       const reader = response.body.getReader(), decoder = new TextDecoder();
