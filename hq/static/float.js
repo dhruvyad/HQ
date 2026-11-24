@@ -122,7 +122,9 @@ let floatOpen = false, dock = DEFAULT_DOCK, display = null, drag = null, placed 
 let swallowClick = false, customizing = false, hovering = false, circles = [...DEFAULT_CIRCLES];
 let flying = 0, holding = null, flown = false, lastMode = 'pill', lastItem = null, lastShown = null, lastValues = {};
 // Recording is {action, index}: index is the chip being re-recorded, or null for a new one.
-let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [], keyConflict = null;
+let shortcuts = cleanShortcuts(), notify = cleanNotify(), recording = null, refused = [], blocked = [], keyConflict = null;
+// macOS 15 and later never deliver a shortcut of ⌥ (or ⌥⇧) and a key: it keeps them for typing.
+const OPTION_ALONE = 'won’t work: macOS keeps ⌥ with a key for typing. Add ⌃ or ⌘, or use right ⌥ by itself';
 let panelKeys = cleanPanelKeys(), recordingPanel = null, cursor = null, sizes = cleanSizes(), resizing = null;
 let lastItems = null, lastUsage = null, lastStuck = null, pending = [], notice = null;
 let listView = 'needs', agentOpen = null, agentsAll = false, agentsArchived = false, listMotion = null, fallbackIndex = null, pendingScroll = null;
@@ -493,12 +495,16 @@ function keyRowHTML(kind, action, name, keys, defaults, same) {
   const label = (key) => (global ? key.label : keyLabel(key));
   const now = live?.action === action ? live : null;
   const chips = keys.map((key, n) => {
-    const on = now?.index === n, bad = global && (refused.includes(hotkeyId(key)) || refused.includes(action));
-    return `<span class="f-chip ${bad ? 'bad' : ''}"><button type="button" class="f-cap ${on ? 'live' : ''}" ${attr}="${action}" data-index="${n}" aria-label="${esc(`${label(key)} for ${name}${bad ? ', in use by another app' : ''}: click to change, Delete to remove`)}"${bad ? ' title="In use by another app"' : ''}>${esc(on ? 'Press keys…' : label(key))}</button><button type="button" class="f-chip-x" tabindex="-1" data-drop-key="${kind}" data-action="${action}" data-index="${n}" aria-label="${esc(`Remove ${label(key)} from ${name}`)}">${icon('x', 'sm')}</button></span>`;
+    const on = now?.index === n, off = global && blocked.includes(hotkeyId(key));
+    const bad = off || (global && (refused.includes(hotkeyId(key)) || refused.includes(action)));
+    const why = off ? 'macOS won’t deliver it' : 'In use by another app';
+    return `<span class="f-chip ${bad ? 'bad' : ''}"><button type="button" class="f-cap ${on ? 'live' : ''}" ${attr}="${action}" data-index="${n}" aria-label="${esc(`${label(key)} for ${name}${bad ? `, ${why.toLowerCase()}` : ''}: click to change, Delete to remove`)}"${bad ? ` title="${why}"` : ''}>${esc(on ? 'Press keys…' : label(key))}</button><button type="button" class="f-chip-x" tabindex="-1" data-drop-key="${kind}" data-action="${action}" data-index="${n}" aria-label="${esc(`Remove ${label(key)} from ${name}`)}">${icon('x', 'sm')}</button></span>`;
   }).join('');
   // A key macOS refused is outlined on its chip and named under the row, so the chips stay compact.
-  const refusedKeys = global ? keys.filter((key) => refused.includes(hotkeyId(key)) || refused.includes(action)) : [];
-  const taken = refusedKeys.length ? `<small class="f-key-bad">${esc(refusedKeys.map(label).join(', '))} ${refusedKeys.length === 1 ? 'is' : 'are'} in use by another app</small>` : '';
+  const offKeys = global ? keys.filter((key) => blocked.includes(hotkeyId(key))) : [];
+  const refusedKeys = global ? keys.filter((key) => !offKeys.includes(key) && (refused.includes(hotkeyId(key)) || refused.includes(action))) : [];
+  const taken = (refusedKeys.length ? `<small class="f-key-bad">${esc(refusedKeys.map(label).join(', '))} ${refusedKeys.length === 1 ? 'is' : 'are'} in use by another app</small>` : '')
+    + (offKeys.length ? `<small class="f-key-bad">${esc(offKeys.map(label).join(', '))} ${OPTION_ALONE}</small>` : '');
   const adding = now && now.index === null;
   const more = keys.length
     ? `<button type="button" class="icon-btn f-plus ${adding ? 'live' : ''}" ${attr}="${action}" data-index="new" aria-label="${esc(`Add another key for ${name}`)}" title="Add another key">${adding ? '<span class="f-plus-live">Press keys…</span>' : icon('plus', 'sm')}</button>`
@@ -1845,6 +1851,7 @@ function setCircles(next) {
 }
 function applyShortcuts() {
   refused = [];
+  blocked = [];
   native({type: 'hotkeys', hotkeys: hotkeyList(shortcuts)});
 }
 function runShortcut(action) {
@@ -2043,12 +2050,14 @@ function receive(message) {
   else if (message.type === 'hotkey') runShortcut(message.action);
   else if (message.type === 'hotkeysApplied') {
     refused = message.failed || [];
+    blocked = message.blocked || [];
     if (customizing) render();
   } else if (message.type === 'keyRecorded') {
     const at = recording?.action === message.action ? recording : {action: message.action, index: null};
     recording = null;
     if (message.cleared && Number.isInteger(at.index)) {shortcuts = dropKey(shortcuts, at.action, at.index); saveSettings();}
     else if (message.key) recordedKey('global', at, message.key);
+    else if (message.blocked) toast(`${message.blocked} ${OPTION_ALONE}.`);
     // Recording stood every shortcut down; this puts them back, with whatever changed.
     applyShortcuts();
     render();
